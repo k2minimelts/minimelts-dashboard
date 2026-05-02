@@ -153,6 +153,643 @@
   .lot-result-card.safe .lot-result-title { color: var(--success); }
   .lot-export-btn { background: none; border: 1px solid var(--mm-cyan); color: var(--mm-cyan); border-radius: 6px; padding: 6px 14px; font-size: 12px; cursor: pointer; margin-top: 10px; }
   .lot-export-btn:hover { background: rgba(79,195,212,0.1); }
+
+  /* ════════════════════════════════════════════════════════════════════
+     📅 SCHEDULE TAB STYLES
+     All selectors prefixed .sched- to avoid collisions with other tabs.
+     ════════════════════════════════════════════════════════════════════ */
+
+  #tab-schedule {
+    /* Override the .main padding for full-bleed schedule layout */
+    margin: -24px -24px 0;
+  }
+
+  /* Header bar */
+  .sched-header {
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    position: sticky;
+    top: 56px;
+    z-index: 50;
+  }
+  .sched-header-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .sched-header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+  .sched-week-nav {
+    display: flex; align-items: center; gap: 4px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+  }
+  .sched-nav-btn {
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; padding: 2px 8px;
+    font-size: 16px; line-height: 1; border-radius: 4px;
+  }
+  .sched-nav-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+  .sched-week-label {
+    color: var(--text); font-weight: 500; font-size: 13px;
+    min-width: 220px; text-align: center;
+    padding: 0 4px;
+  }
+
+  .sched-depot-chips { display: flex; gap: 6px; }
+  .sched-depot-chip {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 4px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    transition: all 0.1s;
+  }
+  .sched-depot-chip:hover { color: var(--text); }
+  .sched-depot-chip.active {
+    background: rgba(226,176,74,0.15);
+    color: var(--gold);
+    border-color: rgba(226,176,74,0.45);
+  }
+
+  .sched-counters { display: flex; gap: 6px; }
+  .sched-counter {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+    transition: border-color 0.15s;
+  }
+  .sched-counter:hover { border-color: var(--muted); }
+  .sched-counter.active { border-color: var(--gold); }
+  .sched-counter .sw {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .sched-counter .num {
+    font-weight: 700; color: var(--text); min-width: 18px;
+  }
+  .sched-counter .lbl { color: var(--muted); }
+
+  .sched-publish-btn {
+    background: var(--gold);
+    color: var(--bg);
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: opacity 0.1s;
+  }
+  .sched-publish-btn:hover:not(:disabled) { opacity: 0.85; }
+  .sched-publish-btn:disabled {
+    background: var(--bg3);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+
+  /* Body: map + sidebar 2-column */
+  .sched-body {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    height: calc(100vh - 56px - 60px - 240px);
+    /* topbar(56) + sched-header(~60) + sched-strip(240) */
+    min-height: 480px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sched-map-wrap {
+    position: relative;
+    background: #1a1d27;
+    overflow: hidden;
+  }
+  #sched-map {
+    width: 100%; height: 100%;
+    background: #1a1d27;
+  }
+
+  .sched-map-overlay {
+    position: absolute;
+    z-index: 5;
+    background: rgba(13,17,23,0.92);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .sched-legend {
+    top: 12px; left: 12px;
+    padding: 10px 12px;
+    font-size: 11px;
+    min-width: 170px;
+  }
+  .sched-legend-title {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .sched-legend-row {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--text);
+    padding: 2px 0;
+  }
+  .sched-legend-row.sched-legend-hint {
+    color: var(--muted);
+    font-size: 10px;
+    padding-left: 18px;
+  }
+  .sched-legend-row .sw {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .sched-legend-row .sw.sw-gradient {
+    background: linear-gradient(90deg, #ffc870, #ff7a3a, #e54848);
+  }
+
+  .sched-lasso-hint {
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .sched-lasso-hint kbd {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: inherit;
+    font-size: 10px;
+    color: var(--text);
+  }
+
+  /* Sidebar */
+  .sched-sidebar {
+    background: var(--bg2);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+  .sched-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+  }
+  .sched-side-tab {
+    flex: 1;
+    background: none;
+    border: none;
+    padding: 12px 16px;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    border-bottom: 2px solid transparent;
+    transition: all 0.1s;
+  }
+  .sched-side-tab:hover { color: var(--text); }
+  .sched-side-tab.active {
+    color: var(--text);
+    border-bottom-color: var(--gold);
+  }
+
+  .sched-sidebar-content {
+    flex: 1;
+    overflow-y: auto;
+  }
+  .sched-sidebar-content::-webkit-scrollbar { width: 8px; }
+  .sched-sidebar-content::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 4px;
+  }
+  .sched-sidebar-content::-webkit-scrollbar-track { background: transparent; }
+
+  .sched-empty {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .sched-empty p { margin-bottom: 8px; }
+  .sched-empty .muted { color: var(--muted); opacity: 0.7; font-size: 11px; }
+
+  .sched-selection-summary {
+    padding: 14px 16px;
+    background: rgba(226,176,74,0.06);
+    border-bottom: 1px solid var(--border);
+  }
+  .sched-selection-count {
+    font-size: 26px;
+    font-weight: 800;
+    color: var(--gold);
+    line-height: 1;
+  }
+  .sched-selection-label {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-top: 4px;
+  }
+  .sched-selection-breakdown {
+    margin-top: 10px;
+    display: flex;
+    gap: 14px;
+    font-size: 11px;
+    color: var(--muted);
+    flex-wrap: wrap;
+  }
+  .sched-selection-breakdown strong { color: var(--text); }
+  .sched-selection-breakdown .late strong { color: #e54848; }
+
+  .sched-assign-form {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg3);
+  }
+  .sched-assign-form label {
+    display: block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    margin-bottom: 5px;
+    margin-top: 10px;
+  }
+  .sched-assign-form label:first-child { margin-top: 0; }
+  .sched-assign-form select,
+  .sched-assign-form input[type="text"] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 9px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .sched-assign-form select:focus,
+  .sched-assign-form input[type="text"]:focus {
+    outline: none;
+    border-color: var(--gold);
+  }
+
+  .sched-trip-length {
+    display: flex; gap: 4px; margin-bottom: 4px;
+  }
+  .sched-trip-len-btn {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.1s;
+  }
+  .sched-trip-len-btn:hover { color: var(--text); border-color: var(--muted); }
+  .sched-trip-len-btn.active {
+    background: var(--gold); color: var(--bg);
+    border-color: var(--gold); font-weight: 700;
+  }
+
+  .sched-assign-btn {
+    margin-top: 14px;
+    width: 100%;
+    background: var(--gold);
+    color: var(--bg);
+    border: none;
+    padding: 9px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .sched-assign-btn:hover { opacity: 0.9; }
+
+  .sched-stop-list-header {
+    padding: 10px 16px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    background: var(--bg);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .sched-stop-row {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    transition: background 0.1s;
+  }
+  .sched-stop-row:hover { background: var(--bg3); }
+  .sched-stop-row.selected { background: rgba(226,176,74,0.08); }
+  .sched-stop-row .sw {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+  .sched-stop-info { flex: 1; min-width: 0; }
+  .sched-stop-name {
+    color: var(--text);
+    font-weight: 500;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sched-stop-meta {
+    color: var(--muted);
+    font-size: 10px;
+    margin-top: 2px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .sched-stop-meta .late { color: #e54848; font-weight: 700; }
+
+  /* Schedule grid strip */
+  .sched-strip {
+    background: var(--bg2);
+    height: 240px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sched-strip-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sched-strip-header h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .sched-strip-right { display: flex; align-items: center; gap: 12px; }
+  .sched-clear-driver {
+    background: none;
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .sched-clear-driver:hover { background: rgba(226,176,74,0.08); }
+
+  .sched-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 110px repeat(7, 1fr);
+    overflow: auto;
+  }
+  .sched-grid::-webkit-scrollbar { height: 8px; width: 8px; }
+  .sched-grid::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 4px;
+  }
+
+  .sched-cell {
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 8px;
+    min-height: 56px;
+    font-size: 11px;
+    position: relative;
+  }
+  .sched-cell.sched-driver-label {
+    position: sticky;
+    left: 0;
+    background: var(--bg2);
+    z-index: 2;
+    color: var(--text);
+    font-weight: 500;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 10px;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .sched-cell.sched-driver-label:hover { background: var(--bg3); }
+  .sched-cell.sched-driver-label.active {
+    background: rgba(226,176,74,0.1);
+    color: var(--gold);
+  }
+  .sched-cell.sched-driver-label .total {
+    color: var(--muted); font-size: 10px;
+  }
+  .sched-cell.sched-day-header {
+    background: var(--bg2);
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    text-align: center;
+    padding: 8px 4px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  .sched-cell.sched-day-header.today { color: var(--gold); }
+  .sched-cell.sched-day-header .date {
+    display: block;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 700;
+    margin-top: 2px;
+  }
+
+  .sched-cell.sched-day-cell {
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .sched-cell.sched-day-cell.has-stops {
+    background: rgba(79,195,212,0.06);
+    cursor: grab;
+  }
+  .sched-cell.sched-day-cell.has-stops:active { cursor: grabbing; }
+  .sched-cell.sched-day-cell.over-capacity {
+    background: rgba(229,72,72,0.1);
+    border-color: rgba(229,72,72,0.3);
+  }
+  .sched-cell.sched-day-cell.near-capacity {
+    background: rgba(226,176,74,0.1);
+  }
+  .sched-cell.sched-day-cell.drag-over {
+    background: rgba(226,176,74,0.18);
+    border-color: var(--gold);
+    border-style: dashed;
+  }
+  .sched-cell.sched-day-cell.dragging-from { opacity: 0.4; }
+  .sched-cell.sched-day-cell.day-off {
+    background: repeating-linear-gradient(
+      135deg,
+      transparent, transparent 4px,
+      rgba(255,255,255,0.025) 4px, rgba(255,255,255,0.025) 8px
+    );
+  }
+  .sched-day-off-label {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-align: center;
+    line-height: 32px;
+  }
+
+  .sched-day-summary {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--text);
+  }
+  .sched-day-summary .num { font-weight: 700; font-size: 14px; }
+  .sched-day-summary .est { color: var(--muted); font-size: 10px; }
+  .sched-day-breakdown {
+    color: var(--muted); font-size: 10px; margin-top: 2px;
+  }
+  .sched-cap-warning {
+    color: #e54848; font-size: 10px; margin-top: 2px;
+  }
+  .sched-cap-full {
+    color: var(--gold);
+    font-size: 10px; margin-top: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+  }
+
+  /* Multi-day trip linking */
+  .sched-cell.sched-day-cell.trip-day {
+    border-top: 2px solid var(--gold);
+    border-bottom: 2px solid var(--gold);
+    background: rgba(226,176,74,0.08);
+  }
+  .sched-cell.sched-day-cell.trip-start { border-left: 2px solid var(--gold); }
+  .sched-cell.sched-day-cell.trip-end { border-right: 2px solid var(--gold); }
+  .sched-trip-badge {
+    background: var(--gold); color: var(--bg);
+    font-size: 9px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 1px 5px; border-radius: 2px;
+    margin-top: 4px;
+    display: inline-block;
+    max-width: 100%; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sched-trip-cont {
+    color: rgba(226,176,74,0.7);
+    font-size: 9px; margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  /* Toast */
+  .sched-toast {
+    position: fixed;
+    bottom: 260px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg2);
+    border: 1px solid var(--gold);
+    color: var(--text);
+    padding: 12px 20px;
+    border-radius: 6px;
+    font-size: 13px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+    z-index: 3000;
+    opacity: 0;
+    transition: opacity 0.3s, transform 0.3s;
+    pointer-events: none;
+  }
+  .sched-toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-10px);
+  }
+
+  /* Mapbox marker pin styling */
+  .sched-pin {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 2px solid rgba(13,17,23,0.9);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  .sched-pin.size-md { width: 16px; height: 16px; }
+  .sched-pin.size-lg { width: 18px; height: 18px; }
+  .sched-pin.selected {
+    width: 20px; height: 20px;
+    border-color: var(--gold);
+    border-width: 3px;
+    box-shadow: 0 0 0 3px rgba(226,176,74,0.25), 0 2px 6px rgba(0,0,0,0.5);
+  }
+  .sched-pin.scheduled { opacity: 0.35; }
+  .sched-pin.driver-highlight {
+    border-color: var(--gold);
+    border-width: 3px;
+    box-shadow: 0 0 0 4px rgba(226,176,74,0.35), 0 2px 8px rgba(0,0,0,0.6);
+    opacity: 1 !important;
+  }
+  .sched-pin.stale {
+    animation: sched-pulse 2.4s infinite;
+  }
+  @keyframes sched-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(229,72,72,0.5), 0 2px 6px rgba(0,0,0,0.5); }
+    50% { box-shadow: 0 0 0 6px rgba(229,72,72,0), 0 2px 6px rgba(0,0,0,0.5); }
+  }
+
+  /* Lasso rectangle */
+  .sched-lasso-rect {
+    position: absolute;
+    border: 1.5px dashed var(--gold);
+    background: rgba(226,176,74,0.08);
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  /* Smaller-screen safety: stack sidebar below map under 1100px */
+  @media (max-width: 1100px) {
+    .sched-body {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr 320px;
+      height: auto;
+    }
+    .sched-sidebar { border-left: none; border-top: 1px solid var(--border); }
+  }
+
 </style>
 </head>
 <body>
@@ -230,6 +867,7 @@
       <button class="tab" onclick="switchTab('stores')">🏪 Stores</button>
       <button class="tab" onclick="switchTab('map')">🗺️ Map</button>
       <button class="tab" onclick="switchTab('routes')">🛣️ Routes</button>
+      <button class="tab" onclick="switchTab('schedule')" data-scheduler-only style="display:none">📅 Schedule</button>
       <button class="tab" onclick="switchTab('lot')">🔬 Lot Lookup</button>
       <button class="tab" onclick="switchTab('drivers')">👤 Drivers</button>
       <button class="tab" onclick="switchTab('access')" data-super-admin-only style="display:none">🔐 Access</button>
@@ -505,6 +1143,108 @@
           <button class="btn-primary" onclick="window.saveRoute()" style="background:var(--gold);color:var(--bg);border:none;padding:8px 14px;border-radius:6px;font-weight:600;cursor:pointer">Save</button>
         </div>
       </div>
+    </div>
+
+        <!-- ════════════════════════════════════════════════════════════════════
+         📅 SCHEDULE TAB
+         Schedule builder for depot managers + admins. Cluster orders +
+         overdue stops on a Mapbox map, assign to drivers per day, publish
+         to optimize routes (Mapbox) and send weekly emails (Resend).
+         ════════════════════════════════════════════════════════════════════ -->
+    <div id="tab-schedule" style="display:none">
+
+      <!-- Header bar: week nav, depot chips, counters, publish -->
+      <div class="sched-header">
+        <div class="sched-header-left">
+          <div class="sched-week-nav">
+            <button class="sched-nav-btn" id="sched-week-prev" title="Previous week">‹</button>
+            <span class="sched-week-label" id="sched-week-label">Loading…</span>
+            <button class="sched-nav-btn" id="sched-week-next" title="Next week">›</button>
+          </div>
+          <div class="sched-depot-chips" id="sched-depot-chips">
+            <!-- Filter chips render here per logged-in user's depot scope -->
+          </div>
+        </div>
+        <div class="sched-header-right">
+          <div class="sched-counters" id="sched-counters">
+            <div class="sched-counter active" data-filter="orders">
+              <span class="sw" style="background:var(--mm-cyan)"></span>
+              <span class="num" id="sched-count-orders">—</span>
+              <span class="lbl">orders</span>
+            </div>
+            <div class="sched-counter active" data-filter="overdue">
+              <span class="sw" style="background:#ff7a3a"></span>
+              <span class="num" id="sched-count-overdue">—</span>
+              <span class="lbl">overdue for a visit</span>
+            </div>
+            <div class="sched-counter" data-filter="scheduled">
+              <span class="sw" style="background:var(--muted)"></span>
+              <span class="num" id="sched-count-scheduled">0</span>
+              <span class="lbl">scheduled</span>
+            </div>
+          </div>
+          <button class="sched-publish-btn" id="sched-publish-btn" disabled>
+            Publish 0 plans →
+          </button>
+        </div>
+      </div>
+
+      <!-- Main 2-column body: map + sidebar -->
+      <div class="sched-body">
+        <div class="sched-map-wrap">
+          <div id="sched-map"></div>
+          <div class="sched-map-overlay sched-legend">
+            <div class="sched-legend-title">Legend</div>
+            <div class="sched-legend-row">
+              <span class="sw" style="background:var(--mm-cyan)"></span>
+              <span>Order pending</span>
+            </div>
+            <div class="sched-legend-row">
+              <span class="sw sw-gradient"></span>
+              <span>Overdue for a visit</span>
+            </div>
+            <div class="sched-legend-row sched-legend-hint">
+              color & size grow with how overdue
+            </div>
+            <div class="sched-legend-row">
+              <span class="sw" style="background:var(--muted)"></span>
+              <span>Already scheduled</span>
+            </div>
+          </div>
+          <div class="sched-map-overlay sched-lasso-hint">
+            Hold <kbd>Shift</kbd> + drag to lasso · click pins to select · <kbd>Esc</kbd> to clear
+          </div>
+        </div>
+
+        <aside class="sched-sidebar">
+          <div class="sched-tabs">
+            <button class="sched-side-tab active" data-side-tab="selection">Selection</button>
+            <button class="sched-side-tab" data-side-tab="all">All Stops</button>
+          </div>
+          <div class="sched-sidebar-content" id="sched-sidebar-content">
+            <div class="sched-empty">
+              <p>No stops selected.</p>
+              <p class="muted">Click pins or shift+drag on the map to lasso a cluster.</p>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      <!-- Schedule grid: drivers × days for the current week -->
+      <div class="sched-strip">
+        <div class="sched-strip-header">
+          <h3>This Week's Day-Plans</h3>
+          <div class="sched-strip-right">
+            <button class="sched-clear-driver" id="sched-clear-driver-btn" style="display:none">Show all drivers</button>
+          </div>
+        </div>
+        <div class="sched-grid" id="sched-grid">
+          <div class="sched-empty" style="grid-column:1/-1">
+            <p>Loading schedule…</p>
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <!-- Lot Lookup Tab -->
@@ -969,6 +1709,12 @@ function applyRoleUI(roleInfo) {
   // Hide super-admin-only elements (e.g., the Access tab button)
   document.querySelectorAll('[data-super-admin-only]').forEach(el => {
     el.style.display = roleInfo.is_super_admin ? '' : 'none';
+  });
+  // Hide scheduler-only elements (Schedule tab) for users who aren't an admin or depot manager.
+  // Both 'admin' and 'depot_manager' roles can build schedules; everyone else cannot see it.
+  document.querySelectorAll('[data-scheduler-only]').forEach(el => {
+    const canSchedule = roleInfo.role === 'admin' || roleInfo.role === 'depot_manager';
+    el.style.display = canSchedule ? '' : 'none';
   });
   // For depot managers: inject CSS that hides row-level admin actions.
   // We match by button onclick containing these admin-only function names.
@@ -1960,7 +2706,7 @@ document.getElementById('store-modal').addEventListener('click', e => { if (e.ta
 
 // ── Tabs ──
 window.switchTab = (tab) => {
-  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','lot','drivers','access'].forEach(t => { const el = document.getElementById(`tab-${t}`); if (el) el.style.display = t===tab?'block':'none'; });
+  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','schedule','lot','drivers','access'].forEach(t => { const el = document.getElementById(`tab-${t}`); if (el) el.style.display = t===tab?'block':'none'; });
   document.querySelectorAll('.tab').forEach((el) => {
     const m = (el.getAttribute('onclick')||'').match(/switchTab\('([^']+)'\)/);
     el.classList.toggle('active', !!m && m[1] === tab);
@@ -1971,6 +2717,7 @@ window.switchTab = (tab) => {
   if (tab==='orders') loadOrders();
   if (tab==='map') initMapTab();
   if (tab==='routes') loadRoutes();
+  if (tab==='schedule') initScheduleTab();
   if (tab==='access') loadAccess();
 };
 
@@ -4042,6 +4789,36 @@ window.removeDepotManagerRow = async (depot_manager_id, email, depot_code) => {
   if (result?.error) { alert(`Error: ${result.error}`); return; }
   await loadAccess();
 };
+
+// ════════════════════════════════════════════════════════════════════
+// 📅 SCHEDULE TAB — implementation lands in chunks 2 + 3
+// ════════════════════════════════════════════════════════════════════
+async function initScheduleTab() {
+  // Stub for chunk 1. Real implementation in chunk 2 (data loading, map,
+  // grid rendering) and chunk 3 (assign/move/cell-edit/publish).
+  const grid = document.getElementById('sched-grid');
+  if (grid && !grid.dataset.placeholderShown) {
+    grid.innerHTML = `
+      <div class="sched-empty" style="grid-column:1/-1; padding:60px 20px;">
+        <p style="font-size:14px; margin-bottom:6px;">Schedule builder UI is here. ✨</p>
+        <p class="muted">Data loading + interactivity arrive in the next chunks.</p>
+      </div>
+    `;
+    grid.dataset.placeholderShown = '1';
+  }
+  const label = document.getElementById('sched-week-label');
+  if (label) {
+    // Show next week's date range as a placeholder
+    const now = new Date();
+    const day = now.getDay();
+    const daysToNextMon = (8 - day) % 7 || 7;
+    const monday = new Date(now); monday.setDate(now.getDate() + daysToNextMon);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const fmt = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    label.textContent = `Week of ${fmt(monday)} → ${fmt(sunday)}`;
+  }
+}
+
 </script>
 </body>
 </html>
