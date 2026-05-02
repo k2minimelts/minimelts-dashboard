@@ -5088,7 +5088,7 @@ async function schedLoadOrdersAndOverdue() {
   const overduePromise = sbFetch(
     `stores_with_predicted_visit?select=store_id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,depot,days_until_due,predicted_next_visit_at` +
     `&depot_id=in.(${depotIdList})` +
-    `&days_until_due=lte.30` +
+    `&days_until_due=lte.0` +
     `&lat=not.is.null&lng=not.is.null` +
     `&limit=2000`
   );
@@ -5266,16 +5266,36 @@ function schedInitMap() {
 }
 
 function schedFitMapToDepots() {
+  // Prefer fitting to actual store cluster — far more accurate than just depot
+  // points, especially when a depot's territory is wide (MIS covers Windsor →
+  // Thunder Bay, AIR covers Calgary → Edmonton, etc.).
   if (!schedState.map) return;
+  const visibleStores = [];
+  for (const s of schedState.storesIndex.values()) {
+    if (s.lat == null || s.lng == null) continue;
+    if (schedIsFiltered(s)) continue;
+    visibleStores.push(s);
+  }
+  // If we have stores, fit to their bounds — also include active depots so the
+  // depot is always on screen (good context for the manager).
+  if (visibleStores.length > 0) {
+    const bounds = new mapboxgl.LngLatBounds();
+    for (const s of visibleStores) bounds.extend([s.lng, s.lat]);
+    const activeDeps = schedState.userDepots.filter(d => schedState.activeDepots.has(d.code) && d.lat != null && d.lng != null);
+    for (const d of activeDeps) bounds.extend([Number(d.lng), Number(d.lat)]);
+    schedState.map.fitBounds(bounds, { padding: 60, duration: 600, maxZoom: 9 });
+    return;
+  }
+  // Fallback: no stores yet. Fit to depots only.
   const active = schedState.userDepots.filter(d => schedState.activeDepots.has(d.code) && d.lat != null && d.lng != null);
   if (active.length === 0) return;
   if (active.length === 1) {
-    schedState.map.easeTo({ center: [Number(active[0].lng), Number(active[0].lat)], zoom: 7, duration: 600 });
+    schedState.map.easeTo({ center: [Number(active[0].lng), Number(active[0].lat)], zoom: 9, duration: 600 });
     return;
   }
   const bounds = new mapboxgl.LngLatBounds();
   for (const d of active) bounds.extend([Number(d.lng), Number(d.lat)]);
-  schedState.map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 7 });
+  schedState.map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 9 });
 }
 
 function schedRenderMarkers() {
