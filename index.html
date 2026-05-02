@@ -212,13 +212,16 @@
     font-weight: 600;
     letter-spacing: 0.04em;
     transition: all 0.1s;
+    opacity: 0.55;
   }
-  .sched-depot-chip:hover { color: var(--text); }
+  .sched-depot-chip:hover { color: var(--text); opacity: 0.85; }
   .sched-depot-chip.active {
-    background: rgba(226,176,74,0.15);
-    color: var(--gold);
-    border-color: rgba(226,176,74,0.45);
+    background: var(--gold);
+    color: var(--bg);
+    border-color: var(--gold);
+    opacity: 1;
   }
+  .sched-depot-chip.active:hover { opacity: 0.92; }
 
   .sched-counters { display: flex; gap: 6px; }
   .sched-counter {
@@ -5023,18 +5026,34 @@ function schedRenderDepotChips() {
   }
   wrap.innerHTML = schedState.userDepots.map(d => {
     const active = schedState.activeDepots.has(d.code) ? 'active' : '';
-    return `<button class="sched-depot-chip ${active}" data-depot-code="${schedEscapeHtml(d.code)}" title="${schedEscapeHtml(d.name)}">${schedEscapeHtml(d.code)}</button>`;
+    return `<button class="sched-depot-chip ${active}" data-depot-code="${schedEscapeHtml(d.code)}" title="${schedEscapeHtml(d.name)} — click to isolate, shift+click to toggle">${schedEscapeHtml(d.code)}</button>`;
   }).join('');
   wrap.querySelectorAll('.sched-depot-chip').forEach(chip => {
-    chip.addEventListener('click', () => {
+    chip.addEventListener('click', (e) => {
       const code = chip.dataset.depotCode;
-      if (schedState.activeDepots.has(code)) {
-        if (schedState.activeDepots.size === 1) return; // keep at least one active
-        schedState.activeDepots.delete(code);
+      const all = schedState.userDepots.map(d => d.code);
+      if (e.shiftKey) {
+        // Shift+click: toggle this chip individually, leave others alone
+        if (schedState.activeDepots.has(code)) {
+          if (schedState.activeDepots.size === 1) return; // can't deactivate last one
+          schedState.activeDepots.delete(code);
+        } else {
+          schedState.activeDepots.add(code);
+        }
       } else {
-        schedState.activeDepots.add(code);
+        // Plain click: isolate to this depot. If it's already the only active one,
+        // re-expand to all (toggle behavior at the singleton state).
+        const isOnlyActive = schedState.activeDepots.size === 1 && schedState.activeDepots.has(code);
+        if (isOnlyActive) {
+          schedState.activeDepots = new Set(all);
+        } else {
+          schedState.activeDepots = new Set([code]);
+        }
       }
-      chip.classList.toggle('active');
+      // Update all chip visuals to match the new state (not just the clicked one)
+      wrap.querySelectorAll('.sched-depot-chip').forEach(c => {
+        c.classList.toggle('active', schedState.activeDepots.has(c.dataset.depotCode));
+      });
       schedRefreshData();
     });
   });
