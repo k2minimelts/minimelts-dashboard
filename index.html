@@ -1768,6 +1768,7 @@ window.doLogin = async () => {
   }
 
   applyRoleUI(roleInfo);
+  window.roleInfo = roleInfo;
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   loadAll();
@@ -1935,6 +1936,7 @@ window.doSignOut = async () => {
     const roleInfo = await fetchUserRole();
     if (!roleInfo) { saveSession(null); return; }
     applyRoleUI(roleInfo);
+    window.roleInfo = roleInfo;
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('app').style.display = 'block';
     loadAll();
@@ -4791,32 +4793,901 @@ window.removeDepotManagerRow = async (depot_manager_id, email, depot_code) => {
 };
 
 // ════════════════════════════════════════════════════════════════════
-// 📅 SCHEDULE TAB — implementation lands in chunks 2 + 3
+// 📅 SCHEDULE TAB
+// Schedule builder for depot managers + admins. Cluster orders +
+// overdue stops on a Mapbox map, assign to drivers per day, publish
+// to optimize routes (Mapbox) and send weekly emails (Resend).
+// Chunk 2: data loading + rendering. No writes yet.
+// ════════════════════════════════════════════════════════════════════
+
+// State for the schedule tab. All state lives here so it's easy to inspect
+// in the console as window.schedState.
+const schedState = {
+  userDepots: [],          // [{id, code, name, lat, lng}] in user's scope
+  activeDepots: new Set(), // depot codes currently filtered ON
+  filters: { orders: true, overdue: true, scheduled: false },
+  weekStart: null,         // ISO Monday
+  weekEnd: null,           // ISO Sunday (= weekStart + 6)
+  storesIndex: new Map(),  // store_id → store object
+  trips: [],               // trips overlapping the displayed week
+  drivers: [],             // active drivers (sorted)
+  selected: new Set(),     // store_ids in the current selection
+  highlightedDriver: null, // driver_id when a driver row is clicked
+  editingCell: null,       // {driver_id, day_iso} during cell-edit mode (chunk 3)
+  map: null,               // Mapbox GL JS instance
+  markers: new Map(),      // store_id → mapbox Marker
+  lassoActive: false,
+  lassoStart: null,
+  lassoRect: null,
+  workload: {
+    day_hours_max: 10.0,
+    van_loading_hours: 0.5,
+    break_hours: 1.0,
+    service_hours_per_stop: 0.75,
+    productive_hours: 8.5,
+    warn_at_pct: 0.88,
+  },
+  initialized: false,
+};
+window.schedState = schedState; // expose for debugging
+
+// ── Date helpers ──
+const SCHED_WEEKDAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const SCHED_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function schedParseDate(iso) {
+  const [y,m,d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m-1, d, 12));
+}
+function schedFmtDayShort(iso) { return SCHED_WEEKDAYS[schedParseDate(iso).getUTCDay()]; }
+function schedFmtMonthDay(iso) { const d = schedParseDate(iso); return `${SCHED_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`; }
+function schedAddDays(iso, n) {
+  const d = schedParseDate(iso);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function schedTodayIso() {
+  // "Today" in local time, formatted as YYYY-MM-DD
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+function schedNextWeekMonday() {
+  const today = new Date();
+  const day = today.getDay();
+  const daysToNextMon = (8 - day) % 7 || 7;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() + daysToNextMon);
+  return monday.toISOString().slice(0, 10);
+}
+// Workload formula
+function schedEstimateDriveHours(stops) {
+  if (stops.length === 0) return 0;
+  const cities = new Set(stops.map(s => s.ship_city).filter(Boolean));
+  const intra = (stops.length - cities.size) * (5/60);
+  const inter = (cities.size - 1) * 0.5;
+  return intra + inter + 1.0;
+}
+function schedComputeWorkload(stops, isOuter, isInner) {
+  const w = schedState.workload;
+  const service = stops.length * w.service_hours_per_stop;
+  let drive = schedEstimateDriveHours(stops);
+  if (isOuter) drive += 3.5; else if (isInner) drive += 1.0;
+  const productive = service + drive;
+  const overBudget = productive > w.productive_hours;
+  const nearBudget = !overBudget && productive > w.productive_hours * w.warn_at_pct;
+  return { stops: stops.length, service, drive, productive, overBudget, nearBudget,
+           overBy: overBudget ? productive - w.productive_hours : 0 };
+}
+function schedFmtHours(h) {
+  if (h < 0.1) return '0h';
+  const r = Math.round(h * 4) / 4;
+  return Number.isInteger(r) ? `${r}h` : `${r.toFixed(2).replace(/\.?0+$/, '')}h`;
+}
+function schedEscapeHtml(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function schedCadenceStyle(daysOverdue) {
+  if (daysOverdue < 30)  return { color: '#ffc870', size: 'size-md', stale: false };
+  if (daysOverdue < 90)  return { color: '#ff7a3a', size: 'size-md', stale: false };
+  if (daysOverdue < 180) return { color: '#e54848', size: 'size-lg', stale: false };
+  return                       { color: '#e54848', size: 'size-lg', stale: true };
+}
+function schedPinInfo(store) {
+  if (store.assigned) return { color: '#8b949e', size: '', stale: false };
+  if (store.type === 'order') return { color: '#4fc3d4', size: '', stale: false };
+  return schedCadenceStyle(store.days_overdue || 0);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// MAIN INIT
 // ════════════════════════════════════════════════════════════════════
 async function initScheduleTab() {
-  // Stub for chunk 1. Real implementation in chunk 2 (data loading, map,
-  // grid rendering) and chunk 3 (assign/move/cell-edit/publish).
-  const grid = document.getElementById('sched-grid');
-  if (grid && !grid.dataset.placeholderShown) {
-    grid.innerHTML = `
-      <div class="sched-empty" style="grid-column:1/-1; padding:60px 20px;">
-        <p style="font-size:14px; margin-bottom:6px;">Schedule builder UI is here. ✨</p>
-        <p class="muted">Data loading + interactivity arrive in the next chunks.</p>
+  if (schedState.initialized) {
+    schedRefreshData();
+    return;
+  }
+
+  // Load workload constants from app_config
+  try {
+    const rows = await sbFetch('app_config?select=value&key=eq.driver_workload');
+    if (Array.isArray(rows) && rows[0] && rows[0].value) {
+      try {
+        const parsed = typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value;
+        Object.assign(schedState.workload, parsed);
+      } catch (e) { console.warn('[sched] could not parse workload value', e); }
+    }
+  } catch (e) {
+    console.warn('[sched] could not load workload config, using defaults', e);
+  }
+
+  // Resolve depot scope from window.roleInfo (set by the auth bootstrap)
+  await schedResolveUserDepots();
+
+  // Initial week = next Monday
+  schedState.weekStart = schedNextWeekMonday();
+  schedState.weekEnd = schedAddDays(schedState.weekStart, 6);
+
+  // Render chrome
+  schedRenderDepotChips();
+  schedRenderWeekLabel();
+
+  // Load drivers (used by schedule grid)
+  await schedLoadDrivers();
+
+  // Initialize map
+  schedInitMap();
+
+  // Wire week navigation
+  document.getElementById('sched-week-prev').addEventListener('click', () => schedShiftWeek(-7));
+  document.getElementById('sched-week-next').addEventListener('click', () => schedShiftWeek(7));
+
+  // Counters as filter toggles
+  document.querySelectorAll('#sched-counters .sched-counter[data-filter]').forEach(c => {
+    c.addEventListener('click', () => {
+      const t = c.dataset.filter;
+      schedState.filters[t] = !schedState.filters[t];
+      c.classList.toggle('active', schedState.filters[t]);
+      schedRenderMarkers();
+      schedRenderSidebar();
+    });
+  });
+
+  // Sidebar tabs
+  document.querySelectorAll('.sched-side-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.sched-side-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      schedRenderSidebar();
+    });
+  });
+
+  // Esc clears selection
+  document.addEventListener('keydown', e => {
+    const tab = document.getElementById('tab-schedule');
+    if (e.key === 'Escape' && tab && tab.style.display !== 'none') {
+      schedClearSelection();
+    }
+  });
+
+  // "Show all drivers"
+  document.getElementById('sched-clear-driver-btn').addEventListener('click', () => {
+    schedState.highlightedDriver = null;
+    schedRenderAll();
+  });
+
+  schedState.initialized = true;
+  await schedRefreshData();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// USER SCOPE
+// ────────────────────────────────────────────────────────────────────
+async function schedResolveUserDepots() {
+  const role = window.roleInfo;
+  if (!role) {
+    console.warn('[sched] window.roleInfo missing — cannot resolve depots');
+    schedState.userDepots = [];
+    schedState.activeDepots = new Set();
+    return;
+  }
+
+  if (role.role === 'admin') {
+    // Admins see all depots
+    const rows = await sbFetch('depots?select=id,code,name,lat,lng&order=code.asc');
+    schedState.userDepots = Array.isArray(rows) ? rows : [];
+  } else if (role.role === 'depot_manager') {
+    // Depot managers see only their depots — role.depots is an array of depot UUIDs
+    if (!Array.isArray(role.depots) || role.depots.length === 0) {
+      schedState.userDepots = [];
+    } else {
+      const idList = role.depots.map(id => `"${id}"`).join(',');
+      const rows = await sbFetch(`depots?select=id,code,name,lat,lng&id=in.(${idList})&order=code.asc`);
+      schedState.userDepots = Array.isArray(rows) ? rows : [];
+    }
+  } else {
+    schedState.userDepots = [];
+  }
+
+  // All user's depots active by default
+  schedState.activeDepots = new Set(schedState.userDepots.map(d => d.code));
+}
+
+// ────────────────────────────────────────────────────────────────────
+// DEPOT CHIPS
+// ────────────────────────────────────────────────────────────────────
+function schedRenderDepotChips() {
+  const wrap = document.getElementById('sched-depot-chips');
+  if (!wrap) return;
+  if (schedState.userDepots.length === 0) {
+    wrap.innerHTML = '<span style="color:var(--muted);font-size:11px">No depots assigned</span>';
+    return;
+  }
+  wrap.innerHTML = schedState.userDepots.map(d => {
+    const active = schedState.activeDepots.has(d.code) ? 'active' : '';
+    return `<button class="sched-depot-chip ${active}" data-depot-code="${schedEscapeHtml(d.code)}" title="${schedEscapeHtml(d.name)}">${schedEscapeHtml(d.code)}</button>`;
+  }).join('');
+  wrap.querySelectorAll('.sched-depot-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const code = chip.dataset.depotCode;
+      if (schedState.activeDepots.has(code)) {
+        if (schedState.activeDepots.size === 1) return; // keep at least one active
+        schedState.activeDepots.delete(code);
+      } else {
+        schedState.activeDepots.add(code);
+      }
+      chip.classList.toggle('active');
+      schedRefreshData();
+    });
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────
+// WEEK NAV
+// ────────────────────────────────────────────────────────────────────
+function schedRenderWeekLabel() {
+  const el = document.getElementById('sched-week-label');
+  if (!el) return;
+  const startStr = `${schedFmtDayShort(schedState.weekStart)} ${schedFmtMonthDay(schedState.weekStart)}`;
+  const endStr = `${schedFmtDayShort(schedState.weekEnd)} ${schedFmtMonthDay(schedState.weekEnd)}`;
+  el.textContent = `Week of ${startStr} → ${endStr}`;
+}
+function schedShiftWeek(deltaDays) {
+  schedState.weekStart = schedAddDays(schedState.weekStart, deltaDays);
+  schedState.weekEnd = schedAddDays(schedState.weekStart, 6);
+  schedRenderWeekLabel();
+  schedLoadTripsForWeek().then(() => schedRenderAll());
+}
+
+// ────────────────────────────────────────────────────────────────────
+// DATA LOADING
+// ────────────────────────────────────────────────────────────────────
+async function schedRefreshData() {
+  await Promise.all([
+    schedLoadOrdersAndOverdue(),
+    schedLoadTripsForWeek(),
+  ]);
+  schedRenderAll();
+  schedFitMapToDepots();
+}
+
+async function schedLoadOrdersAndOverdue() {
+  const depotCodes = Array.from(schedState.activeDepots);
+  if (depotCodes.length === 0) {
+    schedState.storesIndex = new Map();
+    return;
+  }
+  const depotIds = schedState.userDepots
+    .filter(d => depotCodes.includes(d.code))
+    .map(d => d.id);
+  if (depotIds.length === 0) {
+    schedState.storesIndex = new Map();
+    return;
+  }
+  const depotIdList = depotIds.map(id => `"${id}"`).join(',');
+
+  // Overdue stores via stores_with_predicted_visit view
+  const overduePromise = sbFetch(
+    `stores_with_predicted_visit?select=store_id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,depot,days_until_due,predicted_next_visit_at` +
+    `&depot_id=in.(${depotIdList})` +
+    `&days_until_due=lte.30` +
+    `&lat=not.is.null&lng=not.is.null` +
+    `&limit=2000`
+  );
+
+  // Pending unscheduled orders
+  const ordersPromise = sbFetch(
+    `orders?select=id,store_id,submitted_at,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
+    `&status=eq.pending&trip_stop_id=is.null` +
+    `&limit=500`
+  );
+
+  let overdueRows = [], orderRows = [];
+  try {
+    [overdueRows, orderRows] = await Promise.all([overduePromise, ordersPromise]);
+    if (!Array.isArray(overdueRows)) overdueRows = [];
+    if (!Array.isArray(orderRows)) orderRows = [];
+  } catch (e) {
+    console.error('[sched] failed to load orders/overdue', e);
+    schedState.storesIndex = new Map();
+    return;
+  }
+
+  const idx = new Map();
+
+  for (const r of overdueRows) {
+    if (r.lat == null || r.lng == null) continue;
+    const days = r.days_until_due == null ? 0 : -r.days_until_due;
+    if (days < -30) continue; // safety; shouldn't happen with our filter
+    idx.set(r.store_id, {
+      id: r.store_id,
+      qb_name: r.qb_name,
+      ship_addr1: r.ship_addr1,
+      ship_city: r.ship_city,
+      province: r.province,
+      lat: Number(r.lat),
+      lng: Number(r.lng),
+      depot_id: r.depot_id,
+      depot: r.depot,
+      type: 'overdue',
+      days_overdue: Math.max(0, days),
+      assigned: false,
+    });
+  }
+
+  // Filter orders to active depot scope on the client side
+  // (PostgREST nested-table filtering can be unreliable across versions)
+  for (const o of orderRows) {
+    const s = o.store;
+    if (!s || s.lat == null || s.lng == null) continue;
+    if (!depotIds.includes(s.depot_id)) continue;
+    idx.set(s.id, {
+      id: s.id,
+      qb_name: s.qb_name,
+      ship_addr1: s.ship_addr1,
+      ship_city: s.ship_city,
+      province: s.province,
+      lat: Number(s.lat),
+      lng: Number(s.lng),
+      depot_id: s.depot_id,
+      depot: null,
+      type: 'order',
+      days_overdue: 0,
+      assigned: false,
+      order_id: o.id,
+    });
+  }
+
+  schedState.storesIndex = idx;
+  schedMarkAssignedStores();
+}
+
+function schedMarkAssignedStores() {
+  for (const s of schedState.storesIndex.values()) s.assigned = false;
+  for (const trip of schedState.trips) {
+    for (const day of trip.days || []) {
+      for (const stop of day.stops || []) {
+        const existing = schedState.storesIndex.get(stop.store_id);
+        if (existing) {
+          existing.assigned = true;
+        } else if (stop.store) {
+          // Add stops that are scheduled but not in current orders/overdue scope
+          schedState.storesIndex.set(stop.store_id, {
+            id: stop.store_id,
+            qb_name: stop.store.qb_name,
+            ship_addr1: stop.store.ship_addr1,
+            ship_city: stop.store.ship_city,
+            province: stop.store.province,
+            lat: stop.store.lat != null ? Number(stop.store.lat) : null,
+            lng: stop.store.lng != null ? Number(stop.store.lng) : null,
+            depot_id: stop.store.depot_id,
+            type: 'overdue',
+            days_overdue: 0,
+            assigned: true,
+          });
+        }
+      }
+    }
+  }
+}
+
+async function schedLoadDrivers() {
+  try {
+    const rows = await sbFetch('drivers?select=id,name,email,active&active=eq.true&order=name.asc');
+    schedState.drivers = Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    console.error('[sched] failed to load drivers', e);
+    schedState.drivers = [];
+  }
+}
+
+async function schedLoadTripsForWeek() {
+  const depotCodes = Array.from(schedState.activeDepots);
+  if (depotCodes.length === 0) { schedState.trips = []; return; }
+  const depotIds = schedState.userDepots
+    .filter(d => depotCodes.includes(d.code))
+    .map(d => d.id);
+  if (depotIds.length === 0) { schedState.trips = []; return; }
+  const depotIdList = depotIds.map(id => `"${id}"`).join(',');
+
+  const ws = schedState.weekStart;
+  const we = schedState.weekEnd;
+  const select =
+    'id,driver_id,depot_id,start_date,end_date,status,notes,published_at,' +
+    'days:trip_days(id,day_date,day_index,status,estimated_drive_hours,' +
+      'stops:trip_stops(id,sequence,source,manager_note,store_id,' +
+        'store:stores(qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)))';
+  const url = `trips?select=${encodeURIComponent(select)}` +
+    `&depot_id=in.(${depotIdList})` +
+    `&start_date=lte.${we}&end_date=gte.${ws}` +
+    `&status=in.(draft,published,in_progress,completed)`;
+
+  try {
+    const rows = await sbFetch(url);
+    if (!Array.isArray(rows)) { schedState.trips = []; return; }
+    schedState.trips = rows.map(t => ({
+      ...t,
+      days: (t.days || []).slice().sort((a, b) => a.day_index - b.day_index).map(d => ({
+        ...d,
+        stops: (d.stops || []).slice().sort((a, b) => a.sequence - b.sequence),
+      })),
+    }));
+  } catch (e) {
+    console.error('[sched] failed to load trips', e);
+    schedState.trips = [];
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// MAP
+// ════════════════════════════════════════════════════════════════════
+function schedInitMap() {
+  if (schedState.map) return;
+  if (typeof mapboxgl === 'undefined') {
+    console.error('[sched] Mapbox GL JS not loaded');
+    return;
+  }
+  if (!mapboxgl.accessToken && typeof MAPBOX_TOKEN !== 'undefined') {
+    mapboxgl.accessToken = MAPBOX_TOKEN;
+  }
+  schedState.map = new mapboxgl.Map({
+    container: 'sched-map',
+    style: 'mapbox://styles/mapbox/dark-v11',
+    center: [-100, 56],
+    zoom: 3,
+    attributionControl: { compact: true },
+  });
+  schedState.map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+  schedState.map.on('load', () => schedFitMapToDepots());
+
+  // Lasso selection on shift-drag
+  const mapEl = document.getElementById('sched-map');
+  mapEl.addEventListener('mousedown', schedLassoStart);
+  document.addEventListener('mousemove', schedLassoMove);
+  document.addEventListener('mouseup', schedLassoEnd);
+}
+
+function schedFitMapToDepots() {
+  if (!schedState.map) return;
+  const active = schedState.userDepots.filter(d => schedState.activeDepots.has(d.code) && d.lat != null && d.lng != null);
+  if (active.length === 0) return;
+  if (active.length === 1) {
+    schedState.map.easeTo({ center: [Number(active[0].lng), Number(active[0].lat)], zoom: 7, duration: 600 });
+    return;
+  }
+  const bounds = new mapboxgl.LngLatBounds();
+  for (const d of active) bounds.extend([Number(d.lng), Number(d.lat)]);
+  schedState.map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 7 });
+}
+
+function schedRenderMarkers() {
+  if (!schedState.map) return;
+  // Drop markers for stores no longer in index
+  for (const [id, marker] of schedState.markers) {
+    if (!schedState.storesIndex.has(id)) {
+      marker.remove();
+      schedState.markers.delete(id);
+    }
+  }
+  // Add or update each store
+  for (const store of schedState.storesIndex.values()) {
+    if (store.lat == null || store.lng == null) continue;
+    const filtered = schedIsFiltered(store);
+    let marker = schedState.markers.get(store.id);
+    if (filtered) {
+      if (marker) { marker.remove(); schedState.markers.delete(store.id); }
+      continue;
+    }
+    if (!marker) {
+      const el = schedMakePinElement(store);
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        schedTogglePinSelect(store.id);
+      });
+      marker = new mapboxgl.Marker({ element: el })
+        .setLngLat([store.lng, store.lat])
+        .setPopup(new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false })
+          .setHTML(`<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`))
+        .addTo(schedState.map);
+      el.addEventListener('mouseenter', () => marker.togglePopup());
+      el.addEventListener('mouseleave', () => marker.togglePopup());
+      schedState.markers.set(store.id, marker);
+    } else {
+      schedUpdatePinElement(marker.getElement(), store);
+    }
+  }
+}
+
+function schedMakePinElement(store) {
+  const el = document.createElement('div');
+  schedUpdatePinElement(el, store);
+  return el;
+}
+
+function schedUpdatePinElement(el, store) {
+  const info = schedPinInfo(store);
+  const isSelected = schedState.selected.has(store.id);
+  const isHighlight = schedState.highlightedDriver && schedIsStoreOnDriver(store.id, schedState.highlightedDriver);
+  const classes = ['sched-pin'];
+  if (info.size) classes.push(info.size);
+  if (isSelected) classes.push('selected');
+  if (store.assigned && !isHighlight) classes.push('scheduled');
+  if (isHighlight) classes.push('driver-highlight');
+  if (info.stale && !store.assigned && !isSelected) classes.push('stale');
+  el.className = classes.join(' ');
+  let bg = info.color;
+  if (isHighlight) bg = store.type === 'order' ? '#4fc3d4' : schedCadenceStyle(store.days_overdue || 0).color;
+  el.style.background = bg;
+}
+
+function schedIsFiltered(store) {
+  if (store.assigned) {
+    if (schedState.highlightedDriver) return !schedIsStoreOnDriver(store.id, schedState.highlightedDriver);
+    return !schedState.filters.scheduled;
+  }
+  if (schedState.highlightedDriver) return true;
+  if (store.type === 'order' && !schedState.filters.orders) return true;
+  if (store.type === 'overdue' && !schedState.filters.overdue) return true;
+  return false;
+}
+
+function schedIsStoreOnDriver(storeId, driverId) {
+  for (const trip of schedState.trips) {
+    if (trip.driver_id !== driverId) continue;
+    for (const d of trip.days || []) {
+      for (const s of d.stops || []) {
+        if (s.store_id === storeId) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Lasso
+function schedLassoStart(e) {
+  if (!e.shiftKey) return;
+  const tab = document.getElementById('tab-schedule');
+  if (!tab || tab.style.display === 'none') return;
+  schedState.lassoActive = true;
+  schedState.lassoStart = { x: e.clientX, y: e.clientY };
+  if (schedState.map) schedState.map.dragPan.disable();
+  const rect = document.createElement('div');
+  rect.className = 'sched-lasso-rect';
+  document.body.appendChild(rect);
+  schedState.lassoRect = rect;
+  e.preventDefault();
+}
+function schedLassoMove(e) {
+  if (!schedState.lassoActive || !schedState.lassoRect) return;
+  const x = Math.min(schedState.lassoStart.x, e.clientX);
+  const y = Math.min(schedState.lassoStart.y, e.clientY);
+  const w = Math.abs(e.clientX - schedState.lassoStart.x);
+  const h = Math.abs(e.clientY - schedState.lassoStart.y);
+  Object.assign(schedState.lassoRect.style, { left: x+'px', top: y+'px', width: w+'px', height: h+'px' });
+}
+function schedLassoEnd(e) {
+  if (!schedState.lassoActive) return;
+  schedState.lassoActive = false;
+  if (schedState.map) schedState.map.dragPan.enable();
+  if (!schedState.lassoRect) return;
+  const mapEl = document.getElementById('sched-map');
+  const mapRect = mapEl.getBoundingClientRect();
+  const x1 = Math.min(schedState.lassoStart.x, e.clientX) - mapRect.left;
+  const y1 = Math.min(schedState.lassoStart.y, e.clientY) - mapRect.top;
+  const x2 = Math.max(schedState.lassoStart.x, e.clientX) - mapRect.left;
+  const y2 = Math.max(schedState.lassoStart.y, e.clientY) - mapRect.top;
+  if (x2 - x1 < 5 || y2 - y1 < 5) {
+    schedState.lassoRect.remove(); schedState.lassoRect = null; return;
+  }
+  // Clamp to map bounds
+  const w = mapRect.width, h = mapRect.height;
+  const sw = schedState.map.unproject([Math.max(0, Math.min(w, x1)), Math.max(0, Math.min(h, y2))]);
+  const ne = schedState.map.unproject([Math.max(0, Math.min(w, x2)), Math.max(0, Math.min(h, y1))]);
+  const minLng = Math.min(sw.lng, ne.lng), maxLng = Math.max(sw.lng, ne.lng);
+  const minLat = Math.min(sw.lat, ne.lat), maxLat = Math.max(sw.lat, ne.lat);
+  let added = 0;
+  for (const store of schedState.storesIndex.values()) {
+    if (schedIsFiltered(store)) continue;
+    if (store.lng >= minLng && store.lng <= maxLng && store.lat >= minLat && store.lat <= maxLat) {
+      if (!schedState.selected.has(store.id)) { schedState.selected.add(store.id); added++; }
+    }
+  }
+  schedState.lassoRect.remove(); schedState.lassoRect = null;
+  if (added > 0) {
+    schedState.highlightedDriver = null;
+    schedToast(`Selected ${added} stops`);
+  }
+  schedRenderAll();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// SELECTION
+// ════════════════════════════════════════════════════════════════════
+function schedTogglePinSelect(storeId) {
+  if (schedState.selected.has(storeId)) schedState.selected.delete(storeId);
+  else schedState.selected.add(storeId);
+  if (schedState.highlightedDriver) schedState.highlightedDriver = null;
+  schedRenderAll();
+}
+function schedClearSelection() {
+  schedState.selected.clear();
+  schedState.highlightedDriver = null;
+  schedRenderAll();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// SIDEBAR
+// ════════════════════════════════════════════════════════════════════
+function schedRenderSidebar() {
+  const container = document.getElementById('sched-sidebar-content');
+  if (!container) return;
+  const tabBtn = document.querySelector('.sched-side-tab.active');
+  const tab = tabBtn ? tabBtn.dataset.sideTab : 'selection';
+
+  if (tab === 'selection') {
+    if (schedState.selected.size === 0) {
+      container.innerHTML = `<div class="sched-empty">
+        <p>No stops selected.</p>
+        <p class="muted">Click pins or shift+drag on the map to lasso a cluster.</p>
+      </div>`;
+      return;
+    }
+    const selStores = Array.from(schedState.selected)
+      .map(id => schedState.storesIndex.get(id)).filter(Boolean);
+    const orderCount = selStores.filter(s => s.type === 'order').length;
+    const overdueCount = selStores.filter(s => s.type === 'overdue').length;
+    const lateCount = selStores.filter(s => s.type === 'overdue' && (s.days_overdue || 0) > 90).length;
+    container.innerHTML = `
+      <div class="sched-selection-summary">
+        <div class="sched-selection-count">${selStores.length}</div>
+        <div class="sched-selection-label">stops selected</div>
+        <div class="sched-selection-breakdown">
+          <span><strong>${orderCount}</strong> orders</span>
+          <span><strong>${overdueCount}</strong> overdue</span>
+          ${lateCount ? `<span class="late"><strong>${lateCount}</strong> long-overdue</span>` : ''}
+        </div>
       </div>
+      <div class="sched-empty" style="padding:24px 16px">
+        <p class="muted">Assignment UI lands in chunk 3.</p>
+      </div>
+      <div class="sched-stop-list-header">In selection</div>
+      <div>${selStores.map(s => schedStopRowHtml(s, true)).join('')}</div>
     `;
-    grid.dataset.placeholderShown = '1';
+    schedWireStopRows();
+  } else {
+    let visible = Array.from(schedState.storesIndex.values()).filter(s => !schedIsFiltered(s));
+    visible.sort((a, b) => (b.days_overdue || -999) - (a.days_overdue || -999));
+    container.innerHTML = `
+      <div class="sched-stop-list-header">${visible.length} stops · sorted by overdue</div>
+      <div>${visible.map(s => schedStopRowHtml(s, schedState.selected.has(s.id))).join('')}</div>
+    `;
+    schedWireStopRows();
   }
-  const label = document.getElementById('sched-week-label');
-  if (label) {
-    // Show next week's date range as a placeholder
-    const now = new Date();
-    const day = now.getDay();
-    const daysToNextMon = (8 - day) % 7 || 7;
-    const monday = new Date(now); monday.setDate(now.getDate() + daysToNextMon);
-    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
-    const fmt = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    label.textContent = `Week of ${fmt(monday)} → ${fmt(sunday)}`;
+}
+
+function schedStopRowHtml(s, isSelected) {
+  const info = schedPinInfo(s);
+  const lateness = (s.days_overdue || 0) > 0
+    ? `<span class="${(s.days_overdue || 0) > 90 ? 'late' : ''}">${s.days_overdue}d overdue</span>`
+    : '';
+  const orderTag = s.type === 'order' ? `<span style="color:#4fc3d4">order pending</span>` : '';
+  return `<div class="sched-stop-row ${isSelected ? 'selected' : ''}" data-id="${schedEscapeHtml(s.id)}">
+    <span class="sw" style="background:${info.color}"></span>
+    <div class="sched-stop-info">
+      <div class="sched-stop-name">${schedEscapeHtml(s.qb_name)}</div>
+      <div class="sched-stop-meta">
+        <span>${schedEscapeHtml([s.ship_city, s.province].filter(Boolean).join(', '))}</span>
+        ${lateness}
+        ${orderTag}
+      </div>
+    </div>
+  </div>`;
+}
+
+function schedWireStopRows() {
+  document.querySelectorAll('.sched-stop-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const s = schedState.storesIndex.get(row.dataset.id);
+      schedTogglePinSelect(row.dataset.id);
+      if (s && schedState.map && s.lat != null) {
+        schedState.map.flyTo({ center: [s.lng, s.lat], zoom: Math.max(schedState.map.getZoom(), 9), duration: 600 });
+      }
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════
+// SCHEDULE GRID
+// ════════════════════════════════════════════════════════════════════
+function schedRenderGrid() {
+  const grid = document.getElementById('sched-grid');
+  if (!grid) return;
+  const drivers = schedState.drivers;
+  if (drivers.length === 0) {
+    grid.innerHTML = `<div class="sched-empty" style="grid-column:1/-1"><p>No active drivers found.</p></div>`;
+    return;
   }
+  delete grid.dataset.placeholderShown;
+
+  const today = schedTodayIso();
+  const days = Array.from({ length: 7 }, (_, i) => schedAddDays(schedState.weekStart, i));
+  const headerCells = ['<div class="sched-cell sched-day-header"></div>'].concat(
+    days.map(iso => {
+      const isToday = iso === today;
+      return `<div class="sched-cell sched-day-header ${isToday ? 'today' : ''}">
+        ${schedFmtDayShort(iso)}
+        <span class="date">${schedParseDate(iso).getUTCDate()}</span>
+      </div>`;
+    })
+  );
+
+  const rows = drivers.map(driver => {
+    const isHighlight = schedState.highlightedDriver === driver.id;
+    const driverTrips = schedState.trips.filter(t => t.driver_id === driver.id);
+    let totalStops = 0;
+    for (const t of driverTrips) for (const d of t.days || []) totalStops += (d.stops || []).length;
+    const cells = [`<div class="sched-cell sched-driver-label ${isHighlight ? 'active' : ''}" data-driver-id="${driver.id}">
+      <span title="${schedEscapeHtml(driver.email)}">${schedEscapeHtml(driver.name)}</span>
+      <span class="total">${totalStops}</span>
+    </div>`];
+
+    for (const iso of days) {
+      let foundDay = null, foundTrip = null;
+      for (const t of driverTrips) {
+        if (iso < t.start_date || iso > t.end_date) continue;
+        for (const d of t.days || []) {
+          if (d.day_date === iso) { foundDay = d; foundTrip = t; break; }
+        }
+        if (foundDay) break;
+      }
+
+      if (!foundDay) {
+        cells.push(`<div class="sched-cell sched-day-cell" data-driver-id="${driver.id}" data-day-iso="${iso}"><span style="color:var(--muted);opacity:0.5">—</span></div>`);
+        continue;
+      }
+      if (foundDay.status === 'off') {
+        cells.push(`<div class="sched-cell sched-day-cell day-off" data-driver-id="${driver.id}" data-day-iso="${iso}"><div class="sched-day-off-label">OFF</div></div>`);
+        continue;
+      }
+      const stopCount = (foundDay.stops || []).length;
+      const isMulti = foundTrip.start_date !== foundTrip.end_date;
+      const tripDayCount = isMulti ? Math.round((schedParseDate(foundTrip.end_date) - schedParseDate(foundTrip.start_date)) / 86400000) + 1 : 1;
+      const isOuter = isMulti && (foundDay.day_index === 0 || foundDay.day_index === tripDayCount - 1);
+      const isInner = isMulti && !isOuter;
+      const stopsForCalc = (foundDay.stops || []).map(s => ({ ship_city: s.store ? s.store.ship_city : null }));
+      const wl = schedComputeWorkload(stopsForCalc, isOuter, isInner);
+      let driveHours = wl.drive;
+      if (foundDay.estimated_drive_hours != null) driveHours = Number(foundDay.estimated_drive_hours);
+      const productive = (stopCount * schedState.workload.service_hours_per_stop) + driveHours;
+      const overBudget = productive > schedState.workload.productive_hours;
+      const nearBudget = !overBudget && productive > schedState.workload.productive_hours * schedState.workload.warn_at_pct;
+
+      const tripClasses = [];
+      if (isMulti) {
+        tripClasses.push('trip-day');
+        if (foundDay.day_index === 0) tripClasses.push('trip-start');
+        if (foundDay.day_index === tripDayCount - 1) tripClasses.push('trip-end');
+      }
+
+      const capClass = overBudget ? 'over-capacity' : nearBudget ? 'near-capacity' : '';
+      const overTag = overBudget ? `<div class="sched-cap-warning">⚠ over by ${schedFmtHours(productive - schedState.workload.productive_hours)}</div>`
+                    : nearBudget ? `<div class="sched-cap-full">full day</div>` : '';
+      const tripBadge = (isMulti && foundDay.day_index === 0)
+        ? `<div class="sched-trip-badge">${tripDayCount}-day trip${foundTrip.notes ? ' · ' + schedEscapeHtml(foundTrip.notes.substring(0, 22)) + (foundTrip.notes.length > 22 ? '…' : '') : ''}</div>`
+        : '';
+      const tripCont = (isMulti && foundDay.day_index !== 0) ? '<div class="sched-trip-cont">↳ trip continued</div>' : '';
+
+      cells.push(`<div class="sched-cell sched-day-cell has-stops ${capClass} ${tripClasses.join(' ')}"
+        data-driver-id="${driver.id}" data-day-iso="${iso}" data-trip-day-id="${foundDay.id}">
+        <div class="sched-day-summary">
+          <span class="num">${stopCount}</span>
+          <span class="est">stops · ${schedFmtHours(productive)}</span>
+        </div>
+        <div class="sched-day-breakdown">${schedFmtHours(stopCount * schedState.workload.service_hours_per_stop)} svc + ${schedFmtHours(driveHours)} drive</div>
+        ${overTag}
+        ${tripBadge}
+        ${tripCont}
+      </div>`);
+    }
+    return cells.join('');
+  });
+
+  grid.innerHTML = headerCells.join('') + rows.join('');
+  grid.querySelectorAll('.sched-driver-label').forEach(el => {
+    el.addEventListener('click', () => schedToggleDriverHighlight(el.dataset.driverId));
+  });
+}
+
+function schedToggleDriverHighlight(driverId) {
+  if (schedState.highlightedDriver === driverId) {
+    schedState.highlightedDriver = null;
+  } else {
+    schedState.highlightedDriver = driverId;
+    schedState.selected.clear();
+    const stops = [];
+    for (const t of schedState.trips) {
+      if (t.driver_id !== driverId) continue;
+      for (const d of t.days || []) {
+        for (const s of d.stops || []) {
+          const ss = schedState.storesIndex.get(s.store_id);
+          if (ss && ss.lat != null) stops.push(ss);
+        }
+      }
+    }
+    if (stops.length > 0 && schedState.map) {
+      const bounds = new mapboxgl.LngLatBounds();
+      for (const s of stops) bounds.extend([s.lng, s.lat]);
+      schedState.map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 11 });
+    }
+  }
+  schedRenderAll();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// COUNTERS
+// ════════════════════════════════════════════════════════════════════
+function schedRenderCounters() {
+  let orderCount = 0, overdueCount = 0, scheduledCount = 0;
+  for (const s of schedState.storesIndex.values()) {
+    if (s.assigned) { scheduledCount++; continue; }
+    if (s.type === 'order') orderCount++;
+    else if (s.type === 'overdue') overdueCount++;
+  }
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
+  set('sched-count-orders', orderCount);
+  set('sched-count-overdue', overdueCount);
+  set('sched-count-scheduled', scheduledCount);
+  const pubBtn = document.getElementById('sched-publish-btn');
+  if (pubBtn) pubBtn.textContent = `Publish 0 plans →`;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// TOAST
+// ════════════════════════════════════════════════════════════════════
+let schedToastTimer = null;
+function schedToast(msg) {
+  let t = document.getElementById('sched-toast-el');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'sched-toast-el';
+    t.className = 'sched-toast';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(schedToastTimer);
+  schedToastTimer = setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// MASTER RENDER
+// ════════════════════════════════════════════════════════════════════
+function schedRenderAll() {
+  schedMarkAssignedStores();
+  schedRenderMarkers();
+  schedRenderSidebar();
+  schedRenderGrid();
+  schedRenderCounters();
+  const btn = document.getElementById('sched-clear-driver-btn');
+  if (btn) btn.style.display = schedState.highlightedDriver ? '' : 'none';
 }
 
 </script>
