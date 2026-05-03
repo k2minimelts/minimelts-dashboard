@@ -767,6 +767,21 @@
   .sched-pin.stale {
     animation: sched-pulse 2.4s infinite;
   }
+  /* Vending pins: diamond shape via rotation, with red ring for needs-attention */
+  .sched-pin.vending {
+    border-radius: 2px;
+    transform: rotate(45deg);
+    border-color: rgba(255,255,255,0.95);
+  }
+  .sched-pin.vending.selected {
+    transform: rotate(45deg);
+  }
+  .sched-pin.vending.needs-attn {
+    box-shadow: 0 0 0 3px rgba(239,68,68,0.55), 0 2px 6px rgba(0,0,0,0.5);
+  }
+  .sched-pin.vending.needs-attn.selected {
+    box-shadow: 0 0 0 3px var(--gold), 0 0 0 6px rgba(239,68,68,0.55), 0 2px 6px rgba(0,0,0,0.5);
+  }
   @keyframes sched-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(229,72,72,0.5), 0 2px 6px rgba(0,0,0,0.5); }
     50% { box-shadow: 0 0 0 6px rgba(229,72,72,0), 0 2px 6px rgba(0,0,0,0.5); }
@@ -1315,6 +1330,11 @@
               <span class="sw" style="background:#ff7a3a"></span>
               <span class="num" id="sched-count-overdue">—</span>
               <span class="lbl">overdue for a visit</span>
+            </div>
+            <div class="sched-counter active" data-filter="vending">
+              <span class="sw" style="background:#e87bb5"></span>
+              <span class="num" id="sched-count-vending">—</span>
+              <span class="lbl">vending</span>
             </div>
             <div class="sched-counter" data-filter="scheduled">
               <span class="sw" style="background:var(--muted)"></span>
@@ -5050,7 +5070,7 @@ window.removeDepotManagerRow = async (depot_manager_id, email, depot_code) => {
 const schedState = {
   userDepots: [],          // [{id, code, name, lat, lng}] in user's scope
   activeDepots: new Set(), // depot codes currently filtered ON
-  filters: { orders: true, overdue: true, scheduled: false },
+  filters: { orders: true, overdue: true, vending: true, scheduled: false },
   weekStart: null,         // ISO Monday
   weekEnd: null,           // ISO Sunday (= weekStart + 6)
   storesIndex: new Map(),  // store_id → store object
@@ -5139,6 +5159,16 @@ function schedCadenceStyle(daysOverdue) {
 function schedPinInfo(store) {
   if (store.assigned) return { color: '#8b949e', size: '', stale: false };
   if (store.type === 'order') return { color: '#4fc3d4', size: '', stale: false };
+  if (store.type === 'vending') {
+    // Pink base; size up if needs restock; "stale" if no sales 3d+ (uses pulse animation)
+    const needsAttn = store.needs_restock || store.no_sales_3d;
+    return {
+      color: '#e87bb5',
+      size: needsAttn ? 'size-lg' : 'size-md',
+      stale: store.no_sales_3d === true,
+      vending: true,
+    };
+  }
   return schedCadenceStyle(store.days_overdue || 0);
 }
 
@@ -5383,13 +5413,22 @@ async function schedLoadOrdersAndOverdue() {
     `&limit=500`
   );
 
-  let overdueRows = [], orderRows = [];
+  // Vending machines (managed, geocoded). Not depot-scoped — vending venues
+  // don't have a depot assignment, so we show all of them and let the manager
+  // visually filter via lasso. The active-depot chip filter still applies to
+  // store pins, so this just means vending stays visible across depots.
+  const vendingPromise = sbFetch(
+    `vending_machines_map?select=id,machine_name,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_refill_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_refill,mqtt_online`
+  );
+
+  let overdueRows = [], orderRows = [], vendingRows = [];
   try {
-    [overdueRows, orderRows] = await Promise.all([overduePromise, ordersPromise]);
+    [overdueRows, orderRows, vendingRows] = await Promise.all([overduePromise, ordersPromise, vendingPromise]);
     if (!Array.isArray(overdueRows)) overdueRows = [];
     if (!Array.isArray(orderRows)) orderRows = [];
+    if (!Array.isArray(vendingRows)) vendingRows = [];
   } catch (e) {
-    console.error('[sched] failed to load orders/overdue', e);
+    console.error('[sched] failed to load orders/overdue/vending', e);
     schedState.storesIndex = new Map();
     return;
   }
@@ -5439,6 +5478,41 @@ async function schedLoadOrdersAndOverdue() {
     });
   }
 
+  // Vending machines. Use a 'vm:' prefix on the storesIndex key to avoid any
+  // chance of UUID collision with stores. Internally we'll always look up by
+  // this prefixed key. The actual vending_machines.id (without prefix) is
+  // stored separately in machine_id for DB writes.
+  for (const m of vendingRows) {
+    if (m.lat == null || m.lng == null) continue;
+    const key = `vm:${m.id}`;
+    idx.set(key, {
+      id: key,
+      machine_id: m.id,                   // raw UUID for trip_stops.linked_machine_id
+      qb_name: m.machine_name || m.venue_name || 'Vending machine',
+      ship_addr1: m.address || '',
+      ship_city: m.city || '',
+      province: m.province || '',
+      lat: Number(m.lat),
+      lng: Number(m.lng),
+      depot_id: null,                     // vending isn't depot-scoped (yet)
+      depot: null,
+      type: 'vending',
+      days_overdue: 0,
+      assigned: false,
+      // Vending-specific fields used by pin styling and sidebar rendering
+      venue_name: m.venue_name || '',
+      venue_chain: m.venue_chain || '',
+      pct_sold: m.pct_sold,
+      qty_sold_since_visit: m.qty_sold_since_visit,
+      capacity_units: m.capacity_units,
+      needs_restock: m.needs_restock === true,
+      no_sales_3d: m.no_sales_3d === true,
+      days_since_last_sale: m.days_since_last_sale,
+      days_since_last_refill: m.days_since_last_refill,
+      mqtt_online: m.mqtt_online === true,
+    });
+  }
+
   schedState.storesIndex = idx;
   schedMarkAssignedStores();
 }
@@ -5448,6 +5522,38 @@ function schedMarkAssignedStores() {
   for (const trip of schedState.trips) {
     for (const day of trip.days || []) {
       for (const stop of day.stops || []) {
+        // Vending stop — look up by 'vm:' prefix
+        if (stop.linked_machine_id) {
+          const key = `vm:${stop.linked_machine_id}`;
+          const existing = schedState.storesIndex.get(key);
+          if (existing) {
+            existing.assigned = true;
+          } else if (stop.machine) {
+            // Machine isn't currently in storesIndex (e.g. unmanaged or coords missing
+            // since last sync) — add a stub so the grid can render it.
+            const venue = stop.machine.venue || {};
+            const lat = stop.machine.lat ?? venue.lat ?? null;
+            const lng = stop.machine.lng ?? venue.lng ?? null;
+            schedState.storesIndex.set(key, {
+              id: key,
+              machine_id: stop.linked_machine_id,
+              qb_name: stop.machine.nayax_machine_number || 'Vending',
+              ship_addr1: venue.address || '',
+              ship_city: venue.city || '',
+              province: venue.province || '',
+              lat: lat != null ? Number(lat) : null,
+              lng: lng != null ? Number(lng) : null,
+              depot_id: null,
+              type: 'vending',
+              days_overdue: 0,
+              assigned: true,
+              venue_name: venue.name || '',
+            });
+          }
+          continue;
+        }
+        // Store stop — existing logic
+        if (!stop.store_id) continue;
         const existing = schedState.storesIndex.get(stop.store_id);
         if (existing) {
           existing.assigned = true;
@@ -5496,8 +5602,10 @@ async function schedLoadTripsForWeek() {
   const select =
     'id,driver_id,depot_id,start_date,end_date,status,notes,published_at,' +
     'days:trip_days(id,day_date,day_index,status,estimated_drive_hours,' +
-      'stops:trip_stops(id,sequence,source,manager_note,store_id,' +
-        'store:stores(qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)))';
+      'stops:trip_stops(id,sequence,source,manager_note,store_id,linked_machine_id,' +
+        'store:stores(qb_name,ship_addr1,ship_city,province,lat,lng,depot_id),' +
+        'machine:vending_machines(id,nayax_machine_number,lat,lng,' +
+          'venue:vending_venues(name,address,city,province,lat,lng))))';
   const url = `trips?select=${encodeURIComponent(select)}` +
     `&depot_id=in.(${depotIdList})` +
     `&start_date=lte.${we}&end_date=gte.${ws}` +
@@ -5728,9 +5836,11 @@ function schedUpdatePinElement(el, store) {
   if (store.assigned && !isHighlight) classes.push('scheduled');
   if (isHighlight) classes.push('driver-highlight');
   if (info.stale && !store.assigned && !isSelected) classes.push('stale');
+  if (info.vending) classes.push('vending');
+  if (info.vending && (store.needs_restock || store.no_sales_3d) && !store.assigned) classes.push('needs-attn');
   el.className = classes.join(' ');
   let bg = info.color;
-  if (isHighlight) bg = store.type === 'order' ? '#4fc3d4' : schedCadenceStyle(store.days_overdue || 0).color;
+  if (isHighlight) bg = store.type === 'order' ? '#4fc3d4' : (store.type === 'vending' ? '#e87bb5' : schedCadenceStyle(store.days_overdue || 0).color);
   el.style.background = bg;
 }
 
@@ -5745,6 +5855,7 @@ function schedIsFiltered(store) {
   if (schedState.highlightedDriver) return true;
   if (store.type === 'order' && !schedState.filters.orders) return true;
   if (store.type === 'overdue' && !schedState.filters.overdue) return true;
+  if (store.type === 'vending' && !schedState.filters.vending) return true;
   return false;
 }
 
@@ -5817,9 +5928,10 @@ function schedLassoEnd(e) {
       }
       continue;
     }
-    // Normal lasso: skip orders/overdue if their filters are off (but allow selection)
+    // Normal lasso: skip orders/overdue/vending if their filters are off (but allow selection)
     if (store.type === 'order' && !schedState.filters.orders) continue;
     if (store.type === 'overdue' && !schedState.filters.overdue) continue;
+    if (store.type === 'vending' && !schedState.filters.vending) continue;
     if (store.lng >= minLng && store.lng <= maxLng && store.lat >= minLat && store.lat <= maxLat) {
       if (!schedState.selected.has(store.id)) { schedState.selected.add(store.id); added++; }
     }
@@ -5873,14 +5985,29 @@ function schedStopRowHtml(s, isSelected) {
     ? `<span class="${(s.days_overdue || 0) > 90 ? 'late' : ''}">${s.days_overdue}d overdue</span>`
     : '';
   const orderTag = s.type === 'order' ? `<span style="color:#4fc3d4">order pending</span>` : '';
+  let vendingMeta = '';
+  if (s.type === 'vending') {
+    const pct = s.pct_sold != null ? Number(s.pct_sold).toFixed(0) : null;
+    const parts = [];
+    if (pct != null) {
+      const pctColor = pct >= 70 ? '#e54848' : (pct >= 40 ? '#ff7a3a' : '#7bc47f');
+      parts.push(`<span style="color:${pctColor};font-weight:600">${pct}% sold</span>`);
+    }
+    if (s.no_sales_3d) parts.push(`<span style="color:#e54848">no sales ${s.days_since_last_sale}d</span>`);
+    vendingMeta = parts.join(' ');
+  }
+  const displayName = s.type === 'vending' && s.venue_name && s.venue_name !== s.qb_name
+    ? `${s.qb_name} <span style="opacity:0.6;font-weight:400">· ${schedEscapeHtml(s.venue_name)}</span>`
+    : schedEscapeHtml(s.qb_name);
   return `<div class="sched-stop-row ${isSelected ? 'selected' : ''}" data-id="${schedEscapeHtml(s.id)}">
-    <span class="sw" style="background:${info.color}"></span>
+    <span class="sw" style="background:${info.color}${info.vending ? ';transform:rotate(45deg);border-radius:1px' : ''}"></span>
     <div class="sched-stop-info">
-      <div class="sched-stop-name">${schedEscapeHtml(s.qb_name)}</div>
+      <div class="sched-stop-name">${displayName}</div>
       <div class="sched-stop-meta">
         <span>${schedEscapeHtml([s.ship_city, s.province].filter(Boolean).join(', '))}</span>
         ${lateness}
         ${orderTag}
+        ${vendingMeta}
       </div>
     </div>
   </div>`;
@@ -6030,15 +6157,17 @@ function schedToggleDriverHighlight(driverId) {
 // COUNTERS
 // ════════════════════════════════════════════════════════════════════
 function schedRenderCounters() {
-  let orderCount = 0, overdueCount = 0, scheduledCount = 0;
+  let orderCount = 0, overdueCount = 0, vendingCount = 0, scheduledCount = 0;
   for (const s of schedState.storesIndex.values()) {
     if (s.assigned) { scheduledCount++; continue; }
     if (s.type === 'order') orderCount++;
     else if (s.type === 'overdue') overdueCount++;
+    else if (s.type === 'vending') vendingCount++;
   }
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
   set('sched-count-orders', orderCount);
   set('sched-count-overdue', overdueCount);
+  set('sched-count-vending', vendingCount);
   set('sched-count-scheduled', scheduledCount);
   const pubBtn = document.getElementById('sched-publish-btn');
   if (pubBtn) pubBtn.textContent = `Publish 0 plans →`;
@@ -6153,9 +6282,20 @@ async function schedAssignSelection(driverId, startDateIso, tripLength, managerN
     .filter(Boolean);
   if (selectedStores.length === 0) return;
 
-  // Determine depot: use the depot of the first selected store (assumes the
-  // selection is from one depot's territory, which the filter chips enforce).
-  const depotId = selectedStores[0].depot_id;
+  // Determine depot. Stores carry their own depot_id. Vending machines don't
+  // (yet) have a depot assignment, so for selections that include vending,
+  // we use the depot from any store in the selection. If the selection is
+  // pure vending, fall back to the user's first active depot.
+  let depotId = null;
+  for (const s of selectedStores) {
+    if (s.depot_id) { depotId = s.depot_id; break; }
+  }
+  if (!depotId) {
+    // Pure vending selection — pick the first active depot the user has.
+    const activeDepotCodes = Array.from(schedState.activeDepots);
+    const firstActiveDepot = schedState.userDepots.find(d => activeDepotCodes.includes(d.code));
+    if (firstActiveDepot) depotId = firstActiveDepot.id;
+  }
   if (!depotId) {
     schedToast('⚠ Cannot determine depot for selection');
     return;
@@ -6231,21 +6371,37 @@ async function schedAssignSelection(driverId, startDateIso, tripLength, managerN
       cursor += size;
     }
 
-    // 4. Insert trip_stops rows
+    // 4. Insert trip_stops rows. Branch by stop type — store stops use store_id,
+    // vending stops use linked_machine_id (and store_id MUST be NULL because of
+    // the trip_stops_target_check constraint).
     const tripStopPayloads = [];
     for (let dayIdx = 0; dayIdx < tripLength; dayIdx++) {
       const chunk = stopChunks[dayIdx];
       for (let stopIdx = 0; stopIdx < chunk.length; stopIdx++) {
         const store = chunk[stopIdx];
-        tripStopPayloads.push({
-          trip_day_id: days[dayIdx].id,
-          store_id: store.id,
-          sequence: (stopIdx + 1) * 10,
-          source: store.type === 'order' ? 'order' : 'cadence_overdue',
-          status: 'planned',
-          linked_order_id: store.order_id || null,
-          manager_note: null,
-        });
+        if (store.type === 'vending') {
+          tripStopPayloads.push({
+            trip_day_id: days[dayIdx].id,
+            store_id: null,
+            linked_machine_id: store.machine_id,
+            sequence: (stopIdx + 1) * 10,
+            source: 'vending_restock',
+            status: 'planned',
+            linked_order_id: null,
+            manager_note: null,
+          });
+        } else {
+          tripStopPayloads.push({
+            trip_day_id: days[dayIdx].id,
+            store_id: store.id,
+            linked_machine_id: null,
+            sequence: (stopIdx + 1) * 10,
+            source: store.type === 'order' ? 'order' : 'cadence_overdue',
+            status: 'planned',
+            linked_order_id: store.order_id || null,
+            manager_note: null,
+          });
+        }
       }
     }
     const tripStops = await schedInsert('trip_stops', tripStopPayloads, true);
@@ -6652,15 +6808,19 @@ function schedRenderCellEditSidebar(container) {
   const isPublished = trip && trip.status === 'published';
 
   const stopsHtml = (cell.stops || []).map((stop, idx) => {
-    const store = schedState.storesIndex.get(stop.store_id) || { qb_name: '?', ship_city: '', province: '' };
+    // Look up by 'vm:' prefix for vending stops, raw store_id otherwise
+    const lookupKey = stop.linked_machine_id ? `vm:${stop.linked_machine_id}` : stop.store_id;
+    const store = schedState.storesIndex.get(lookupKey) || { qb_name: '?', ship_city: '', province: '' };
     const lateness = (store.days_overdue || 0) > 0 ? `<span class="${(store.days_overdue || 0) > 90 ? 'late' : ''}">${store.days_overdue}d overdue</span>` : '';
-    return `<div class="sched-cell-edit-stop" data-trip-stop-id="${schedEscapeHtml(stop.id)}" data-store-id="${schedEscapeHtml(stop.store_id)}">
+    const vendingTag = store.type === 'vending' ? `<span style="color:#e87bb5;font-weight:600">vending</span>` : '';
+    return `<div class="sched-cell-edit-stop" data-trip-stop-id="${schedEscapeHtml(stop.id)}" data-store-id="${schedEscapeHtml(lookupKey || '')}">
       <span class="sched-stop-seq">${idx + 1}</span>
       <div class="sched-stop-info">
         <div class="sched-stop-name">${schedEscapeHtml(store.qb_name)}</div>
         <div class="sched-stop-meta">
           <span>${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>
           ${lateness}
+          ${vendingTag}
         </div>
       </div>
       <button class="sched-stop-remove" title="Remove from this day">×</button>
