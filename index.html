@@ -5542,6 +5542,8 @@ window.schedFix = schedNukeAndRebuildMarkers; // also accessible from console as
 
 function schedRenderMarkers() {
   if (!schedState.map) return;
+  const startMarkers = schedState.markers.size;
+  const indexSize = schedState.storesIndex.size;
   // Drop markers for stores no longer in index
   for (const [id, marker] of schedState.markers) {
     if (!schedState.storesIndex.has(id)) {
@@ -5576,6 +5578,24 @@ function schedRenderMarkers() {
       schedUpdatePinElement(marker.getElement(), store);
     }
   }
+  schedRenderMarkersSafety(startMarkers, indexSize);
+}
+
+// Safety: log and self-heal if a render produced 0 visible markers
+function schedRenderMarkersSafety(startMarkers, indexSize) {
+  const after = schedState.markers.size;
+  if (after === 0 && indexSize > 0) {
+    console.warn('[sched] render produced 0 markers from', indexSize, 'stores. This is a bug. Self-healing by rebuilding...');
+    // Force-clear and try again (might be the only path that works in some races)
+    for (const [id, m] of schedState.markers) m.remove();
+    schedState.markers.clear();
+    // Recurse only once to avoid infinite loop
+    if (!schedRenderMarkers._recursing) {
+      schedRenderMarkers._recursing = true;
+      try { schedRenderMarkers(); }
+      finally { schedRenderMarkers._recursing = false; }
+    }
+  }
 }
 
 function schedMakePinElement(store) {
@@ -5601,6 +5621,9 @@ function schedUpdatePinElement(el, store) {
 }
 
 function schedIsFiltered(store) {
+  // ALWAYS show stores in the active selection (regardless of other filters).
+  // Prevents the confusing "I just lassoed pins but they vanished" bug.
+  if (schedState.selected && schedState.selected.has(store.id)) return false;
   if (store.assigned) {
     if (schedState.highlightedDriver) return !schedIsStoreOnDriver(store.id, schedState.highlightedDriver);
     return !schedState.filters.scheduled;
@@ -5665,14 +5688,40 @@ function schedLassoEnd(e) {
   const ne = schedState.map.unproject([Math.max(0, Math.min(w, x2)), Math.max(0, Math.min(h, y1))]);
   const minLng = Math.min(sw.lng, ne.lng), maxLng = Math.max(sw.lng, ne.lng);
   const minLat = Math.min(sw.lat, ne.lat), maxLat = Math.max(sw.lat, ne.lat);
+  // In cell-edit mode, lasso adds stops to the cell instead of selection.
+  const inCellEdit = schedState.uiMode === 'cell-edit' && schedState.editingCell;
   let added = 0;
+  const toAddToCell = [];
   for (const store of schedState.storesIndex.values()) {
-    if (schedIsFiltered(store)) continue;
+    if (store.lat == null || store.lng == null) continue;
+    // Skip already-assigned stores (can't lasso-reassign them)
+    if (store.assigned) continue;
+    // For cell-edit mode, only consider unassigned stops in lasso bounds
+    if (inCellEdit) {
+      if (store.lng >= minLng && store.lng <= maxLng && store.lat >= minLat && store.lat <= maxLat) {
+        toAddToCell.push(store.id);
+      }
+      continue;
+    }
+    // Normal lasso: skip orders/overdue if their filters are off (but allow selection)
+    if (store.type === 'order' && !schedState.filters.orders) continue;
+    if (store.type === 'overdue' && !schedState.filters.overdue) continue;
     if (store.lng >= minLng && store.lng <= maxLng && store.lat >= minLat && store.lat <= maxLat) {
       if (!schedState.selected.has(store.id)) { schedState.selected.add(store.id); added++; }
     }
   }
   schedState.lassoRect.remove(); schedState.lassoRect = null;
+  if (inCellEdit && toAddToCell.length > 0) {
+    // Add each lassoed stop to the cell sequentially. Each add does an INSERT
+    // so we await them in order to maintain sequence.
+    schedToast(`Adding ${toAddToCell.length} stops to cell…`);
+    (async () => {
+      for (const id of toAddToCell) {
+        await schedAddStopToCell(id);
+      }
+    })();
+    return;
+  }
   if (added > 0) {
     schedState.highlightedDriver = null;
     schedToast(`Selected ${added} stops`);
