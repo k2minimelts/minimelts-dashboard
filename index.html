@@ -4903,8 +4903,11 @@ function schedPinInfo(store) {
 // ════════════════════════════════════════════════════════════════════
 async function initScheduleTab() {
   if (schedState.initialized) {
-    schedRefreshData();
-    setTimeout(() => { if (schedState.map) schedState.map.resize(); }, 50);
+    // Tab was already initialized — just resize (in case window changed) and refresh
+    requestAnimationFrame(() => {
+      if (schedState.map) schedState.map.resize();
+      schedRefreshData();
+    });
     return;
   }
 
@@ -4979,9 +4982,17 @@ async function initScheduleTab() {
   schedState.initialized = true;
   await schedRefreshData();
 
-  // Mapbox needs to be told the container size after the tab becomes visible
-  // (the map was created while the tab might have been display:none).
-  setTimeout(() => { if (schedState.map) schedState.map.resize(); schedFitMapToDepots(); }, 100);
+  // After the very first init, force a resize and re-fit on the next two frames
+  // to ensure layout is fully settled before Mapbox computes its viewport.
+  // Without this, Mapbox can use stale container dimensions and the camera math
+  // produces wildly wrong zoom/center.
+  requestAnimationFrame(() => {
+    if (schedState.map) schedState.map.resize();
+    requestAnimationFrame(() => {
+      if (schedState.map) schedState.map.resize();
+      schedFitMapToDepots();
+    });
+  });
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -5278,13 +5289,25 @@ function schedInitMap() {
     attributionControl: { compact: true },
   });
   schedState.map.addControl(new mapboxgl.NavigationControl(), 'top-right');
-  schedState.map.on('load', () => schedFitMapToDepots());
+
+  // ResizeObserver: if the map container changes size for any reason
+  // (tab activation, window resize, layout reflow), tell Mapbox immediately.
+  // This eliminates the "click chip a few times until it eventually works"
+  // bug where Mapbox cached a stale 0px container size.
+  const mapEl = document.getElementById('sched-map');
+  if (typeof ResizeObserver !== 'undefined' && mapEl) {
+    const ro = new ResizeObserver(() => {
+      if (schedState.map) schedState.map.resize();
+    });
+    ro.observe(mapEl);
+  }
 
   // Lasso selection on shift-drag
-  const mapEl = document.getElementById('sched-map');
-  mapEl.addEventListener('mousedown', schedLassoStart);
-  document.addEventListener('mousemove', schedLassoMove);
-  document.addEventListener('mouseup', schedLassoEnd);
+  if (mapEl) {
+    mapEl.addEventListener('mousedown', schedLassoStart);
+    document.addEventListener('mousemove', schedLassoMove);
+    document.addEventListener('mouseup', schedLassoEnd);
+  }
 }
 
 function schedFitMapToDepots() {
