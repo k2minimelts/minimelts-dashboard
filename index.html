@@ -5542,44 +5542,34 @@ window.schedFix = schedNukeAndRebuildMarkers; // also accessible from console as
 
 function schedRenderMarkers() {
   if (!schedState.map) return;
-  const startMarkers = schedState.markers.size;
-  const indexSize = schedState.storesIndex.size;
-  // Drop markers for stores no longer in index
-  for (const [id, marker] of schedState.markers) {
-    if (!schedState.storesIndex.has(id)) {
-      marker.remove();
-      schedState.markers.delete(id);
-    }
-  }
-  // Add or update each store
+  // ALWAYS-REBUILD strategy: nuke every marker, then add the visible ones fresh.
+  // This is simpler and provably correct. The cost is minor (~200ms for 800 stops)
+  // and we only render on real state changes, not every frame.
+  for (const [id, marker] of schedState.markers) marker.remove();
+  schedState.markers.clear();
+
+  let visibleCount = 0;
   for (const store of schedState.storesIndex.values()) {
     if (store.lat == null || store.lng == null) continue;
-    const filtered = schedIsFiltered(store);
-    let marker = schedState.markers.get(store.id);
-    if (filtered) {
-      if (marker) { marker.remove(); schedState.markers.delete(store.id); }
-      continue;
-    }
-    if (!marker) {
-      const el = schedMakePinElement(store);
-      el.addEventListener('click', (e) => {
-        e.stopPropagation();
-        schedTogglePinSelect(store.id);
-      });
-      marker = new mapboxgl.Marker({ element: el })
-        .setLngLat([store.lng, store.lat])
-        .setPopup(new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false })
-          .setHTML(`<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`))
-        .addTo(schedState.map);
-      el.addEventListener('mouseenter', () => marker.togglePopup());
-      el.addEventListener('mouseleave', () => marker.togglePopup());
-      schedState.markers.set(store.id, marker);
-    } else {
-      schedUpdatePinElement(marker.getElement(), store);
-    }
+    if (schedIsFiltered(store)) continue;
+    const el = schedMakePinElement(store);
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      schedTogglePinSelect(store.id);
+    });
+    const marker = new mapboxgl.Marker({ element: el })
+      .setLngLat([store.lng, store.lat])
+      .setPopup(new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false })
+        .setHTML(`<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`))
+      .addTo(schedState.map);
+    el.addEventListener('mouseenter', () => marker.togglePopup());
+    el.addEventListener('mouseleave', () => marker.togglePopup());
+    schedState.markers.set(store.id, marker);
+    visibleCount++;
   }
-  // Diagnostic — logs once per render only when we end up with 0 markers
-  if (schedState.markers.size === 0 && schedState.storesIndex.size > 0) {
+
+  // Diagnostic for the still-broken case
+  if (visibleCount === 0 && schedState.storesIndex.size > 0) {
     const sample = [...schedState.storesIndex.values()].slice(0, 3).map(s => ({
       name: s.qb_name,
       assigned: s.assigned,
@@ -5587,16 +5577,16 @@ function schedRenderMarkers() {
       hasCoords: s.lat != null && s.lng != null,
       filteredOut: schedIsFiltered(s),
     }));
-    console.warn('[sched.renderMarkers] 0 markers from', schedState.storesIndex.size, 'stores. State:', {
+    console.warn('[sched.renderMarkers] 0 visible from', schedState.storesIndex.size, 'stores. State:', {
       uiMode: schedState.uiMode,
       cellAddMode: schedState.cellAddMode,
       filters: JSON.parse(JSON.stringify(schedState.filters)),
       selectedSize: schedState.selected ? schedState.selected.size : 0,
       highlightedDriver: schedState.highlightedDriver,
+      activeDepots: [...(schedState.activeDepots || [])],
       sample,
     });
   }
-  schedRenderMarkersSafety(startMarkers, indexSize);
 }
 
 // Safety: log and self-heal if a render produced 0 visible markers
