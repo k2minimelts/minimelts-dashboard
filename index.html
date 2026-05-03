@@ -5054,6 +5054,7 @@ function schedRenderDepotChips() {
       wrap.querySelectorAll('.sched-depot-chip').forEach(c => {
         c.classList.toggle('active', schedState.activeDepots.has(c.dataset.depotCode));
       });
+      console.log('[sched.chip-click] code:', code, 'shift:', !!e.shiftKey, 'now active:', [...schedState.activeDepots]);
       schedRefreshData();
     });
   });
@@ -5285,36 +5286,50 @@ function schedInitMap() {
 }
 
 function schedFitMapToDepots() {
-  // Prefer fitting to actual store cluster — far more accurate than just depot
-  // points, especially when a depot's territory is wide (MIS covers Windsor →
-  // Thunder Bay, AIR covers Calgary → Edmonton, etc.).
+  // Fit to the visible store cluster (with active depots as context).
+  // Defer to next frame so any in-flight Mapbox animation settles before fit.
   if (!schedState.map) return;
-  const visibleStores = [];
-  for (const s of schedState.storesIndex.values()) {
-    if (s.lat == null || s.lng == null) continue;
-    if (schedIsFiltered(s)) continue;
-    visibleStores.push(s);
-  }
-  // If we have stores, fit to their bounds — also include active depots so the
-  // depot is always on screen (good context for the manager).
-  if (visibleStores.length > 0) {
-    const bounds = new mapboxgl.LngLatBounds();
-    for (const s of visibleStores) bounds.extend([s.lng, s.lat]);
+
+  // Stop any in-flight camera animation first — fitBounds during animation
+  // is sometimes silently ignored.
+  try { schedState.map.stop(); } catch (e) {}
+
+  // Defer the fit to the next animation frame so DOM/marker layout is settled
+  requestAnimationFrame(() => {
+    if (!schedState.map) return;
+    const visibleStores = [];
+    for (const s of schedState.storesIndex.values()) {
+      if (s.lat == null || s.lng == null) continue;
+      if (schedIsFiltered(s)) continue;
+      visibleStores.push(s);
+    }
     const activeDeps = schedState.userDepots.filter(d => schedState.activeDepots.has(d.code) && d.lat != null && d.lng != null);
+
+    console.log('[sched.fit] activeDepots:', [...schedState.activeDepots],
+                '| visibleStores:', visibleStores.length,
+                '| activeDeps:', activeDeps.length,
+                '| storesIndex.size:', schedState.storesIndex.size);
+
+    if (visibleStores.length > 0) {
+      const bounds = new mapboxgl.LngLatBounds();
+      for (const s of visibleStores) bounds.extend([s.lng, s.lat]);
+      for (const d of activeDeps) bounds.extend([Number(d.lng), Number(d.lat)]);
+      console.log('[sched.fit] bounds:', bounds.toArray());
+      schedState.map.fitBounds(bounds, { padding: 60, duration: 600, maxZoom: 9 });
+      return;
+    }
+    if (activeDeps.length === 0) { console.log('[sched.fit] no stores AND no depots — skipping'); return; }
+    if (activeDeps.length === 1) {
+      const d = activeDeps[0];
+      console.log('[sched.fit] no stores — easeTo single depot', d.code);
+      schedState.map.easeTo({ center: [Number(d.lng), Number(d.lat)], zoom: 9, duration: 600 });
+      return;
+    }
+    const bounds = new mapboxgl.LngLatBounds();
     for (const d of activeDeps) bounds.extend([Number(d.lng), Number(d.lat)]);
-    schedState.map.fitBounds(bounds, { padding: 60, duration: 600, maxZoom: 9 });
-    return;
-  }
-  // Fallback: no stores yet. Fit to depots only.
-  const active = schedState.userDepots.filter(d => schedState.activeDepots.has(d.code) && d.lat != null && d.lng != null);
-  if (active.length === 0) return;
-  if (active.length === 1) {
-    schedState.map.easeTo({ center: [Number(active[0].lng), Number(active[0].lat)], zoom: 9, duration: 600 });
-    return;
-  }
-  const bounds = new mapboxgl.LngLatBounds();
-  for (const d of active) bounds.extend([Number(d.lng), Number(d.lat)]);
-  schedState.map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 9 });
+    console.log('[sched.fit] no stores — fitting to', activeDeps.length, 'depots');
+    schedState.map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 9 });
+  });
 }
 
 function schedRenderMarkers() {
