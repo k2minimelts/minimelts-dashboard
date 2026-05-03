@@ -5349,6 +5349,7 @@ function schedFitMapToDepots() {
       );
       if (camera && camera.center && typeof camera.zoom === 'number') {
         schedState.map.jumpTo({ center: camera.center, zoom: camera.zoom });
+        schedRefreshMarkerPositions();
       } else {
         // Fallback heuristic if cameraForBounds returned nothing
         const lngSpan = Math.max(0.01, maxLng - minLng);
@@ -5366,9 +5367,22 @@ function schedFitMapToDepots() {
           center: [(minLng + maxLng) / 2, (minLat + maxLat) / 2],
           zoom: zoom,
         });
+        schedRefreshMarkerPositions();
       }
     });
   });
+}
+
+// Force every existing marker to recompute its on-screen pixel position.
+// Called after a camera jump to fix a Mapbox quirk where markers can render
+// at stale pixel positions from before the jump.
+function schedRefreshMarkerPositions() {
+  if (!schedState.map) return;
+  for (const [id, marker] of schedState.markers) {
+    const lngLat = marker.getLngLat();
+    // setLngLat with the same coords forces a transform update
+    marker.setLngLat([lngLat.lng, lngLat.lat]);
+  }
 }
 
 function schedRenderMarkers() {
