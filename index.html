@@ -5312,74 +5312,62 @@ function schedInitMap() {
 
 function schedFitMapToDepots() {
   // Compute camera target from data bounding box, then jumpTo it.
-  // Using jumpTo (no animation) eliminates any animation race conditions where
-  // an in-flight ease can be interrupted and produce wrong final zoom.
+  // The two-frame delay (resize on frame 1, jump on frame 2) gives Mapbox's
+  // internal state time to settle after a resize before we ask it to compute
+  // a new camera. Without this, jumpTo can race with the resize and produce
+  // a one-frame "wrong view" flicker.
   if (!schedState.map) return;
-
-  // Cancel any in-flight camera animation
   try { schedState.map.stop(); } catch (e) {}
-
-  // Force Mapbox to re-read container dimensions before computing camera
   schedState.map.resize();
 
+  // Frame 1: resize is in flight. Wait.
   requestAnimationFrame(() => {
     if (!schedState.map) return;
+    // Frame 2: container size is settled. Now compute the camera and jump.
+    requestAnimationFrame(() => {
+      if (!schedState.map) return;
+      const points = [];
+      for (const s of schedState.storesIndex.values()) {
+        if (s.lat == null || s.lng == null) continue;
+        if (schedIsFiltered(s)) continue;
+        points.push([Number(s.lng), Number(s.lat)]);
+      }
+      const activeDeps = schedState.userDepots.filter(d => schedState.activeDepots.has(d.code) && d.lat != null && d.lng != null);
+      for (const d of activeDeps) points.push([Number(d.lng), Number(d.lat)]);
+      if (points.length === 0) return;
 
-    // Collect all points to frame
-    const points = [];
-    for (const s of schedState.storesIndex.values()) {
-      if (s.lat == null || s.lng == null) continue;
-      if (schedIsFiltered(s)) continue;
-      points.push([Number(s.lng), Number(s.lat)]);
-    }
-    const activeDeps = schedState.userDepots.filter(d => schedState.activeDepots.has(d.code) && d.lat != null && d.lng != null);
-    for (const d of activeDeps) points.push([Number(d.lng), Number(d.lat)]);
-
-    if (points.length === 0) return;
-
-    let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
-    for (const [lng, lat] of points) {
-      if (lng < minLng) minLng = lng;
-      if (lng > maxLng) maxLng = lng;
-      if (lat < minLat) minLat = lat;
-      if (lat > maxLat) maxLat = lat;
-    }
-    const centerLng = (minLng + maxLng) / 2;
-    const centerLat = (minLat + maxLat) / 2;
-    const lngSpan = Math.max(0.01, maxLng - minLng);
-    const latSpan = Math.max(0.01, maxLat - minLat);
-
-    // Use Mapbox's own bounds-to-zoom logic via a fake fitBounds calculation.
-    // We use cameraForBounds which returns the camera state without animating —
-    // this respects current container size correctly.
-    const sw = [minLng, minLat];
-    const ne = [maxLng, maxLat];
-    const camera = schedState.map.cameraForBounds([sw, ne], {
-      padding: 60,
-      maxZoom: 10,
+      let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
+      for (const [lng, lat] of points) {
+        if (lng < minLng) minLng = lng;
+        if (lng > maxLng) maxLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+      }
+      const camera = schedState.map.cameraForBounds(
+        [[minLng, minLat], [maxLng, maxLat]],
+        { padding: 60, maxZoom: 10 }
+      );
+      if (camera && camera.center && typeof camera.zoom === 'number') {
+        schedState.map.jumpTo({ center: camera.center, zoom: camera.zoom });
+      } else {
+        // Fallback heuristic if cameraForBounds returned nothing
+        const lngSpan = Math.max(0.01, maxLng - minLng);
+        const latSpan = Math.max(0.01, maxLat - minLat);
+        const maxSpan = Math.max(lngSpan, latSpan * 1.5);
+        let zoom;
+        if (maxSpan > 60) zoom = 3;
+        else if (maxSpan > 30) zoom = 4;
+        else if (maxSpan > 15) zoom = 5;
+        else if (maxSpan > 8) zoom = 6;
+        else if (maxSpan > 4) zoom = 7;
+        else if (maxSpan > 2) zoom = 8;
+        else zoom = 9;
+        schedState.map.jumpTo({
+          center: [(minLng + maxLng) / 2, (minLat + maxLat) / 2],
+          zoom: zoom,
+        });
+      }
     });
-
-    if (camera && camera.center && typeof camera.zoom === 'number') {
-      console.log('[sched.fit] center:', [camera.center.lng.toFixed(2), camera.center.lat.toFixed(2)],
-                  '| zoom:', camera.zoom.toFixed(2),
-                  '| points:', points.length,
-                  '| container:', schedState.map.getContainer().clientWidth + 'x' + schedState.map.getContainer().clientHeight);
-      schedState.map.jumpTo({ center: camera.center, zoom: camera.zoom });
-    } else {
-      // Fallback: manual zoom heuristic
-      const maxSpan = Math.max(lngSpan, latSpan * 1.5);
-      let zoom;
-      if (maxSpan > 60) zoom = 3;
-      else if (maxSpan > 30) zoom = 4;
-      else if (maxSpan > 15) zoom = 5;
-      else if (maxSpan > 8) zoom = 6;
-      else if (maxSpan > 4) zoom = 7;
-      else if (maxSpan > 2) zoom = 8;
-      else zoom = 9;
-      console.log('[sched.fit FALLBACK] center:', [centerLng.toFixed(2), centerLat.toFixed(2)],
-                  '| zoom:', zoom, '| span:', { lng: lngSpan.toFixed(2), lat: latSpan.toFixed(2) });
-      schedState.map.jumpTo({ center: [centerLng, centerLat], zoom: zoom });
-    }
   });
 }
 
