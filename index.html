@@ -1190,7 +1190,7 @@
               </label>
               <label style="display:flex;align-items:center;gap:6px;color:var(--text);font-size:13px;cursor:pointer;user-select:none;padding:6px 0">
                 <input id="map-show-venues" type="checkbox" checked onchange="window.applyMapFilters()" style="accent-color:var(--mm-pink);cursor:pointer"/>
-                Show vending venues
+                Show vending machines <span id="map-vending-count" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
               </label>
               <label style="display:flex;align-items:center;gap:6px;color:var(--text);font-size:13px;cursor:pointer;user-select:none;padding:6px 0">
                 <input id="map-show-depots" type="checkbox" checked onchange="window.applyMapFilters()" style="accent-color:var(--gold);cursor:pointer"/>
@@ -3550,7 +3550,7 @@ const DEFAULT_PIN_COLOR = '#8b949e';
 
 let _map = null;
 let _mapStores = [];
-let _mapVenues = [];
+let _mapMachines = [];
 let _mapDepots = [];
 let _mapRoutes = [];
 let _mapPendingOrders = [];
@@ -3703,8 +3703,8 @@ function fitMapToAllData() {
       coords.push([parseFloat(s.lng), parseFloat(s.lat)]);
     }
   }
-  for (const v of _mapVenues) {
-    if (v.active && v.lng != null && v.lat != null) {
+  for (const v of _mapMachines) {
+    if (v.lng != null && v.lat != null) {
       coords.push([parseFloat(v.lng), parseFloat(v.lat)]);
     }
   }
@@ -3741,13 +3741,13 @@ async function loadMapData() {
   }
   const [stores, venues, depots, routes, pendingOrders] = await Promise.all([
     fetchAll('stores_map?select=id,public_code,name,qb_name,address,city,province,lat,lng,active,depot_id,depot_code,depot_name,route_id,route_code,route_name,route_color,route_delivery_method'),
-    fetchAll('venues_map?select=id,name,chain,address,city,province,lat,lng,active'),
+    fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_refill_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_refill'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
     fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,notes,po_number,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email&order=submitted_at.desc'),
   ]);
   _mapStores = stores;
-  _mapVenues = venues;
+  _mapMachines = venues;
   _mapDepots = depots;
   _mapRoutes = routes;
   _mapPendingOrders = pendingOrders;
@@ -3873,7 +3873,11 @@ function buildMapLegend() {
     </div>
     <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text)">
       <span style="display:inline-block;width:14px;height:14px;background:var(--mm-pink);transform:rotate(45deg);border:1px solid #fff"></span>
-      <span>Vending venue</span>
+      <span>Vending machine</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text)">
+      <span style="display:inline-block;width:14px;height:14px;border:2px solid #ef4444;border-radius:50%;background:rgba(239,68,68,0.12)"></span>
+      <span>Needs restock / no sales 3d+</span>
     </div>
     <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text)">
       <span style="display:inline-block;width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:14px solid var(--gold)"></span>
@@ -3996,11 +4000,21 @@ async function initMapboxGL() {
     URL.revokeObjectURL(url);
   }
 
-  // Diamond for venues (rotated square, pink fill, white outline)
+  // Diamond for vending machines (rotated square, pink fill, white outline).
+  // Each managed machine gets its own pin (one venue may have 2-3 machines).
   await addSvgImage('venue-diamond', `
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
       <path d="M12 2 L22 12 L12 22 L2 12 Z" fill="#e87bb5" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
     </svg>`);
+
+  // Red ring overlay for machines that need attention (needs_restock OR no_sales_3d).
+  // Mirrors the pending-order pattern — sits on top of the diamond, doesn't replace it,
+  // so depot/chain info stays visible underneath.
+  await addSvgImage('machine-restock-ring', `
+    <svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">
+      <circle cx="17" cy="17" r="14" fill="none" stroke="#ef4444" stroke-width="3"/>
+      <circle cx="17" cy="17" r="14" fill="rgba(239,68,68,0.12)"/>
+    </svg>`, 34);
 
   // Upward-pointing triangle for depots (gold fill, dark outline)
   await addSvgImage('depot-triangle', `
@@ -4035,7 +4049,9 @@ async function initMapboxGL() {
     }
   });
 
-  // ── Venues: separate source (no clustering, fewer of them) ──
+  // ── Vending machines: source + diamond pin layer + restock-ring overlay ──
+  // The 'venues' source name is preserved for backward-compat with the existing
+  // applyMapFilters() call sites; the data shape is now per-machine, not per-venue.
   _map.addSource('venues', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
   _map.addLayer({
     id: 'venue-points',
@@ -4044,6 +4060,21 @@ async function initMapboxGL() {
     layout: {
       'icon-image': 'venue-diamond',
       'icon-size': 0.9,
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    }
+  });
+
+  // Restock-ring overlay: same source, filtered to machines that need attention.
+  // Renders on top of the diamond — the ring frames the pin without replacing it.
+  _map.addLayer({
+    id: 'machine-restock-rings',
+    type: 'symbol',
+    source: 'venues',
+    filter: ['get', 'needs_attention'],
+    layout: {
+      'icon-image': 'machine-restock-ring',
+      'icon-size': 0.95,
       'icon-allow-overlap': true,
       'icon-ignore-placement': true,
     }
@@ -4155,16 +4186,50 @@ async function initMapboxGL() {
     const f = e.features[0];
     const p = f.properties;
     const coords = f.geometry.coordinates.slice();
+    // pct_sold may come back as a string from Mapbox property serialization
+    const pct = p.pct_sold != null && p.pct_sold !== '' ? Number(p.pct_sold) : null;
+    const qty = p.qty_sold_since_visit != null && p.qty_sold_since_visit !== '' ? Number(p.qty_sold_since_visit) : null;
+    const cap = p.capacity_units != null && p.capacity_units !== '' ? Number(p.capacity_units) : 300;
+    const daysSinceSale = p.days_since_last_sale != null && p.days_since_last_sale !== '' ? Number(p.days_since_last_sale) : null;
+    const daysSinceRefill = p.days_since_last_refill != null && p.days_since_last_refill !== '' ? Number(p.days_since_last_refill) : null;
+    const needsRestock = p.needs_restock === true || p.needs_restock === 'true';
+    const noSales3d = p.no_sales_3d === true || p.no_sales_3d === 'true';
+    const online = p.mqtt_online === true || p.mqtt_online === 'true';
+
+    // Format pct as a colored badge — green/yellow/red gradient
+    let pctColor = '#888', pctBg = '#f3f4f6';
+    if (pct != null) {
+      if (pct >= 70) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
+      else if (pct >= 40) { pctColor = '#92400e'; pctBg = '#fef3c7'; }
+      else { pctColor = '#065f46'; pctBg = '#d1fae5'; }
+    }
+
+    const alertBadges = [];
+    if (needsRestock) alertBadges.push(`<span style="background:#fee2e2;color:#9b1c1c;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ Needs restock</span>`);
+    if (noSales3d) alertBadges.push(`<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ No sales ${daysSinceSale}d</span>`);
+    if (!online) alertBadges.push(`<span style="background:#e5e7eb;color:#374151;padding:2px 6px;border-radius:4px;font-size:11px">📵 Offline</span>`);
+
+    const machineName = p.machine_name && p.machine_name !== '' ? p.machine_name : '(unnamed machine)';
+    const venueName = p.venue_name && p.venue_name !== '' ? p.venue_name : '';
+
     const html = `
-      <div style="font-family:inherit;color:#0d1117;min-width:200px">
-        <div style="font-weight:700;font-size:14px;margin-bottom:4px">${escapeHtmlMap(p.name)}</div>
-        <div style="display:flex;gap:6px;margin-bottom:6px">
-          <span style="background:#fce7f3;color:#9d174d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">VENUE</span>
-          ${p.chain ? `<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:11px">${escapeHtmlMap(p.chain)}</span>`:''}
+      <div style="font-family:inherit;color:#0d1117;min-width:240px;max-width:300px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:2px">${escapeHtmlMap(machineName)}</div>
+        ${venueName ? `<div style="font-size:12px;color:#6b7280;margin-bottom:6px">${escapeHtmlMap(venueName)}</div>` : ''}
+        <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+          <span style="background:#fce7f3;color:#9d174d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">VENDING</span>
+          ${p.venue_chain ? `<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:11px">${escapeHtmlMap(String(p.venue_chain).toUpperCase())}</span>` : ''}
+          ${alertBadges.join('')}
         </div>
-        <div style="font-size:12px;color:#444;line-height:1.5">
-          ${p.address ? escapeHtmlMap(p.address) + '<br>' : ''}
-          ${[p.city, p.province].filter(Boolean).map(escapeHtmlMap).join(', ')}
+        ${pct != null ? `
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="background:${pctBg};color:${pctColor};padding:4px 8px;border-radius:6px;font-size:13px;font-weight:700">${pct.toFixed(0)}% sold</span>
+            ${qty != null ? `<span style="font-size:12px;color:#6b7280">${qty} of ${cap} units</span>` : ''}
+          </div>` : ''}
+        <div style="font-size:12px;color:#374151;line-height:1.6;border-top:1px solid #e5e7eb;padding-top:6px;margin-top:6px">
+          ${daysSinceSale != null ? `<div>Last sale: <strong>${daysSinceSale === 0 ? 'today' : daysSinceSale + 'd ago'}</strong></div>` : ''}
+          ${daysSinceRefill != null ? `<div>Last refill: <strong>${daysSinceRefill === 0 ? 'today' : daysSinceRefill + 'd ago'}</strong></div>` : ''}
+          ${p.address ? `<div style="color:#6b7280;margin-top:4px">${escapeHtmlMap(p.address)}, ${escapeHtmlMap(p.city || '')}</div>` : ''}
         </div>
       </div>`;
     new mapboxgl.Popup({ closeButton: true, offset: 10 }).setLngLat(coords).setHTML(html).addTo(_map);
@@ -4227,7 +4292,7 @@ async function initMapboxGL() {
   });
 
   // Cursor changes for interactivity feedback
-  ['store-clusters','store-points','inactive-store-points','venue-points','depot-points','pending-order-rings'].forEach(layer => {
+  ['store-clusters','store-points','inactive-store-points','venue-points','machine-restock-rings','depot-points','pending-order-rings'].forEach(layer => {
     _map.on('mouseenter', layer, () => { _map.getCanvas().style.cursor = 'pointer'; });
     _map.on('mouseleave', layer, () => { _map.getCanvas().style.cursor = ''; });
   });
@@ -4490,27 +4555,45 @@ function applyMapFiltersInternal() {
   _map.getSource('stores').setData({ type: 'FeatureCollection', features: activeFeatures });
   _map.getSource('inactive-stores').setData({ type: 'FeatureCollection', features: inactiveFeatures });
 
-  // ── Venues ──
+  // ── Vending machines ──
+  // Each managed machine is its own pin (one venue may have 2-3 machines, all
+  // independently restock-eligible). Diamonds get the depot-color base; machines
+  // needing attention also render the red ring overlay (needs_attention=true).
   let venueFeatures = [];
   if (showVenues) {
-    const filtered = _mapVenues.filter(v => {
-      if (hideInactive && !v.active) return false;
-      if (province && v.province !== province) return false;
+    const filtered = _mapMachines.filter(m => {
+      if (province && m.province !== province) return false;
       if (search) {
-        const m = (v.name||'').toLowerCase().includes(search) || (v.city||'').toLowerCase().includes(search);
-        if (!m) return false;
+        const hay = `${m.machine_name||''} ${m.venue_name||''} ${m.city||''}`.toLowerCase();
+        if (!hay.includes(search)) return false;
       }
       return true;
     });
-    venueFeatures = filtered.map(v => ({
+    venueFeatures = filtered.map(m => ({
       type: 'Feature',
-      geometry: { type: 'Point', coordinates: [parseFloat(v.lng), parseFloat(v.lat)] },
+      geometry: { type: 'Point', coordinates: [parseFloat(m.lng), parseFloat(m.lat)] },
       properties: {
-        name: v.name || '',
-        chain: v.chain || '',
-        address: v.address || '',
-        city: v.city || '',
-        province: v.province || '',
+        // Identity
+        id: m.id,
+        machine_name: m.machine_name || '',
+        venue_id: m.venue_id || '',
+        venue_name: m.venue_name || '',
+        venue_chain: m.venue_chain || '',
+        address: m.address || '',
+        city: m.city || '',
+        province: m.province || '',
+        // Stock signal
+        qty_sold_since_visit: m.qty_sold_since_visit,
+        capacity_units: m.capacity_units,
+        pct_sold: m.pct_sold,
+        days_since_last_sale: m.days_since_last_sale,
+        days_since_last_refill: m.days_since_last_refill,
+        mqtt_online: m.mqtt_online === true,
+        // Pre-computed booleans for the ring filter and popup logic
+        needs_restock: m.needs_restock === true,
+        no_sales_3d: m.no_sales_3d === true,
+        // Single boolean the ring layer's filter reads
+        needs_attention: (m.needs_restock === true) || (m.no_sales_3d === true),
       }
     }));
   }
@@ -4589,6 +4672,22 @@ function applyMapFiltersInternal() {
     }
   }
 
+  // Sidebar count next to the "Show vending machines" checkbox.
+  // Shows total machines on the map and how many need attention.
+  const vendingCountLabel = document.getElementById('map-vending-count');
+  if (vendingCountLabel) {
+    if (!showVenues) {
+      vendingCountLabel.textContent = '';
+    } else {
+      const attn = venueFeatures.filter(f => f.properties.needs_attention).length;
+      if (attn === 0) {
+        vendingCountLabel.textContent = `(${venueFeatures.length})`;
+      } else {
+        vendingCountLabel.textContent = `(${venueFeatures.length}, ${attn} 🔴)`;
+      }
+    }
+  }
+
   // Update count badge
   const counts = [];
   if (showStores) {
@@ -4598,7 +4697,14 @@ function applyMapFiltersInternal() {
       counts.push(`${activeFeatures.length} stores`);
     }
   }
-  if (showVenues) counts.push(`${venueFeatures.length} venues`);
+  if (showVenues) {
+    const attentionCount = venueFeatures.filter(f => f.properties.needs_attention).length;
+    if (attentionCount > 0) {
+      counts.push(`${venueFeatures.length} machines (${attentionCount} 🔴)`);
+    } else {
+      counts.push(`${venueFeatures.length} machines`);
+    }
+  }
   if (showDepots) counts.push(`${depotFeatures.length} depots`);
   if (showPendingOrders && pendingOrderFeatures.length > 0) {
     counts.push(`📦 ${pendingOrderFeatures.length} with pending`);
