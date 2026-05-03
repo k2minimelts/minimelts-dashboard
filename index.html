@@ -5205,6 +5205,13 @@ function schedRenderDepotChips() {
       wrap.querySelectorAll('.sched-depot-chip').forEach(c => {
         c.classList.toggle('active', schedState.activeDepots.has(c.dataset.depotCode));
       });
+      // Nuke existing markers BEFORE refreshing data — this ensures any leftover
+      // markers from the old depot scope are gone before new ones get added.
+      // Solves the "pins stuck at stale positions" bug.
+      if (schedState.map) {
+        for (const [id, marker] of schedState.markers) marker.remove();
+        schedState.markers.clear();
+      }
       schedRefreshData();
     });
   });
@@ -6019,7 +6026,13 @@ async function schedAssignSelection(driverId, startDateIso, tripLength, managerN
     const endDateIso = schedAddDays(startDateIso, tripLength - 1);
 
     // 1. Create the trip
+    const managerUserId = window._session?.user_id;
+    if (!managerUserId) {
+      schedToast('⚠ Not logged in (no user_id)');
+      return;
+    }
     const [trip] = await schedInsert('trips', {
+      manager_user_id: managerUserId,
       driver_id: driverId,
       depot_id: depotId,
       start_date: startDateIso,
@@ -6215,7 +6228,9 @@ async function schedMoveStops(fromTripDayId, toCell /* {driver_id, day_iso} */) 
       // Create a new single-day trip for the target
       const driver = schedState.drivers.find(d => d.id === toCell.driver_id);
       if (!driver) { schedToast('⚠ Target driver not found'); return; }
+      const managerUserId = window._session?.user_id;
       const [newTrip] = await schedInsert('trips', {
+        manager_user_id: managerUserId,
         driver_id: toCell.driver_id,
         depot_id: fromTrip.depot_id,
         start_date: toCell.day_iso,
