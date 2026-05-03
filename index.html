@@ -5122,8 +5122,6 @@ async function initScheduleTab() {
 
   // After the very first init, force a resize and re-fit on the next two frames
   // to ensure layout is fully settled before Mapbox computes its viewport.
-  // Without this, Mapbox can use stale container dimensions and the camera math
-  // produces wildly wrong zoom/center.
   requestAnimationFrame(() => {
     if (schedState.map) schedState.map.resize();
     requestAnimationFrame(() => {
@@ -5131,6 +5129,7 @@ async function initScheduleTab() {
       schedFitMapToDepots();
     });
   });
+  if (typeof schedWirePublishButton === 'function') schedWirePublishButton();
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -5678,10 +5677,9 @@ function schedLassoEnd(e) {
 // SELECTION
 // ════════════════════════════════════════════════════════════════════
 function schedTogglePinSelect(storeId) {
-  if (schedState.selected.has(storeId)) schedState.selected.delete(storeId);
-  else schedState.selected.add(storeId);
-  if (schedState.highlightedDriver) schedState.highlightedDriver = null;
-  schedRenderAll();
+  if (typeof schedTogglePinSelect_v3 === 'function') {
+    schedTogglePinSelect_v3(storeId);
+  }
 }
 function schedClearSelection() {
   schedState.selected.clear();
@@ -5693,49 +5691,9 @@ function schedClearSelection() {
 // SIDEBAR
 // ════════════════════════════════════════════════════════════════════
 function schedRenderSidebar() {
-  const container = document.getElementById('sched-sidebar-content');
-  if (!container) return;
-  const tabBtn = document.querySelector('.sched-side-tab.active');
-  const tab = tabBtn ? tabBtn.dataset.sideTab : 'selection';
-
-  if (tab === 'selection') {
-    if (schedState.selected.size === 0) {
-      container.innerHTML = `<div class="sched-empty">
-        <p>No stops selected.</p>
-        <p class="muted">Click pins or shift+drag on the map to lasso a cluster.</p>
-      </div>`;
-      return;
-    }
-    const selStores = Array.from(schedState.selected)
-      .map(id => schedState.storesIndex.get(id)).filter(Boolean);
-    const orderCount = selStores.filter(s => s.type === 'order').length;
-    const overdueCount = selStores.filter(s => s.type === 'overdue').length;
-    const lateCount = selStores.filter(s => s.type === 'overdue' && (s.days_overdue || 0) > 90).length;
-    container.innerHTML = `
-      <div class="sched-selection-summary">
-        <div class="sched-selection-count">${selStores.length}</div>
-        <div class="sched-selection-label">stops selected</div>
-        <div class="sched-selection-breakdown">
-          <span><strong>${orderCount}</strong> orders</span>
-          <span><strong>${overdueCount}</strong> overdue</span>
-          ${lateCount ? `<span class="late"><strong>${lateCount}</strong> long-overdue</span>` : ''}
-        </div>
-      </div>
-      <div class="sched-empty" style="padding:24px 16px">
-        <p class="muted">Assignment UI lands in chunk 3.</p>
-      </div>
-      <div class="sched-stop-list-header">In selection</div>
-      <div>${selStores.map(s => schedStopRowHtml(s, true)).join('')}</div>
-    `;
-    schedWireStopRows();
-  } else {
-    let visible = Array.from(schedState.storesIndex.values()).filter(s => !schedIsFiltered(s));
-    visible.sort((a, b) => (b.days_overdue || -999) - (a.days_overdue || -999));
-    container.innerHTML = `
-      <div class="sched-stop-list-header">${visible.length} stops · sorted by overdue</div>
-      <div>${visible.map(s => schedStopRowHtml(s, schedState.selected.has(s.id))).join('')}</div>
-    `;
-    schedWireStopRows();
+  // Delegates to chunk 3's full-featured renderer
+  if (typeof schedRenderSidebar_v3 === 'function') {
+    schedRenderSidebar_v3();
   }
 }
 
@@ -5870,6 +5828,7 @@ function schedRenderGrid() {
   grid.querySelectorAll('.sched-driver-label').forEach(el => {
     el.addEventListener('click', () => schedToggleDriverHighlight(el.dataset.driverId));
   });
+  if (typeof schedWireGridInteractions === 'function') schedWireGridInteractions();
 }
 
 function schedToggleDriverHighlight(driverId) {
@@ -5913,6 +5872,7 @@ function schedRenderCounters() {
   set('sched-count-scheduled', scheduledCount);
   const pubBtn = document.getElementById('sched-publish-btn');
   if (pubBtn) pubBtn.textContent = `Publish 0 plans →`;
+  if (typeof schedUpdatePublishButton === 'function') schedUpdatePublishButton();
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -6387,9 +6347,10 @@ function schedReopenEditingCell(tripDayId) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// Override schedRenderSidebar (chunk 2) to handle the new modes
+// schedRenderSidebar_v3: replaces chunk 2's version. Chunk 2's function
+// is renamed via patch below to redirect to this one.
 // ════════════════════════════════════════════════════════════════════
-function schedRenderSidebar() {
+function schedRenderSidebar_v3() {
   const container = document.getElementById('sched-sidebar-content');
   if (!container) return;
 
@@ -6605,10 +6566,8 @@ function schedRenderCellEditSidebar(container) {
   });
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Override the marker click handler to support cell-add mode
-// ════════════════════════════════════════════════════════════════════
-function schedTogglePinSelect(storeId) {
+// schedTogglePinSelect_v3: replaces chunk 2's version (called from chunk 2)
+function schedTogglePinSelect_v3(storeId) {
   if (schedState.uiMode === 'cell-edit' && schedState.cellAddMode) {
     schedAddStopToCell(storeId);
     return;
@@ -6624,10 +6583,8 @@ function schedTogglePinSelect(storeId) {
 // schedRenderGrid (chunk 2) already builds the cell DOM. We add listeners
 // after it renders by wrapping it.
 // ════════════════════════════════════════════════════════════════════
-const _origSchedRenderGrid = schedRenderGrid;
-schedRenderGrid = function() {
-  _origSchedRenderGrid();
-  // After render, attach cell-edit click and drag handlers
+// Called from inside schedRenderGrid (chunk 2) to wire cell click + drag handlers
+function schedWireGridInteractions() {
   document.querySelectorAll('.sched-day-cell.has-stops').forEach(cell => {
     const tripDayId = cell.dataset.tripDayId;
     const driverId = cell.dataset.driverId;
@@ -6635,7 +6592,6 @@ schedRenderGrid = function() {
     if (!tripDayId) return;
     cell.draggable = true;
     cell.addEventListener('click', (e) => {
-      // Skip if user is mid-drag
       if (cell.classList.contains('dragging-from')) return;
       schedEnterCellEdit(tripDayId, driverId, dayIso);
     });
@@ -6651,7 +6607,6 @@ schedRenderGrid = function() {
       document.querySelectorAll('.sched-day-cell.drag-over').forEach(c => c.classList.remove('drag-over'));
     });
   });
-  // Drop targets: every day-cell (whether populated or empty)
   document.querySelectorAll('.sched-day-cell').forEach(cell => {
     if (cell.classList.contains('day-off')) return;
     const driverId = cell.dataset.driverId;
@@ -6659,7 +6614,6 @@ schedRenderGrid = function() {
     if (!driverId || !dayIso) return;
     cell.addEventListener('dragover', (e) => {
       if (!schedState.dragSourceCell) return;
-      // Don't allow dropping on the source itself
       if (schedState.dragSourceCell.driver_id === driverId &&
           schedState.dragSourceCell.day_iso === dayIso) return;
       e.preventDefault();
@@ -6786,9 +6740,8 @@ async function schedMaybeReoptimizeDay(tripDayId) {
 // ════════════════════════════════════════════════════════════════════
 // Override schedRenderCounters (chunk 2) so the Publish button counts trips
 // ════════════════════════════════════════════════════════════════════
-const _origSchedRenderCounters = schedRenderCounters;
-schedRenderCounters = function() {
-  _origSchedRenderCounters();
+// Called from inside schedRenderCounters (chunk 2) to update publish button
+function schedUpdatePublishButton() {
   const draftCount = schedState.trips.filter(t => t.status === 'draft').length;
   const pubBtn = document.getElementById('sched-publish-btn');
   if (pubBtn && !schedState.publishing) {
@@ -6797,29 +6750,14 @@ schedRenderCounters = function() {
   }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Wire publish button click (chunk 2 left it disabled)
-// ════════════════════════════════════════════════════════════════════
-(function schedWirePublish() {
+// Called from inside initScheduleTab (chunk 2) to wire publish button
+function schedWirePublishButton() {
   const pubBtn = document.getElementById('sched-publish-btn');
   if (pubBtn && !pubBtn.dataset.wired) {
     pubBtn.addEventListener('click', () => schedPublishWeek());
     pubBtn.dataset.wired = '1';
   }
-  // The button might not exist yet if the schedule tab hasn't rendered.
-  // Hook into the next call to initScheduleTab.
-})();
-
-// Wrap init to also wire the publish button after first init
-const _origInitScheduleTab = initScheduleTab;
-initScheduleTab = async function() {
-  await _origInitScheduleTab();
-  const pubBtn = document.getElementById('sched-publish-btn');
-  if (pubBtn && !pubBtn.dataset.wired) {
-    pubBtn.addEventListener('click', () => schedPublishWeek());
-    pubBtn.dataset.wired = '1';
-  }
-};
+}
 </script>
 </body>
 </html>
