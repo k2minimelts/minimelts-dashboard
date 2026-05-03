@@ -1195,7 +1195,7 @@
         <div class="sched-map-wrap">
           <div id="sched-map"></div>
           <div class="sched-map-overlay sched-legend">
-            <div class="sched-legend-title">Legend</div>
+            <div class="sched-legend-title" ondblclick="schedNukeAndRebuildMarkers()" style="cursor:pointer" title="Double-click if pins look wrong">Legend</div>
             <div class="sched-legend-row">
               <span class="sw" style="background:var(--mm-cyan)"></span>
               <span>Order pending</span>
@@ -5384,6 +5384,17 @@ function schedRefreshMarkerPositions() {
     marker.setLngLat([lngLat.lng, lngLat.lat]);
   }
 }
+
+// Nuclear option: remove every marker and re-create from scratch. Use when
+// markers get visually stuck. Bound to the legend's title as a hidden escape
+// hatch — click "Legend" if pins ever look wrong.
+function schedNukeAndRebuildMarkers() {
+  if (!schedState.map) return;
+  for (const [id, marker] of schedState.markers) marker.remove();
+  schedState.markers.clear();
+  schedRenderMarkers();
+}
+window.schedFix = schedNukeAndRebuildMarkers; // also accessible from console as schedFix()
 
 function schedRenderMarkers() {
   if (!schedState.map) return;
