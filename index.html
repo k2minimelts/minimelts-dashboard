@@ -791,6 +791,144 @@
     .sched-sidebar { border-left: none; border-top: 1px solid var(--border); }
   }
 
+
+  /* ── Chunk 3 additions: cell-edit panel + assign panel polish ── */
+  .sched-cell-edit-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(226,176,74,0.08);
+  }
+  .sched-cell-back {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    margin-bottom: 8px;
+  }
+  .sched-cell-back:hover { color: var(--text); border-color: var(--gold); }
+  .sched-cell-edit-title strong {
+    color: var(--gold);
+    font-size: 14px;
+    display: block;
+  }
+  .sched-cell-edit-title .muted {
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 2px;
+  }
+  .sched-cell-pub-badge {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 1px 6px;
+    background: var(--gold);
+    color: var(--bg);
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .sched-cell-stop-list {
+    max-height: 320px;
+    overflow-y: auto;
+    border-bottom: 1px solid var(--border);
+  }
+  .sched-cell-edit-stop {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .sched-cell-edit-stop:hover { background: var(--bg3); }
+  .sched-cell-edit-stop .sched-stop-seq {
+    background: var(--gold);
+    color: var(--bg);
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    font-weight: 700;
+    font-size: 11px;
+    text-align: center;
+    line-height: 22px;
+    flex-shrink: 0;
+  }
+  .sched-cell-edit-stop .sched-stop-info { flex: 1; min-width: 0; }
+  .sched-cell-edit-stop .sched-stop-name {
+    color: var(--text);
+    font-weight: 500;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sched-cell-edit-stop .sched-stop-meta {
+    color: var(--muted);
+    font-size: 10px;
+    margin-top: 2px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .sched-cell-edit-stop .sched-stop-meta .late {
+    color: #e54848;
+    font-weight: 700;
+  }
+  .sched-stop-remove {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    width: 22px; height: 22px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: all 0.1s;
+  }
+  .sched-stop-remove:hover {
+    border-color: #e54848;
+    color: #e54848;
+  }
+  .sched-cell-actions {
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .sched-cell-action-btn {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.1s;
+  }
+  .sched-cell-action-btn:hover { border-color: var(--gold); }
+  .sched-cell-action-btn.active {
+    background: var(--gold);
+    color: var(--bg);
+    border-color: var(--gold);
+    font-weight: 700;
+  }
+  .sched-cell-action-btn.warn {
+    color: #e54848;
+    border-color: rgba(229,72,72,0.4);
+  }
+  .sched-cell-action-btn.warn:hover {
+    background: rgba(229,72,72,0.1);
+    border-color: #e54848;
+  }
+  .sched-cell-stop-list::-webkit-scrollbar { width: 6px; }
+  .sched-cell-stop-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -5808,6 +5946,880 @@ function schedRenderAll() {
   if (btn) btn.style.display = schedState.highlightedDriver ? '' : 'none';
 }
 
+
+
+// ════════════════════════════════════════════════════════════════════
+// 📅 SCHEDULE TAB — CHUNK 3: INTERACTIVE WRITE LAYER
+// Adds: assign panel, cell-edit, drag-between-cells, publish flow.
+// All functions prefixed sched* — safe to add to any existing dashboard.
+// ════════════════════════════════════════════════════════════════════
+
+// Extend state for interactive UI modes (chunk 2 already declared schedState)
+schedState.uiMode = 'select';        // 'select' | 'cell-edit'
+schedState.editingCell = null;       // { trip_day_id, driver_id, day_iso, stops: [...] }
+schedState.cellAddMode = false;      // true when "Add stop" mode is on inside cell-edit
+schedState.publishing = false;       // true while publish is in progress
+schedState.dragSourceCell = null;    // { trip_day_id, driver_id, day_iso }
+
+// ════════════════════════════════════════════════════════════════════
+// SUPABASE WRITE HELPERS
+// All writes go through these so error handling and auth headers are uniform.
+// ════════════════════════════════════════════════════════════════════
+async function schedInsert(table, payload, returnRow = false) {
+  const url = `${SUPABASE_URL}/rest/v1/${table}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      ...headers(),
+      'Content-Type': 'application/json',
+      'Prefer': returnRow ? 'return=representation' : 'return=minimal',
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = JSON.stringify(await res.json()); } catch { detail = await res.text(); }
+    throw new Error(`Insert ${table} failed: ${res.status} ${detail}`);
+  }
+  if (returnRow) {
+    const data = await res.json();
+    return Array.isArray(data) ? data : [data];
+  }
+  return null;
+}
+async function schedUpdate(table, filter, payload) {
+  const url = `${SUPABASE_URL}/rest/v1/${table}?${filter}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { ...headers(), 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = JSON.stringify(await res.json()); } catch { detail = await res.text(); }
+    throw new Error(`Update ${table} failed: ${res.status} ${detail}`);
+  }
+}
+async function schedDelete(table, filter) {
+  const url = `${SUPABASE_URL}/rest/v1/${table}?${filter}`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: { ...headers(), 'Prefer': 'return=minimal' },
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = JSON.stringify(await res.json()); } catch { detail = await res.text(); }
+    throw new Error(`Delete ${table} failed: ${res.status} ${detail}`);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ASSIGN: create a trip from the current selection
+// ════════════════════════════════════════════════════════════════════
+async function schedAssignSelection(driverId, startDateIso, tripLength, managerNote) {
+  if (!schedState.selected || schedState.selected.size === 0) return;
+  const selectedStores = Array.from(schedState.selected)
+    .map(id => schedState.storesIndex.get(id))
+    .filter(Boolean);
+  if (selectedStores.length === 0) return;
+
+  // Determine depot: use the depot of the first selected store (assumes the
+  // selection is from one depot's territory, which the filter chips enforce).
+  const depotId = selectedStores[0].depot_id;
+  if (!depotId) {
+    schedToast('⚠ Cannot determine depot for selection');
+    return;
+  }
+
+  // Validate driver isn't already booked on any of the trip's days.
+  // (Database has a trigger preventing this, but check client-side for a nicer error.)
+  const dayDates = [];
+  for (let i = 0; i < tripLength; i++) dayDates.push(schedAddDays(startDateIso, i));
+  for (const t of schedState.trips) {
+    if (t.driver_id !== driverId) continue;
+    for (const d of t.days || []) {
+      if (dayDates.includes(d.day_date) && d.status !== 'off') {
+        const driver = schedState.drivers.find(dr => dr.id === driverId);
+        schedToast(`⚠ ${driver?.name || 'Driver'} already booked on ${d.day_date}`);
+        return;
+      }
+    }
+  }
+
+  // Validate no day exceeds Mapbox's 11-stop optimizer limit
+  const stopsPerDay = Math.ceil(selectedStores.length / tripLength);
+  if (stopsPerDay > 11) {
+    schedToast(`⚠ ${stopsPerDay} stops/day exceeds optimizer limit of 11. Use longer trip or fewer stops.`);
+    return;
+  }
+
+  schedToast('Saving…');
+
+  try {
+    const endDateIso = schedAddDays(startDateIso, tripLength - 1);
+
+    // 1. Create the trip
+    const [trip] = await schedInsert('trips', {
+      driver_id: driverId,
+      depot_id: depotId,
+      start_date: startDateIso,
+      end_date: endDateIso,
+      status: 'draft',
+      notes: managerNote || null,
+    }, true);
+    if (!trip || !trip.id) throw new Error('Trip insert returned no row');
+
+    // 2. Create trip_days, naive even split of stops across days
+    const dayPayloads = [];
+    for (let i = 0; i < tripLength; i++) {
+      dayPayloads.push({
+        trip_id: trip.id,
+        day_date: dayDates[i],
+        day_index: i,
+        status: 'planned',
+      });
+    }
+    const days = await schedInsert('trip_days', dayPayloads, true);
+    if (!days || days.length !== tripLength) throw new Error('trip_days insert returned wrong count');
+    days.sort((a, b) => a.day_index - b.day_index);
+
+    // 3. Split stops naively across days (day 0 gets ceil(N/days), each subsequent gets fewer if needed)
+    const stopChunks = [];
+    const baseSize = Math.floor(selectedStores.length / tripLength);
+    let extra = selectedStores.length % tripLength;
+    let cursor = 0;
+    for (let i = 0; i < tripLength; i++) {
+      const size = baseSize + (extra > 0 ? 1 : 0);
+      if (extra > 0) extra--;
+      stopChunks.push(selectedStores.slice(cursor, cursor + size));
+      cursor += size;
+    }
+
+    // 4. Insert trip_stops rows
+    const tripStopPayloads = [];
+    for (let dayIdx = 0; dayIdx < tripLength; dayIdx++) {
+      const chunk = stopChunks[dayIdx];
+      for (let stopIdx = 0; stopIdx < chunk.length; stopIdx++) {
+        const store = chunk[stopIdx];
+        tripStopPayloads.push({
+          trip_day_id: days[dayIdx].id,
+          store_id: store.id,
+          sequence: (stopIdx + 1) * 10,
+          source: store.type === 'order' ? 'order' : 'cadence_overdue',
+          status: 'planned',
+          linked_order_id: store.order_id || null,
+          manager_note: null,
+        });
+      }
+    }
+    const tripStops = await schedInsert('trip_stops', tripStopPayloads, true);
+
+    // 5. Update orders.trip_stop_id for any stops that came from an order
+    if (tripStops && Array.isArray(tripStops)) {
+      const orderUpdates = tripStops.filter(ts => ts.linked_order_id);
+      for (const ts of orderUpdates) {
+        await schedUpdate('orders', `id=eq.${ts.linked_order_id}`,
+          { trip_stop_id: ts.id });
+      }
+    }
+
+    schedState.selected.clear();
+    await schedRefreshData();
+    const driverName = schedState.drivers.find(d => d.id === driverId)?.name || 'driver';
+    schedToast(`✓ Assigned ${selectedStores.length} stops to ${driverName} (${tripLength}-day)`);
+  } catch (e) {
+    console.error('[sched] assign failed:', e);
+    schedToast(`⚠ Failed to assign: ${e.message}`);
+    await schedRefreshData(); // re-pull state
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ADD a single stop to an existing trip_day (cell-edit mode)
+// ════════════════════════════════════════════════════════════════════
+async function schedAddStopToCell(storeId) {
+  const cell = schedState.editingCell;
+  if (!cell) return;
+  const store = schedState.storesIndex.get(storeId);
+  if (!store) return;
+  if (store.assigned) {
+    schedToast('Already scheduled');
+    return;
+  }
+
+  // Find the next sequence number
+  const existingStops = cell.stops || [];
+  if (existingStops.length >= 11) {
+    schedToast('⚠ Day already at 11 stops (optimizer limit). Move some elsewhere first.');
+    return;
+  }
+  const maxSeq = existingStops.reduce((m, s) => Math.max(m, s.sequence || 0), 0);
+  const nextSeq = maxSeq + 10;
+
+  try {
+    const [newStop] = await schedInsert('trip_stops', {
+      trip_day_id: cell.trip_day_id,
+      store_id: storeId,
+      sequence: nextSeq,
+      source: store.type === 'order' ? 'order' : 'cadence_overdue',
+      status: 'planned',
+      linked_order_id: store.order_id || null,
+    }, true);
+    if (newStop && store.order_id) {
+      await schedUpdate('orders', `id=eq.${store.order_id}`,
+        { trip_stop_id: newStop.id });
+    }
+    schedToast(`✓ Added ${store.qb_name}`);
+    await schedRefreshData();
+    // Re-locate the cell after refresh (its trip_day_id is the same)
+    schedReopenEditingCell(cell.trip_day_id);
+    // If the trip is published, single-day re-optimize in the background
+    schedMaybeReoptimizeDay(cell.trip_day_id);
+  } catch (e) {
+    console.error('[sched] add stop failed:', e);
+    schedToast(`⚠ Failed: ${e.message}`);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// REMOVE a stop from a trip_day. May leave the day empty or trip empty.
+// ════════════════════════════════════════════════════════════════════
+async function schedRemoveStopFromCell(tripStopId) {
+  const cell = schedState.editingCell;
+  if (!cell) return;
+  const stop = (cell.stops || []).find(s => s.id === tripStopId);
+  if (!stop) return;
+
+  try {
+    // If linked to an order, unlink it first
+    if (stop.linked_order_id) {
+      await schedUpdate('orders', `id=eq.${stop.linked_order_id}`,
+        { trip_stop_id: null });
+    }
+    await schedDelete('trip_stops', `id=eq.${tripStopId}`);
+
+    // Find the parent trip and check if it should be deleted
+    const parentTrip = schedFindTripContainingDay(cell.trip_day_id);
+    await schedRefreshData();
+    if (parentTrip) {
+      // Check post-refresh whether the trip has any stops left
+      const stillExists = schedState.trips.find(t => t.id === parentTrip.id);
+      if (stillExists) {
+        const totalStops = (stillExists.days || []).reduce(
+          (n, d) => n + ((d.stops || []).length), 0);
+        if (totalStops === 0) {
+          await schedDelete('trips', `id=eq.${parentTrip.id}`);
+          await schedRefreshData();
+          schedExitCellEdit();
+          schedToast('Trip removed (no stops left)');
+          return;
+        }
+      }
+    }
+    schedReopenEditingCell(cell.trip_day_id);
+    schedToast(`✓ Removed`);
+    schedMaybeReoptimizeDay(cell.trip_day_id);
+  } catch (e) {
+    console.error('[sched] remove stop failed:', e);
+    schedToast(`⚠ Failed: ${e.message}`);
+    await schedRefreshData();
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// MOVE all stops from one trip_day to another (drag-between-cells)
+// ════════════════════════════════════════════════════════════════════
+async function schedMoveStops(fromTripDayId, toCell /* {driver_id, day_iso} */) {
+  const fromTrip = schedFindTripContainingDay(fromTripDayId);
+  if (!fromTrip) { schedToast('⚠ Source trip not found'); return; }
+  const fromDay = (fromTrip.days || []).find(d => d.id === fromTripDayId);
+  if (!fromDay || !fromDay.stops || fromDay.stops.length === 0) {
+    schedToast('Nothing to move');
+    return;
+  }
+
+  // Find or create the target trip_day
+  let targetDayId = null;
+  let targetTrip = null;
+  for (const t of schedState.trips) {
+    if (t.driver_id !== toCell.driver_id) continue;
+    for (const d of t.days || []) {
+      if (d.day_date === toCell.day_iso) { targetDayId = d.id; targetTrip = t; break; }
+    }
+    if (targetDayId) break;
+  }
+
+  try {
+    schedToast('Moving…');
+    if (!targetDayId) {
+      // Create a new single-day trip for the target
+      const driver = schedState.drivers.find(d => d.id === toCell.driver_id);
+      if (!driver) { schedToast('⚠ Target driver not found'); return; }
+      const [newTrip] = await schedInsert('trips', {
+        driver_id: toCell.driver_id,
+        depot_id: fromTrip.depot_id,
+        start_date: toCell.day_iso,
+        end_date: toCell.day_iso,
+        status: 'draft',
+      }, true);
+      const [newDay] = await schedInsert('trip_days', {
+        trip_id: newTrip.id,
+        day_date: toCell.day_iso,
+        day_index: 0,
+        status: 'planned',
+      }, true);
+      targetDayId = newDay.id;
+      targetTrip = newTrip;
+    }
+
+    // Determine the next sequence in the target day
+    const existingTargetStops = targetTrip.days
+      ? (targetTrip.days.find(d => d.id === targetDayId)?.stops || [])
+      : [];
+    let nextSeq = existingTargetStops.reduce((m, s) => Math.max(m, s.sequence || 0), 0) + 10;
+
+    if (existingTargetStops.length + fromDay.stops.length > 11) {
+      schedToast('⚠ Target would exceed 11 stops (optimizer limit)');
+      return;
+    }
+
+    // Re-parent each stop
+    for (const stop of fromDay.stops) {
+      await schedUpdate('trip_stops', `id=eq.${stop.id}`, {
+        trip_day_id: targetDayId,
+        sequence: nextSeq,
+      });
+      nextSeq += 10;
+    }
+
+    // If the source trip is now empty, delete it
+    await schedRefreshData();
+    const sourceStillExists = schedState.trips.find(t => t.id === fromTrip.id);
+    if (sourceStillExists) {
+      const total = (sourceStillExists.days || []).reduce((n, d) => n + ((d.stops || []).length), 0);
+      if (total === 0) {
+        await schedDelete('trips', `id=eq.${fromTrip.id}`);
+        await schedRefreshData();
+      }
+    }
+
+    schedToast(`✓ Moved ${fromDay.stops.length} stops`);
+    schedMaybeReoptimizeDay(targetDayId);
+  } catch (e) {
+    console.error('[sched] move failed:', e);
+    schedToast(`⚠ Failed: ${e.message}`);
+    await schedRefreshData();
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Cell-edit state management
+// ════════════════════════════════════════════════════════════════════
+function schedFindTripContainingDay(tripDayId) {
+  for (const t of schedState.trips) {
+    for (const d of t.days || []) {
+      if (d.id === tripDayId) return t;
+    }
+  }
+  return null;
+}
+
+function schedEnterCellEdit(tripDayId, driverId, dayIso) {
+  const trip = schedFindTripContainingDay(tripDayId);
+  const day = trip ? (trip.days || []).find(d => d.id === tripDayId) : null;
+  if (!day) return;
+  schedState.uiMode = 'cell-edit';
+  schedState.editingCell = {
+    trip_day_id: tripDayId,
+    trip_id: trip.id,
+    driver_id: driverId,
+    day_iso: dayIso,
+    stops: day.stops || [],
+  };
+  schedState.cellAddMode = false;
+  schedState.selected.clear();
+  schedState.highlightedDriver = null;
+  // Make sure the Selection sidebar tab is the active one
+  document.querySelectorAll('.sched-side-tab').forEach(b => b.classList.remove('active'));
+  const selTab = document.querySelector('.sched-side-tab[data-side-tab="selection"]');
+  if (selTab) selTab.classList.add('active');
+  schedRenderAll();
+  // Fly the map to this cell's stops
+  if (schedState.map && day.stops && day.stops.length > 0) {
+    const points = day.stops
+      .map(s => schedState.storesIndex.get(s.store_id))
+      .filter(s => s && s.lat != null);
+    if (points.length > 0) {
+      const camera = schedState.map.cameraForBounds([
+        [Math.min(...points.map(p => p.lng)), Math.min(...points.map(p => p.lat))],
+        [Math.max(...points.map(p => p.lng)), Math.max(...points.map(p => p.lat))],
+      ], { padding: 80, maxZoom: 11 });
+      if (camera && camera.center) {
+        schedState.map.jumpTo({ center: camera.center, zoom: camera.zoom });
+        schedRefreshMarkerPositions();
+      }
+    }
+  }
+}
+
+function schedExitCellEdit() {
+  schedState.uiMode = 'select';
+  schedState.editingCell = null;
+  schedState.cellAddMode = false;
+  schedRenderAll();
+}
+
+function schedReopenEditingCell(tripDayId) {
+  const trip = schedFindTripContainingDay(tripDayId);
+  const day = trip ? (trip.days || []).find(d => d.id === tripDayId) : null;
+  if (!day) {
+    schedExitCellEdit();
+    return;
+  }
+  schedState.editingCell = {
+    trip_day_id: tripDayId,
+    trip_id: trip.id,
+    driver_id: trip.driver_id,
+    day_iso: day.day_date,
+    stops: day.stops || [],
+  };
+  schedRenderAll();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Override schedRenderSidebar (chunk 2) to handle the new modes
+// ════════════════════════════════════════════════════════════════════
+function schedRenderSidebar() {
+  const container = document.getElementById('sched-sidebar-content');
+  if (!container) return;
+
+  // Cell-edit mode wins over everything else
+  if (schedState.uiMode === 'cell-edit' && schedState.editingCell) {
+    schedRenderCellEditSidebar(container);
+    return;
+  }
+
+  const tabBtn = document.querySelector('.sched-side-tab.active');
+  const tab = tabBtn ? tabBtn.dataset.sideTab : 'selection';
+
+  if (tab === 'selection') {
+    if (schedState.selected.size === 0) {
+      container.innerHTML = `<div class="sched-empty">
+        <p>No stops selected.</p>
+        <p class="muted">Click pins or shift+drag on the map to lasso a cluster.</p>
+        <p class="muted" style="margin-top:14px;font-size:10px">Click a populated cell below to edit it.</p>
+      </div>`;
+      return;
+    }
+    schedRenderAssignPanel(container);
+  } else {
+    let visible = Array.from(schedState.storesIndex.values()).filter(s => !schedIsFiltered(s));
+    visible.sort((a, b) => (b.days_overdue || -999) - (a.days_overdue || -999));
+    container.innerHTML = `
+      <div class="sched-stop-list-header">${visible.length} stops · sorted by overdue</div>
+      <div>${visible.map(s => schedStopRowHtml(s, schedState.selected.has(s.id))).join('')}</div>
+    `;
+    schedWireStopRows();
+  }
+}
+
+// ── Assign panel ────────────────────────────────────────────────────
+function schedRenderAssignPanel(container) {
+  const selStores = Array.from(schedState.selected)
+    .map(id => schedState.storesIndex.get(id)).filter(Boolean);
+  const orderCount = selStores.filter(s => s.type === 'order').length;
+  const overdueCount = selStores.filter(s => s.type === 'overdue').length;
+  const lateCount = selStores.filter(s => s.type === 'overdue' && (s.days_overdue || 0) > 90).length;
+
+  // Build driver options from active drivers
+  const driverOpts = schedState.drivers.map(d =>
+    `<option value="${schedEscapeHtml(d.id)}">${schedEscapeHtml(d.name)}</option>`
+  ).join('');
+
+  // Day options: each day of current week + a "custom" date input
+  const days = Array.from({ length: 7 }, (_, i) => schedAddDays(schedState.weekStart, i));
+  const dayOpts = days.map(iso => {
+    const label = `${schedFmtDayShort(iso)} ${schedFmtMonthDay(iso)}`;
+    return `<option value="${iso}">${label}</option>`;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="sched-selection-summary">
+      <div class="sched-selection-count">${selStores.length}</div>
+      <div class="sched-selection-label">stops selected</div>
+      <div class="sched-selection-breakdown">
+        <span><strong>${orderCount}</strong> orders</span>
+        <span><strong>${overdueCount}</strong> overdue</span>
+        ${lateCount ? `<span class="late"><strong>${lateCount}</strong> long-overdue</span>` : ''}
+      </div>
+    </div>
+    <div class="sched-assign-form">
+      <label>Driver</label>
+      <select id="sched-assign-driver">
+        <option value="">— pick driver —</option>
+        ${driverOpts}
+      </select>
+      <label>Start day</label>
+      <select id="sched-assign-day">
+        ${dayOpts}
+      </select>
+      <label>Trip length</label>
+      <div class="sched-trip-length">
+        <button class="sched-trip-len-btn active" data-len="1">1 day</button>
+        <button class="sched-trip-len-btn" data-len="2">2 days</button>
+        <button class="sched-trip-len-btn" data-len="3">3 days</button>
+      </div>
+      <label>Manager note (optional)</label>
+      <input type="text" id="sched-assign-note" placeholder="e.g. Hotel: Saskatoon Holiday Inn" maxlength="200">
+      <button class="sched-assign-btn" id="sched-assign-go">Assign →</button>
+      <button class="sched-clear-driver" id="sched-clear-selection-btn" style="margin-top:8px;width:100%;display:block;text-align:center;background:none">Clear selection</button>
+    </div>
+    <div class="sched-stop-list-header">In selection</div>
+    <div>${selStores.map(s => schedStopRowHtml(s, true)).join('')}</div>
+  `;
+  schedWireStopRows();
+
+  // Trip length toggle
+  container.querySelectorAll('.sched-trip-len-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.sched-trip-len-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+
+  // Assign button
+  document.getElementById('sched-assign-go').addEventListener('click', async () => {
+    const driverId = document.getElementById('sched-assign-driver').value;
+    const dayIso = document.getElementById('sched-assign-day').value;
+    const note = document.getElementById('sched-assign-note').value.trim();
+    const lenBtn = container.querySelector('.sched-trip-len-btn.active');
+    const len = lenBtn ? parseInt(lenBtn.dataset.len, 10) : 1;
+    if (!driverId) { schedToast('Pick a driver'); return; }
+    if (!dayIso) { schedToast('Pick a day'); return; }
+    await schedAssignSelection(driverId, dayIso, len, note);
+  });
+
+  document.getElementById('sched-clear-selection-btn').addEventListener('click', () => {
+    schedClearSelection();
+  });
+}
+
+// ── Cell-edit panel ─────────────────────────────────────────────────
+function schedRenderCellEditSidebar(container) {
+  const cell = schedState.editingCell;
+  const driver = schedState.drivers.find(d => d.id === cell.driver_id);
+  const trip = schedFindTripContainingDay(cell.trip_day_id);
+  const tripDayCount = trip ? Math.round((schedParseDate(trip.end_date) - schedParseDate(trip.start_date)) / 86400000) + 1 : 1;
+  const isPublished = trip && trip.status === 'published';
+
+  const stopsHtml = (cell.stops || []).map((stop, idx) => {
+    const store = schedState.storesIndex.get(stop.store_id) || { qb_name: '?', ship_city: '', province: '' };
+    const lateness = (store.days_overdue || 0) > 0 ? `<span class="${(store.days_overdue || 0) > 90 ? 'late' : ''}">${store.days_overdue}d overdue</span>` : '';
+    return `<div class="sched-cell-edit-stop" data-trip-stop-id="${schedEscapeHtml(stop.id)}" data-store-id="${schedEscapeHtml(stop.store_id)}">
+      <span class="sched-stop-seq">${idx + 1}</span>
+      <div class="sched-stop-info">
+        <div class="sched-stop-name">${schedEscapeHtml(store.qb_name)}</div>
+        <div class="sched-stop-meta">
+          <span>${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>
+          ${lateness}
+        </div>
+      </div>
+      <button class="sched-stop-remove" title="Remove from this day">×</button>
+    </div>`;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="sched-cell-edit-header">
+      <button class="sched-cell-back" id="sched-cell-back-btn">← Back</button>
+      <div class="sched-cell-edit-title">
+        <strong>${schedEscapeHtml(driver?.name || 'Driver')}</strong>
+        <div class="muted">${schedFmtDayShort(cell.day_iso)} ${schedFmtMonthDay(cell.day_iso)}${tripDayCount > 1 ? ` · day ${(trip.days.findIndex(d => d.id === cell.trip_day_id) + 1)} of ${tripDayCount}` : ''}</div>
+        ${isPublished ? '<div class="sched-cell-pub-badge">Published</div>' : ''}
+      </div>
+    </div>
+    <div class="sched-cell-stop-list">
+      ${(cell.stops && cell.stops.length) ? stopsHtml : '<div class="sched-empty"><p>No stops on this day yet.</p></div>'}
+    </div>
+    <div class="sched-cell-actions">
+      <button class="sched-cell-action-btn ${schedState.cellAddMode ? 'active' : ''}" id="sched-add-mode-btn">
+        ${schedState.cellAddMode ? '✓ Click pins on map to add' : '+ Add stop'}
+      </button>
+      <button class="sched-cell-action-btn warn" id="sched-delete-day-btn">Delete day</button>
+    </div>
+  `;
+
+  // Wire interactions
+  document.getElementById('sched-cell-back-btn').addEventListener('click', () => schedExitCellEdit());
+
+  container.querySelectorAll('.sched-stop-remove').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const row = btn.closest('.sched-cell-edit-stop');
+      schedRemoveStopFromCell(row.dataset.tripStopId);
+    });
+  });
+
+  // Click stop name → fly map to it
+  container.querySelectorAll('.sched-cell-edit-stop').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.classList.contains('sched-stop-remove')) return;
+      const storeId = row.dataset.storeId;
+      const store = schedState.storesIndex.get(storeId);
+      if (store && schedState.map && store.lat != null) {
+        schedState.map.flyTo({ center: [store.lng, store.lat], zoom: Math.max(schedState.map.getZoom(), 10), duration: 600 });
+      }
+    });
+  });
+
+  // Add mode toggle
+  document.getElementById('sched-add-mode-btn').addEventListener('click', () => {
+    schedState.cellAddMode = !schedState.cellAddMode;
+    schedRenderSidebar();
+  });
+
+  // Delete day
+  document.getElementById('sched-delete-day-btn').addEventListener('click', async () => {
+    if (!confirm(`Delete this entire day for ${driver?.name}? All ${cell.stops.length} stops will be unassigned.`)) return;
+    try {
+      // Unlink any orders
+      for (const stop of (cell.stops || [])) {
+        if (stop.linked_order_id) {
+          await schedUpdate('orders', `id=eq.${stop.linked_order_id}`, { trip_stop_id: null });
+        }
+      }
+      // Delete trip_stops (cascade may handle, but be explicit)
+      await schedDelete('trip_stops', `trip_day_id=eq.${cell.trip_day_id}`);
+      // If this was the only day in the trip, delete the trip too
+      const remainingDays = (trip.days || []).filter(d => d.id !== cell.trip_day_id);
+      const remainingStops = remainingDays.reduce((n, d) => n + ((d.stops || []).length), 0);
+      if (remainingStops === 0) {
+        await schedDelete('trips', `id=eq.${trip.id}`);
+      }
+      schedExitCellEdit();
+      await schedRefreshData();
+      schedToast('Day deleted');
+    } catch (e) {
+      console.error('[sched] delete day failed:', e);
+      schedToast(`⚠ Failed: ${e.message}`);
+    }
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Override the marker click handler to support cell-add mode
+// ════════════════════════════════════════════════════════════════════
+function schedTogglePinSelect(storeId) {
+  if (schedState.uiMode === 'cell-edit' && schedState.cellAddMode) {
+    schedAddStopToCell(storeId);
+    return;
+  }
+  if (schedState.selected.has(storeId)) schedState.selected.delete(storeId);
+  else schedState.selected.add(storeId);
+  if (schedState.highlightedDriver) schedState.highlightedDriver = null;
+  schedRenderAll();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Wire grid cell clicks for cell-edit + drag-and-drop between cells
+// schedRenderGrid (chunk 2) already builds the cell DOM. We add listeners
+// after it renders by wrapping it.
+// ════════════════════════════════════════════════════════════════════
+const _origSchedRenderGrid = schedRenderGrid;
+schedRenderGrid = function() {
+  _origSchedRenderGrid();
+  // After render, attach cell-edit click and drag handlers
+  document.querySelectorAll('.sched-day-cell.has-stops').forEach(cell => {
+    const tripDayId = cell.dataset.tripDayId;
+    const driverId = cell.dataset.driverId;
+    const dayIso = cell.dataset.dayIso;
+    if (!tripDayId) return;
+    cell.draggable = true;
+    cell.addEventListener('click', (e) => {
+      // Skip if user is mid-drag
+      if (cell.classList.contains('dragging-from')) return;
+      schedEnterCellEdit(tripDayId, driverId, dayIso);
+    });
+    cell.addEventListener('dragstart', (e) => {
+      schedState.dragSourceCell = { trip_day_id: tripDayId, driver_id: driverId, day_iso: dayIso };
+      cell.classList.add('dragging-from');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', tripDayId); } catch {}
+    });
+    cell.addEventListener('dragend', () => {
+      cell.classList.remove('dragging-from');
+      schedState.dragSourceCell = null;
+      document.querySelectorAll('.sched-day-cell.drag-over').forEach(c => c.classList.remove('drag-over'));
+    });
+  });
+  // Drop targets: every day-cell (whether populated or empty)
+  document.querySelectorAll('.sched-day-cell').forEach(cell => {
+    if (cell.classList.contains('day-off')) return;
+    const driverId = cell.dataset.driverId;
+    const dayIso = cell.dataset.dayIso;
+    if (!driverId || !dayIso) return;
+    cell.addEventListener('dragover', (e) => {
+      if (!schedState.dragSourceCell) return;
+      // Don't allow dropping on the source itself
+      if (schedState.dragSourceCell.driver_id === driverId &&
+          schedState.dragSourceCell.day_iso === dayIso) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      cell.classList.add('drag-over');
+    });
+    cell.addEventListener('dragleave', () => cell.classList.remove('drag-over'));
+    cell.addEventListener('drop', (e) => {
+      e.preventDefault();
+      cell.classList.remove('drag-over');
+      if (!schedState.dragSourceCell) return;
+      if (schedState.dragSourceCell.driver_id === driverId &&
+          schedState.dragSourceCell.day_iso === dayIso) return;
+      schedMoveStops(schedState.dragSourceCell.trip_day_id, { driver_id: driverId, day_iso: dayIso });
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════
+// PUBLISH FLOW
+// 1. Find draft trips in scope
+// 2. For each, call optimize-trip-routes
+// 3. Set status='published' + published_at
+// 4. Group affected drivers, call send-driver-week-email per driver
+// ════════════════════════════════════════════════════════════════════
+async function schedCallEdgeFunction(name, body) {
+  const url = `${SUPABASE_URL}/functions/v1/${name}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { ...headers(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = JSON.stringify(await res.json()); } catch { detail = await res.text(); }
+    throw new Error(`${name} failed: ${res.status} ${detail}`);
+  }
+  return await res.json();
+}
+
+async function schedPublishWeek() {
+  if (schedState.publishing) return;
+  const draftTrips = schedState.trips.filter(t => t.status === 'draft');
+  if (draftTrips.length === 0) {
+    schedToast('No draft trips to publish');
+    return;
+  }
+  schedState.publishing = true;
+  const pubBtn = document.getElementById('sched-publish-btn');
+  if (pubBtn) { pubBtn.disabled = true; pubBtn.textContent = 'Publishing…'; }
+
+  const optimized = [];
+  const failed = [];
+  for (const trip of draftTrips) {
+    try {
+      schedToast(`Optimizing ${trip.driver_id ? schedState.drivers.find(d => d.id === trip.driver_id)?.name : 'trip'}…`);
+      const result = await schedCallEdgeFunction('optimize-trip-routes', { trip_id: trip.id });
+      if (!result || !result.ok) {
+        failed.push({ trip, reason: result?.message || 'optimization failed' });
+        continue;
+      }
+      // Mark trip published
+      await schedUpdate('trips', `id=eq.${trip.id}`, {
+        status: 'published',
+        published_at: new Date().toISOString(),
+      });
+      optimized.push(trip);
+    } catch (e) {
+      console.error('[sched] optimize failed for', trip.id, e);
+      failed.push({ trip, reason: e.message });
+    }
+  }
+
+  // Group optimized trips by driver, send one weekly email per driver
+  const byDriver = new Map();
+  for (const t of optimized) {
+    if (!byDriver.has(t.driver_id)) byDriver.set(t.driver_id, []);
+    byDriver.get(t.driver_id).push(t);
+  }
+  let emailsSent = 0;
+  let emailFailed = 0;
+  for (const [driverId, trips] of byDriver) {
+    try {
+      schedToast(`Emailing ${schedState.drivers.find(d => d.id === driverId)?.name || 'driver'}…`);
+      await schedCallEdgeFunction('send-driver-week-email', {
+        driver_id: driverId,
+        week_start: schedState.weekStart,
+      });
+      emailsSent++;
+    } catch (e) {
+      console.error('[sched] email failed for', driverId, e);
+      emailFailed++;
+    }
+  }
+
+  schedState.publishing = false;
+  await schedRefreshData();
+  let msg = `✓ Published ${optimized.length} trip${optimized.length === 1 ? '' : 's'} · ${emailsSent} email${emailsSent === 1 ? '' : 's'} sent`;
+  if (failed.length) msg += ` · ${failed.length} failed`;
+  if (emailFailed) msg += ` · ${emailFailed} emails failed`;
+  schedToast(msg);
+  if (failed.length) {
+    console.warn('[sched] failures:', failed);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// MID-WEEK auto re-optimization for published trips
+// Called after stops are added/removed on a single trip_day.
+// ════════════════════════════════════════════════════════════════════
+async function schedMaybeReoptimizeDay(tripDayId) {
+  const trip = schedFindTripContainingDay(tripDayId);
+  if (!trip || trip.status !== 'published') return;
+  // Fire-and-forget — no need to block UI
+  schedCallEdgeFunction('optimize-trip-routes', { trip_day_id: tripDayId })
+    .then(() => {
+      schedRefreshData(); // sequence may have changed
+    })
+    .catch(e => {
+      console.warn('[sched] re-optimize failed (non-blocking):', e.message);
+    });
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Override schedRenderCounters (chunk 2) so the Publish button counts trips
+// ════════════════════════════════════════════════════════════════════
+const _origSchedRenderCounters = schedRenderCounters;
+schedRenderCounters = function() {
+  _origSchedRenderCounters();
+  const draftCount = schedState.trips.filter(t => t.status === 'draft').length;
+  const pubBtn = document.getElementById('sched-publish-btn');
+  if (pubBtn && !schedState.publishing) {
+    pubBtn.textContent = `Publish ${draftCount} plan${draftCount === 1 ? '' : 's'} →`;
+    pubBtn.disabled = draftCount === 0;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Wire publish button click (chunk 2 left it disabled)
+// ════════════════════════════════════════════════════════════════════
+(function schedWirePublish() {
+  const pubBtn = document.getElementById('sched-publish-btn');
+  if (pubBtn && !pubBtn.dataset.wired) {
+    pubBtn.addEventListener('click', () => schedPublishWeek());
+    pubBtn.dataset.wired = '1';
+  }
+  // The button might not exist yet if the schedule tab hasn't rendered.
+  // Hook into the next call to initScheduleTab.
+})();
+
+// Wrap init to also wire the publish button after first init
+const _origInitScheduleTab = initScheduleTab;
+initScheduleTab = async function() {
+  await _origInitScheduleTab();
+  const pubBtn = document.getElementById('sched-publish-btn');
+  if (pubBtn && !pubBtn.dataset.wired) {
+    pubBtn.addEventListener('click', () => schedPublishWeek());
+    pubBtn.dataset.wired = '1';
+  }
+};
 </script>
 </body>
 </html>
