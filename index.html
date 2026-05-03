@@ -5286,49 +5286,71 @@ function schedInitMap() {
 }
 
 function schedFitMapToDepots() {
-  // Fit to the visible store cluster (with active depots as context).
-  // Defer to next frame so any in-flight Mapbox animation settles before fit.
+  // Compute the camera target manually and easeTo it. This avoids fitBounds
+  // edge cases where the map container size or in-flight animations cause it
+  // to silently produce a wider zoom than expected.
   if (!schedState.map) return;
-
-  // Stop any in-flight camera animation first — fitBounds during animation
-  // is sometimes silently ignored.
   try { schedState.map.stop(); } catch (e) {}
 
-  // Defer the fit to the next animation frame so DOM/marker layout is settled
   requestAnimationFrame(() => {
     if (!schedState.map) return;
-    const visibleStores = [];
+
+    // Collect all points to consider for framing
+    const points = [];
     for (const s of schedState.storesIndex.values()) {
       if (s.lat == null || s.lng == null) continue;
       if (schedIsFiltered(s)) continue;
-      visibleStores.push(s);
+      points.push([Number(s.lng), Number(s.lat)]);
     }
     const activeDeps = schedState.userDepots.filter(d => schedState.activeDepots.has(d.code) && d.lat != null && d.lng != null);
+    for (const d of activeDeps) points.push([Number(d.lng), Number(d.lat)]);
 
     console.log('[sched.fit] activeDepots:', [...schedState.activeDepots],
-                '| visibleStores:', visibleStores.length,
-                '| activeDeps:', activeDeps.length,
+                '| points:', points.length,
                 '| storesIndex.size:', schedState.storesIndex.size);
 
-    if (visibleStores.length > 0) {
-      const bounds = new mapboxgl.LngLatBounds();
-      for (const s of visibleStores) bounds.extend([s.lng, s.lat]);
-      for (const d of activeDeps) bounds.extend([Number(d.lng), Number(d.lat)]);
-      console.log('[sched.fit] bounds:', bounds.toArray());
-      schedState.map.fitBounds(bounds, { padding: 60, duration: 600, maxZoom: 9 });
+    if (points.length === 0) {
+      // No data — leave map at current view
       return;
     }
-    if (activeDeps.length === 0) { console.log('[sched.fit] no stores AND no depots — skipping'); return; }
-    if (activeDeps.length === 1) {
-      const d = activeDeps[0];
-      console.log('[sched.fit] no stores — easeTo single depot', d.code);
-      schedState.map.easeTo({ center: [Number(d.lng), Number(d.lat)], zoom: 9, duration: 600 });
-      return;
+
+    // Compute bounding box
+    let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
+    for (const [lng, lat] of points) {
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
     }
-    const bounds = new mapboxgl.LngLatBounds();
-    for (const d of activeDeps) bounds.extend([Number(d.lng), Number(d.lat)]);
-    console.log('[sched.fit] no stores — fitting to', activeDeps.length, 'depots');
-    schedState.map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 9 });
+
+    const centerLng = (minLng + maxLng) / 2;
+    const centerLat = (minLat + maxLat) / 2;
+    const lngSpan = Math.max(0.01, maxLng - minLng);
+    const latSpan = Math.max(0.01, maxLat - minLat);
+
+    // Pick a zoom level based on the larger span. These thresholds are tuned
+    // for Mini Melts territory sizes — covering everything from a single
+    // urban depot (zoom ~10) to all of Canada (zoom ~3).
+    const maxSpan = Math.max(lngSpan, latSpan * 1.5); // lng degrees are wider visually at low lat
+    let zoom;
+    if (maxSpan > 60) zoom = 3;
+    else if (maxSpan > 30) zoom = 4;
+    else if (maxSpan > 15) zoom = 5;
+    else if (maxSpan > 8) zoom = 6;
+    else if (maxSpan > 4) zoom = 7;
+    else if (maxSpan > 2) zoom = 8;
+    else if (maxSpan > 1) zoom = 9;
+    else zoom = 10;
+
+    console.log('[sched.fit] center:', [centerLng.toFixed(2), centerLat.toFixed(2)],
+                '| span:', { lng: lngSpan.toFixed(2), lat: latSpan.toFixed(2) },
+                '| zoom:', zoom);
+
+    schedState.map.easeTo({
+      center: [centerLng, centerLat],
+      zoom: zoom,
+      duration: 600,
+    });
   });
 }
 
