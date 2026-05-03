@@ -767,20 +767,75 @@
   .sched-pin.stale {
     animation: sched-pulse 2.4s infinite;
   }
-  /* Vending pins: diamond shape via rotation, with red ring for needs-attention */
+  /* Vending pins: diamond shape via rotation. Healthy machines stay calm pink;
+     machines needing service jump out with size, color, ring, pulse, and a
+     numeric badge. */
   .sched-pin.vending {
     border-radius: 2px;
     transform: rotate(45deg);
     border-color: rgba(255,255,255,0.95);
+    position: relative;
   }
   .sched-pin.vending.selected {
     transform: rotate(45deg);
   }
+  /* Needs-attention vending: distinctly larger, deep red, persistent pulse */
   .sched-pin.vending.needs-attn {
-    box-shadow: 0 0 0 3px rgba(239,68,68,0.55), 0 2px 6px rgba(0,0,0,0.5);
+    width: 24px !important;
+    height: 24px !important;
+    background: #dc2626 !important;
+    border: 2.5px solid #fff;
+    box-shadow:
+      0 0 0 3px rgba(220,38,38,0.4),
+      0 0 12px rgba(220,38,38,0.6),
+      0 2px 6px rgba(0,0,0,0.5);
+    animation: sched-vending-pulse 1.8s infinite;
+    z-index: 10;
   }
   .sched-pin.vending.needs-attn.selected {
-    box-shadow: 0 0 0 3px var(--gold), 0 0 0 6px rgba(239,68,68,0.55), 0 2px 6px rgba(0,0,0,0.5);
+    width: 28px !important;
+    height: 28px !important;
+    box-shadow:
+      0 0 0 3px var(--gold),
+      0 0 0 6px rgba(220,38,38,0.5),
+      0 0 14px rgba(220,38,38,0.7),
+      0 2px 6px rgba(0,0,0,0.6);
+  }
+  /* The numeric badge sits on the upper-right corner of the rotated diamond.
+     We counter-rotate so the text reads upright. */
+  .sched-vending-badge {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1.5px solid #dc2626;
+    border-radius: 9px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 15px;
+    text-align: center;
+    transform: rotate(-45deg);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  @keyframes sched-vending-pulse {
+    0%, 100% {
+      box-shadow:
+        0 0 0 3px rgba(220,38,38,0.4),
+        0 0 12px rgba(220,38,38,0.6),
+        0 2px 6px rgba(0,0,0,0.5);
+    }
+    50% {
+      box-shadow:
+        0 0 0 8px rgba(220,38,38,0.0),
+        0 0 16px rgba(220,38,38,0.8),
+        0 2px 6px rgba(0,0,0,0.5);
+    }
   }
   @keyframes sched-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(229,72,72,0.5), 0 2px 6px rgba(0,0,0,0.5); }
@@ -5771,10 +5826,32 @@ function schedRenderMarkers() {
       e.stopPropagation();
       schedTogglePinSelect(store.id);
     });
+    // Build the hover popup. Stores get a simple name+city. Vending machines
+    // get richer info — venue name, % sold, last sale — so the manager doesn't
+    // have to click each pin to assess it.
+    let popupHtml;
+    if (store.type === 'vending') {
+      const pct = store.pct_sold != null ? Math.round(Number(store.pct_sold)) : null;
+      const pctColor = pct == null ? '#666' : (pct >= 70 ? '#dc2626' : (pct >= 40 ? '#d97706' : '#15803d'));
+      const lines = [];
+      lines.push(`<strong>${schedEscapeHtml(store.qb_name)}</strong>`);
+      if (store.venue_name && store.venue_name !== store.qb_name) {
+        lines.push(`<span style="opacity:0.7;font-size:11px">${schedEscapeHtml(store.venue_name)}</span>`);
+      }
+      const stats = [];
+      if (pct != null) stats.push(`<span style="color:${pctColor};font-weight:700">${pct}% sold</span>`);
+      if (store.no_sales_3d) stats.push(`<span style="color:#dc2626">no sales ${store.days_since_last_sale}d</span>`);
+      if (store.assigned) stats.push(`<span style="opacity:0.6">scheduled</span>`);
+      if (stats.length) lines.push(`<div style="margin-top:3px">${stats.join(' · ')}</div>`);
+      lines.push(`<span style="opacity:0.8;font-size:11px">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>`);
+      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.5;font-weight:500;min-width:180px">${lines.join('<br>')}</div>`;
+    } else {
+      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`;
+    }
     const marker = new mapboxgl.Marker({ element: el })
       .setLngLat([store.lng, store.lat])
       .setPopup(new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false })
-        .setHTML(`<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`))
+        .setHTML(popupHtml))
       .addTo(schedState.map);
     el.addEventListener('mouseenter', () => marker.togglePopup());
     el.addEventListener('mouseleave', () => marker.togglePopup());
@@ -5837,11 +5914,37 @@ function schedUpdatePinElement(el, store) {
   if (isHighlight) classes.push('driver-highlight');
   if (info.stale && !store.assigned && !isSelected) classes.push('stale');
   if (info.vending) classes.push('vending');
-  if (info.vending && (store.needs_restock || store.no_sales_3d) && !store.assigned) classes.push('needs-attn');
+  const isNeedsAttn = info.vending && (store.needs_restock || store.no_sales_3d) && !store.assigned;
+  if (isNeedsAttn) classes.push('needs-attn');
   el.className = classes.join(' ');
   let bg = info.color;
   if (isHighlight) bg = store.type === 'order' ? '#4fc3d4' : (store.type === 'vending' ? '#e87bb5' : schedCadenceStyle(store.days_overdue || 0).color);
   el.style.background = bg;
+
+  // Numeric badge on needs-attention vending pins. Restock signal (% sold)
+  // takes priority — it's directly actionable. Falls back to days-since-sale
+  // when only the no-sales signal is present.
+  let existingBadge = el.querySelector('.sched-vending-badge');
+  if (isNeedsAttn) {
+    let badgeText = '';
+    if (store.needs_restock && store.pct_sold != null) {
+      badgeText = `${Math.round(Number(store.pct_sold))}%`;
+    } else if (store.no_sales_3d && store.days_since_last_sale != null) {
+      badgeText = `${store.days_since_last_sale}d`;
+    } else if (store.needs_restock) {
+      badgeText = '!';
+    } else {
+      badgeText = '!';
+    }
+    if (!existingBadge) {
+      existingBadge = document.createElement('span');
+      existingBadge.className = 'sched-vending-badge';
+      el.appendChild(existingBadge);
+    }
+    existingBadge.textContent = badgeText;
+  } else if (existingBadge) {
+    existingBadge.remove();
+  }
 }
 
 function schedIsFiltered(store) {
