@@ -5578,6 +5578,24 @@ function schedRenderMarkers() {
       schedUpdatePinElement(marker.getElement(), store);
     }
   }
+  // Diagnostic — logs once per render only when we end up with 0 markers
+  if (schedState.markers.size === 0 && schedState.storesIndex.size > 0) {
+    const sample = [...schedState.storesIndex.values()].slice(0, 3).map(s => ({
+      name: s.qb_name,
+      assigned: s.assigned,
+      type: s.type,
+      hasCoords: s.lat != null && s.lng != null,
+      filteredOut: schedIsFiltered(s),
+    }));
+    console.warn('[sched.renderMarkers] 0 markers from', schedState.storesIndex.size, 'stores. State:', {
+      uiMode: schedState.uiMode,
+      cellAddMode: schedState.cellAddMode,
+      filters: JSON.parse(JSON.stringify(schedState.filters)),
+      selectedSize: schedState.selected ? schedState.selected.size : 0,
+      highlightedDriver: schedState.highlightedDriver,
+      sample,
+    });
+  }
   schedRenderMarkersSafety(startMarkers, indexSize);
 }
 
