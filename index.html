@@ -5311,16 +5311,21 @@ function schedInitMap() {
 }
 
 function schedFitMapToDepots() {
-  // Compute the camera target manually and easeTo it. This avoids fitBounds
-  // edge cases where the map container size or in-flight animations cause it
-  // to silently produce a wider zoom than expected.
+  // Compute camera target from data bounding box, then jumpTo it.
+  // Using jumpTo (no animation) eliminates any animation race conditions where
+  // an in-flight ease can be interrupted and produce wrong final zoom.
   if (!schedState.map) return;
+
+  // Cancel any in-flight camera animation
   try { schedState.map.stop(); } catch (e) {}
+
+  // Force Mapbox to re-read container dimensions before computing camera
+  schedState.map.resize();
 
   requestAnimationFrame(() => {
     if (!schedState.map) return;
 
-    // Collect all points to consider for framing
+    // Collect all points to frame
     const points = [];
     for (const s of schedState.storesIndex.values()) {
       if (s.lat == null || s.lng == null) continue;
@@ -5330,12 +5335,8 @@ function schedFitMapToDepots() {
     const activeDeps = schedState.userDepots.filter(d => schedState.activeDepots.has(d.code) && d.lat != null && d.lng != null);
     for (const d of activeDeps) points.push([Number(d.lng), Number(d.lat)]);
 
-    if (points.length === 0) {
-      // No data — leave map at current view
-      return;
-    }
+    if (points.length === 0) return;
 
-    // Compute bounding box
     let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
     for (const [lng, lat] of points) {
       if (lng < minLng) minLng = lng;
@@ -5343,31 +5344,42 @@ function schedFitMapToDepots() {
       if (lat < minLat) minLat = lat;
       if (lat > maxLat) maxLat = lat;
     }
-
     const centerLng = (minLng + maxLng) / 2;
     const centerLat = (minLat + maxLat) / 2;
     const lngSpan = Math.max(0.01, maxLng - minLng);
     const latSpan = Math.max(0.01, maxLat - minLat);
 
-    // Pick a zoom level based on the larger span. These thresholds are tuned
-    // for Mini Melts territory sizes — covering everything from a single
-    // urban depot (zoom ~10) to all of Canada (zoom ~3).
-    const maxSpan = Math.max(lngSpan, latSpan * 1.5); // lng degrees are wider visually at low lat
-    let zoom;
-    if (maxSpan > 60) zoom = 3;
-    else if (maxSpan > 30) zoom = 4;
-    else if (maxSpan > 15) zoom = 5;
-    else if (maxSpan > 8) zoom = 6;
-    else if (maxSpan > 4) zoom = 7;
-    else if (maxSpan > 2) zoom = 8;
-    else if (maxSpan > 1) zoom = 9;
-    else zoom = 10;
-
-    schedState.map.easeTo({
-      center: [centerLng, centerLat],
-      zoom: zoom,
-      duration: 600,
+    // Use Mapbox's own bounds-to-zoom logic via a fake fitBounds calculation.
+    // We use cameraForBounds which returns the camera state without animating —
+    // this respects current container size correctly.
+    const sw = [minLng, minLat];
+    const ne = [maxLng, maxLat];
+    const camera = schedState.map.cameraForBounds([sw, ne], {
+      padding: 60,
+      maxZoom: 10,
     });
+
+    if (camera && camera.center && typeof camera.zoom === 'number') {
+      console.log('[sched.fit] center:', [camera.center.lng.toFixed(2), camera.center.lat.toFixed(2)],
+                  '| zoom:', camera.zoom.toFixed(2),
+                  '| points:', points.length,
+                  '| container:', schedState.map.getContainer().clientWidth + 'x' + schedState.map.getContainer().clientHeight);
+      schedState.map.jumpTo({ center: camera.center, zoom: camera.zoom });
+    } else {
+      // Fallback: manual zoom heuristic
+      const maxSpan = Math.max(lngSpan, latSpan * 1.5);
+      let zoom;
+      if (maxSpan > 60) zoom = 3;
+      else if (maxSpan > 30) zoom = 4;
+      else if (maxSpan > 15) zoom = 5;
+      else if (maxSpan > 8) zoom = 6;
+      else if (maxSpan > 4) zoom = 7;
+      else if (maxSpan > 2) zoom = 8;
+      else zoom = 9;
+      console.log('[sched.fit FALLBACK] center:', [centerLng.toFixed(2), centerLat.toFixed(2)],
+                  '| zoom:', zoom, '| span:', { lng: lngSpan.toFixed(2), lat: latSpan.toFixed(2) });
+      schedState.map.jumpTo({ center: [centerLng, centerLat], zoom: zoom });
+    }
   });
 }
 
