@@ -6092,34 +6092,74 @@ function schedRenderVendingLayer() {
   const src = schedState.map.getSource('sched-vending');
   if (!src) return;  // map still loading; the on('load') handler will call us
 
-  // First pass: group machines by exact coordinate. Multi-machine venues
-  // (Cineplex Chinook, Cineplex Sunridge, etc.) often have all machines
-  // registered at the same lat/lng, which hides all but one pin on the map.
-  // We spread duplicates out in a small circle (~5m radius) so each is
-  // individually clickable.
-  const coordGroups = new Map();
+  // Pass 0: reset every vending machine's display coords to its raw lat/lng.
+  // Subsequent passes overwrite these for venue-grouped or coord-collision
+  // machines. This keeps the lasso hit-test consistent across renders.
+  for (const store of schedState.storesIndex.values()) {
+    if (store.type !== 'vending') continue;
+    store._displayLat = store.lat;
+    store._displayLng = store.lng;
+  }
+
+  // Pass 1: group machines by venue_id. For multi-machine venues, Nayax
+  // sometimes has each machine geocoded slightly differently (Cineplex
+  // Chinook's "Right" is ~400m from "Left" and "Box Office" even though all
+  // three are inside the same building). We snap them all to the median lat/
+  // lng of the group so they cluster together visually.
+  const visibleStores = [];
   for (const store of schedState.storesIndex.values()) {
     if (store.type !== 'vending') continue;
     if (store.lat == null || store.lng == null) continue;
     if (schedIsFiltered(store)) continue;
-    const key = `${store.lat.toFixed(6)},${store.lng.toFixed(6)}`;
-    let arr = coordGroups.get(key);
-    if (!arr) { arr = []; coordGroups.set(key, arr); }
-    arr.push(store);
+    visibleStores.push(store);
+  }
+  const venueGroups = new Map();      // venue_id → [stores]
+  for (const s of visibleStores) {
+    if (!s.venue_id) continue;
+    let arr = venueGroups.get(s.venue_id);
+    if (!arr) { arr = []; venueGroups.set(s.venue_id, arr); }
+    arr.push(s);
+  }
+  // For multi-machine venues, snap all members to the median lat/lng so they
+  // cluster despite Nayax geocoding inconsistencies. Single-machine venues
+  // and venue-less machines keep their raw coords (set in Pass 0).
+  const median = (nums) => {
+    const sorted = [...nums].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  for (const [, arr] of venueGroups) {
+    if (arr.length < 2) continue;
+    const cLat = median(arr.map(s => s.lat));
+    const cLng = median(arr.map(s => s.lng));
+    for (const s of arr) {
+      s._displayLat = cLat;
+      s._displayLng = cLng;
+    }
   }
 
-  // Second pass: build features with offset for any duplicates. ~5m at
-  // Calgary's latitude is roughly 0.00005 degrees lng / 0.000045 deg lat.
+  // Pass 2: group all visible machines by their CANONICAL coords (after
+  // venue-snap). Anything sharing an exact spot gets fanned out in a tiny
+  // circle so each pin is independently clickable.
+  const coordGroups = new Map();
+  for (const s of visibleStores) {
+    const key = `${s._displayLat.toFixed(6)},${s._displayLng.toFixed(6)}`;
+    let arr = coordGroups.get(key);
+    if (!arr) { arr = []; coordGroups.set(key, arr); }
+    arr.push(s);
+  }
+
+  // Pass 3: build features. Spread out duplicates in a small circle.
+  // ~6m at Calgary's latitude is roughly 0.00006 degrees in either axis.
   const features = [];
   for (const arr of coordGroups.values()) {
     arr.sort((a, b) => (a.qb_name || '').localeCompare(b.qb_name || ''));
     const n = arr.length;
     for (let i = 0; i < n; i++) {
       const store = arr[i];
-      let lng = store.lng, lat = store.lat;
+      let lng = store._displayLng, lat = store._displayLat;
       if (n > 1) {
         const angle = (i / n) * Math.PI * 2;
-        const radius = 0.00006; // ~6m
+        const radius = 0.00012; // ~12m, more visible at typical zoom
         lng += radius * Math.cos(angle);
         lat += radius * Math.sin(angle);
       }
@@ -6271,9 +6311,14 @@ function schedLassoEnd(e) {
     if (store.lat == null || store.lng == null) continue;
     // Skip already-assigned stores (can't lasso-reassign them)
     if (store.assigned) continue;
+    // Hit-test against display position (post-snap, post-spread) so the lasso
+    // matches what the user sees. Falls back to raw lat/lng for non-vending
+    // pins which are rendered as DOM markers without snapping.
+    const hitLat = store._displayLat ?? store.lat;
+    const hitLng = store._displayLng ?? store.lng;
     // For cell-edit mode, only consider unassigned stops in lasso bounds
     if (inCellEdit) {
-      if (store.lng >= minLng && store.lng <= maxLng && store.lat >= minLat && store.lat <= maxLat) {
+      if (hitLng >= minLng && hitLng <= maxLng && hitLat >= minLat && hitLat <= maxLat) {
         toAddToCell.push(store.id);
       }
       continue;
@@ -6282,7 +6327,7 @@ function schedLassoEnd(e) {
     if (store.type === 'order' && !schedState.filters.orders) continue;
     if (store.type === 'overdue' && !schedState.filters.overdue) continue;
     if (store.type === 'vending' && !schedState.filters.vending) continue;
-    if (store.lng >= minLng && store.lng <= maxLng && store.lat >= minLat && store.lat <= maxLat) {
+    if (hitLng >= minLng && hitLng <= maxLng && hitLat >= minLat && hitLat <= maxLat) {
       if (!schedState.selected.has(store.id)) { schedState.selected.add(store.id); added++; }
     }
   }
@@ -6658,7 +6703,7 @@ function schedFindSiblings(selectedStores) {
     // It's a sibling
     let entry = result.get(store.venue_id);
     if (!entry) {
-      entry = { venue_name: store.venue_name || store.machine_name || 'Venue', siblings: [] };
+      entry = { venue_name: store.venue_name || store.qb_name || 'Venue', siblings: [] };
       result.set(store.venue_id, entry);
     }
     entry.siblings.push(store);
@@ -6666,7 +6711,7 @@ function schedFindSiblings(selectedStores) {
   // Sort siblings by name for stable rendering
   for (const entry of result.values()) {
     entry.siblings.sort((a, b) =>
-      (a.machine_name || '').localeCompare(b.machine_name || ''));
+      (a.qb_name || '').localeCompare(b.qb_name || ''));
   }
   return result;
 }
@@ -6708,7 +6753,7 @@ async function schedAssignSelection(driverId, startDateIso, tripLength, managerN
   // store object — used below when building trip_stop payloads.
   for (const arr of venueGroups.values()) {
     if (arr.length < 2) continue;
-    arr.sort((a, b) => (a.machine_name || '').localeCompare(b.machine_name || ''));
+    arr.sort((a, b) => (a.qb_name || '').localeCompare(b.qb_name || ''));
     for (let i = 1; i < arr.length; i++) {
       arr[i]._isSibling = true;
     }
@@ -7168,7 +7213,7 @@ function schedRenderAssignPanel(container) {
       const itemsHtml = info.siblings.map(m => `
         <label class="sched-sibling-item">
           <input type="checkbox" class="sched-sibling-checkbox" data-machine-id="${schedEscapeHtml(m.id)}" checked>
-          <span class="sched-sibling-name">${schedEscapeHtml(m.machine_name || 'Unnamed')}</span>
+          <span class="sched-sibling-name">${schedEscapeHtml(m.qb_name || 'Unnamed')}</span>
           ${m.pct_sold != null ? `<span class="sched-sibling-pct">${Math.round(m.pct_sold)}% sold</span>` : ''}
         </label>
       `).join('');
