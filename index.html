@@ -3908,7 +3908,7 @@ async function loadMapData() {
   }
   const [stores, venues, depots, routes, pendingOrders] = await Promise.all([
     fetchAll('stores_map?select=id,public_code,name,qb_name,address,city,province,lat,lng,active,depot_id,depot_code,depot_name,route_id,route_code,route_name,route_color,route_delivery_method'),
-    fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_refill_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_refill'),
+    fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
     fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,notes,po_number,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email&order=submitted_at.desc'),
@@ -4358,7 +4358,7 @@ async function initMapboxGL() {
     const qty = p.qty_sold_since_visit != null && p.qty_sold_since_visit !== '' ? Number(p.qty_sold_since_visit) : null;
     const cap = p.capacity_units != null && p.capacity_units !== '' ? Number(p.capacity_units) : 300;
     const daysSinceSale = p.days_since_last_sale != null && p.days_since_last_sale !== '' ? Number(p.days_since_last_sale) : null;
-    const daysSinceRefill = p.days_since_last_refill != null && p.days_since_last_refill !== '' ? Number(p.days_since_last_refill) : null;
+    const daysSinceVisit = p.days_since_last_visit != null && p.days_since_last_visit !== '' ? Number(p.days_since_last_visit) : null;
     const needsRestock = p.needs_restock === true || p.needs_restock === 'true';
     const noSales3d = p.no_sales_3d === true || p.no_sales_3d === 'true';
     const online = p.mqtt_online === true || p.mqtt_online === 'true';
@@ -4395,7 +4395,7 @@ async function initMapboxGL() {
           </div>` : ''}
         <div style="font-size:12px;color:#374151;line-height:1.6;border-top:1px solid #e5e7eb;padding-top:6px;margin-top:6px">
           ${daysSinceSale != null ? `<div>Last sale: <strong>${daysSinceSale === 0 ? 'today' : daysSinceSale + 'd ago'}</strong></div>` : ''}
-          ${daysSinceRefill != null ? `<div>Last refill: <strong>${daysSinceRefill === 0 ? 'today' : daysSinceRefill + 'd ago'}</strong></div>` : ''}
+          ${daysSinceVisit != null ? `<div>Last visit: <strong>${daysSinceVisit === 0 ? 'today' : daysSinceVisit + 'd ago'}</strong></div>` : ''}
           ${p.address ? `<div style="color:#6b7280;margin-top:4px">${escapeHtmlMap(p.address)}, ${escapeHtmlMap(p.city || '')}</div>` : ''}
         </div>
       </div>`;
@@ -4754,7 +4754,7 @@ function applyMapFiltersInternal() {
         capacity_units: m.capacity_units,
         pct_sold: m.pct_sold,
         days_since_last_sale: m.days_since_last_sale,
-        days_since_last_refill: m.days_since_last_refill,
+        days_since_last_visit: m.days_since_last_visit,
         mqtt_online: m.mqtt_online === true,
         // Pre-computed booleans for the ring filter and popup logic
         needs_restock: m.needs_restock === true,
@@ -5565,7 +5565,7 @@ async function schedLoadOrdersAndOverdue() {
   // visually filter via lasso. The active-depot chip filter still applies to
   // store pins, so this just means vending stays visible across depots.
   const vendingPromise = sbFetch(
-    `vending_machines_map?select=id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_refill_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_refill,mqtt_online`
+    `vending_machines_map?select=id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_visit_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit,mqtt_online`
   );
 
   let overdueRows = [], orderRows = [], vendingRows = [];
@@ -5656,7 +5656,7 @@ async function schedLoadOrdersAndOverdue() {
       needs_restock: m.needs_restock === true,
       no_sales_3d: m.no_sales_3d === true,
       days_since_last_sale: m.days_since_last_sale,
-      days_since_last_refill: m.days_since_last_refill,
+      days_since_last_visit: m.days_since_last_visit,
       mqtt_online: m.mqtt_online === true,
     });
   }
