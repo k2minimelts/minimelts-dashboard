@@ -5552,7 +5552,7 @@ async function schedLoadOrdersAndOverdue() {
   // visually filter via lasso. The active-depot chip filter still applies to
   // store pins, so this just means vending stays visible across depots.
   const vendingPromise = sbFetch(
-    `vending_machines_map?select=id,machine_name,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_refill_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_refill,mqtt_online`
+    `vending_machines_map?select=id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_refill_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_refill,mqtt_online`
   );
 
   let overdueRows = [], orderRows = [], vendingRows = [];
@@ -5634,6 +5634,7 @@ async function schedLoadOrdersAndOverdue() {
       days_overdue: 0,
       assigned: false,
       // Vending-specific fields used by pin styling and sidebar rendering
+      venue_id: m.venue_id || null,         // needed for sibling-machine detection
       venue_name: m.venue_name || '',
       venue_chain: m.venue_chain || '',
       pct_sold: m.pct_sold,
@@ -5681,6 +5682,7 @@ function schedMarkAssignedStores() {
               type: 'vending',
               days_overdue: 0,
               assigned: true,
+              venue_id: stop.machine.venue_id || venue.id || null,  // for sibling detection
               venue_name: venue.name || '',
             });
           }
@@ -6089,31 +6091,59 @@ function schedRenderVendingLayer() {
   if (!schedState.map) return;
   const src = schedState.map.getSource('sched-vending');
   if (!src) return;  // map still loading; the on('load') handler will call us
-  const features = [];
+
+  // First pass: group machines by exact coordinate. Multi-machine venues
+  // (Cineplex Chinook, Cineplex Sunridge, etc.) often have all machines
+  // registered at the same lat/lng, which hides all but one pin on the map.
+  // We spread duplicates out in a small circle (~5m radius) so each is
+  // individually clickable.
+  const coordGroups = new Map();
   for (const store of schedState.storesIndex.values()) {
     if (store.type !== 'vending') continue;
     if (store.lat == null || store.lng == null) continue;
     if (schedIsFiltered(store)) continue;
-    const isHighlight = schedState.highlightedDriver && schedIsStoreOnDriver(store.id, schedState.highlightedDriver);
-    const needsAttention = (store.needs_restock || store.no_sales_3d) && !store.assigned;
-    features.push({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [store.lng, store.lat] },
-      properties: {
-        id: store.id,
-        name: store.qb_name || '',
-        venue_name: store.venue_name || '',
-        city: store.ship_city || '',
-        province: store.province || '',
-        pct_sold: store.pct_sold != null ? Number(store.pct_sold) : null,
-        no_sales_3d: store.no_sales_3d === true,
-        days_since_last_sale: store.days_since_last_sale,
-        assigned: store.assigned === true,
-        needs_attention: needsAttention,
-        selected: schedState.selected.has(store.id),
-        highlighted: !!isHighlight,
-      },
-    });
+    const key = `${store.lat.toFixed(6)},${store.lng.toFixed(6)}`;
+    let arr = coordGroups.get(key);
+    if (!arr) { arr = []; coordGroups.set(key, arr); }
+    arr.push(store);
+  }
+
+  // Second pass: build features with offset for any duplicates. ~5m at
+  // Calgary's latitude is roughly 0.00005 degrees lng / 0.000045 deg lat.
+  const features = [];
+  for (const arr of coordGroups.values()) {
+    arr.sort((a, b) => (a.qb_name || '').localeCompare(b.qb_name || ''));
+    const n = arr.length;
+    for (let i = 0; i < n; i++) {
+      const store = arr[i];
+      let lng = store.lng, lat = store.lat;
+      if (n > 1) {
+        const angle = (i / n) * Math.PI * 2;
+        const radius = 0.00006; // ~6m
+        lng += radius * Math.cos(angle);
+        lat += radius * Math.sin(angle);
+      }
+      const isHighlight = schedState.highlightedDriver && schedIsStoreOnDriver(store.id, schedState.highlightedDriver);
+      const needsAttention = (store.needs_restock || store.no_sales_3d) && !store.assigned;
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [lng, lat] },
+        properties: {
+          id: store.id,
+          name: store.qb_name || '',
+          venue_name: store.venue_name || '',
+          city: store.ship_city || '',
+          province: store.province || '',
+          pct_sold: store.pct_sold != null ? Number(store.pct_sold) : null,
+          no_sales_3d: store.no_sales_3d === true,
+          days_since_last_sale: store.days_since_last_sale,
+          assigned: store.assigned === true,
+          needs_attention: needsAttention,
+          selected: schedState.selected.has(store.id),
+          highlighted: !!isHighlight,
+        },
+      });
+    }
   }
   src.setData({ type: 'FeatureCollection', features });
 }
