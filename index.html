@@ -436,6 +436,63 @@
   .sched-selection-breakdown strong { color: var(--text); }
   .sched-selection-breakdown .late strong { color: #e54848; }
 
+  /* Sibling-machine auto-include section. Shown between selection summary
+     and the assign form when the selection's vending machines have un-
+     selected siblings at the same venue. Each is +20 min of service time. */
+  .sched-siblings-section {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: #fff8e6;
+  }
+  .sched-siblings-header {
+    font-size: 13px;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+  .sched-siblings-header strong { font-weight: 700; }
+  .sched-siblings-hint {
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-left: 8px;
+    font-weight: 500;
+  }
+  .sched-sibling-group {
+    margin-bottom: 8px;
+  }
+  .sched-sibling-group:last-child { margin-bottom: 0; }
+  .sched-sibling-venue {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+    margin-left: 4px;
+  }
+  .sched-sibling-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .sched-sibling-item:hover { background: rgba(0,0,0,0.04); }
+  .sched-sibling-checkbox { margin: 0; cursor: pointer; }
+  .sched-sibling-name {
+    font-size: 13px;
+    color: var(--text);
+    flex: 1;
+  }
+  .sched-sibling-pct {
+    font-size: 11px;
+    color: #9d174d;
+    background: #fce7f3;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+
   .sched-assign-form {
     padding: 14px 16px;
     border-bottom: 1px solid var(--border);
@@ -6538,12 +6595,94 @@ async function schedDelete(table, filter) {
 // ════════════════════════════════════════════════════════════════════
 // ASSIGN: create a trip from the current selection
 // ════════════════════════════════════════════════════════════════════
-async function schedAssignSelection(driverId, startDateIso, tripLength, managerNote) {
+// ────────────────────────────────────────────────────────────────────
+// Sibling-machine detection. When a manager schedules vending machines,
+// other managed machines at the same venue (same venue_id) are usually
+// worth restocking on the same trip. The driver is already there. The
+// first machine at a venue gets the default 45-min service time; each
+// additional machine ("sibling") only adds 20 minutes.
+//
+// This helper scans the selection and finds any UN-selected machines
+// that share a venue_id with a SELECTED machine. Returns:
+//   Map<venue_id, { venue_name, siblings: [machineStore, ...] }>
+// where each entry is sorted by machine name for deterministic order.
+// ────────────────────────────────────────────────────────────────────
+function schedFindSiblings(selectedStores) {
+  const result = new Map();
+  // Collect venue_ids from selected vending machines
+  const venueIds = new Set();
+  const selectedMachineIds = new Set();
+  for (const s of selectedStores) {
+    if (s.type === 'vending' && s.venue_id) {
+      venueIds.add(s.venue_id);
+      selectedMachineIds.add(s.id); // s.id is the storesIndex key
+    }
+  }
+  if (venueIds.size === 0) return result;
+  // Scan storesIndex for machines at those venues that aren't selected
+  for (const store of schedState.storesIndex.values()) {
+    if (store.type !== 'vending') continue;
+    if (!store.venue_id || !venueIds.has(store.venue_id)) continue;
+    if (selectedMachineIds.has(store.id)) continue;
+    if (store.assigned) continue; // already on a trip
+    // It's a sibling
+    let entry = result.get(store.venue_id);
+    if (!entry) {
+      entry = { venue_name: store.venue_name || store.machine_name || 'Venue', siblings: [] };
+      result.set(store.venue_id, entry);
+    }
+    entry.siblings.push(store);
+  }
+  // Sort siblings by name for stable rendering
+  for (const entry of result.values()) {
+    entry.siblings.sort((a, b) =>
+      (a.machine_name || '').localeCompare(b.machine_name || ''));
+  }
+  return result;
+}
+
+async function schedAssignSelection(driverId, startDateIso, tripLength, managerNote, includedSiblingIds = null) {
   if (!schedState.selected || schedState.selected.size === 0) return;
   const selectedStores = Array.from(schedState.selected)
     .map(id => schedState.storesIndex.get(id))
     .filter(Boolean);
   if (selectedStores.length === 0) return;
+
+  // Merge in any auto-included sibling vending machines. The assign panel's
+  // sibling section produces a Set of machine-storesIndex-keys; we look those
+  // up and append to the working list of stops to create.
+  if (includedSiblingIds && includedSiblingIds.size > 0) {
+    for (const sid of includedSiblingIds) {
+      const m = schedState.storesIndex.get(sid);
+      if (m && !selectedStores.find(s => s.id === sid)) {
+        selectedStores.push(m);
+      }
+    }
+  }
+
+  // Per-venue grouping for service-time calculation. Within each venue, the
+  // alphabetically-first machine keeps the default service time (NULL on the
+  // row → workload-config 45 min) and every additional machine becomes a
+  // "sibling" at 20 min. This rule applies regardless of whether the manager
+  // lassoed multiple machines or only one (with siblings auto-included).
+  const venueGroups = new Map(); // venue_id → array of vending stores at that venue
+  for (const s of selectedStores) {
+    if (s.type !== 'vending' || !s.venue_id) continue;
+    let arr = venueGroups.get(s.venue_id);
+    if (!arr) { arr = []; venueGroups.set(s.venue_id, arr); }
+    arr.push(s);
+  }
+  // For each venue group of 2+, pick the alphabetically-first as "primary"
+  // and mark the rest as siblings (20 min). Single-machine venues stay
+  // unmarked (default 45 min). We attach a transient flag _isSibling to the
+  // store object — used below when building trip_stop payloads.
+  for (const arr of venueGroups.values()) {
+    if (arr.length < 2) continue;
+    arr.sort((a, b) => (a.machine_name || '').localeCompare(b.machine_name || ''));
+    for (let i = 1; i < arr.length; i++) {
+      arr[i]._isSibling = true;
+    }
+  }
 
   // Determine depot. Stores carry their own depot_id. Vending machines don't
   // (yet) have a depot assignment, so for selections that include vending,
@@ -6652,6 +6791,7 @@ async function schedAssignSelection(driverId, startDateIso, tripLength, managerN
             status: 'planned',
             linked_order_id: null,
             manager_note: null,
+            service_minutes: store._isSibling ? 20 : null,
           });
         } else {
           tripStopPayloads.push({
@@ -6989,6 +7129,38 @@ function schedRenderAssignPanel(container) {
   const overdueCount = selStores.filter(s => s.type === 'overdue').length;
   const lateCount = selStores.filter(s => s.type === 'overdue' && (s.days_overdue || 0) > 90).length;
 
+  // Sibling detection — scan storesIndex for vending machines at the same
+  // venue as any selected machine. Default behavior is to auto-include.
+  const siblingMap = schedFindSiblings(selStores);
+  let siblingsHtml = '';
+  if (siblingMap.size > 0) {
+    const groupsHtml = Array.from(siblingMap.entries()).map(([venueId, info]) => {
+      const itemsHtml = info.siblings.map(m => `
+        <label class="sched-sibling-item">
+          <input type="checkbox" class="sched-sibling-checkbox" data-machine-id="${schedEscapeHtml(m.id)}" checked>
+          <span class="sched-sibling-name">${schedEscapeHtml(m.machine_name || 'Unnamed')}</span>
+          ${m.pct_sold != null ? `<span class="sched-sibling-pct">${Math.round(m.pct_sold)}% sold</span>` : ''}
+        </label>
+      `).join('');
+      return `
+        <div class="sched-sibling-group">
+          <div class="sched-sibling-venue">${schedEscapeHtml(info.venue_name)}</div>
+          ${itemsHtml}
+        </div>
+      `;
+    }).join('');
+    const total = Array.from(siblingMap.values()).reduce((n, e) => n + e.siblings.length, 0);
+    siblingsHtml = `
+      <div class="sched-siblings-section">
+        <div class="sched-siblings-header">
+          <strong>${total}</strong> sibling ${total === 1 ? 'machine' : 'machines'} at the same venue${siblingMap.size === 1 ? '' : 's'}
+          <span class="sched-siblings-hint">included as +20 min each</span>
+        </div>
+        ${groupsHtml}
+      </div>
+    `;
+  }
+
   // Build driver options from active drivers
   const driverOpts = schedState.drivers.map(d =>
     `<option value="${schedEscapeHtml(d.id)}">${schedEscapeHtml(d.name)}</option>`
@@ -7011,6 +7183,7 @@ function schedRenderAssignPanel(container) {
         ${lateCount ? `<span class="late"><strong>${lateCount}</strong> long-overdue</span>` : ''}
       </div>
     </div>
+    ${siblingsHtml}
     <div class="sched-assign-form">
       <label>Driver</label>
       <select id="sched-assign-driver">
@@ -7054,7 +7227,12 @@ function schedRenderAssignPanel(container) {
     const len = lenBtn ? parseInt(lenBtn.dataset.len, 10) : 1;
     if (!driverId) { schedToast('Pick a driver'); return; }
     if (!dayIso) { schedToast('Pick a day'); return; }
-    await schedAssignSelection(driverId, dayIso, len, note);
+    // Gather checked siblings to auto-include
+    const includedSiblingIds = new Set();
+    container.querySelectorAll('.sched-sibling-checkbox').forEach(cb => {
+      if (cb.checked) includedSiblingIds.add(cb.dataset.machineId);
+    });
+    await schedAssignSelection(driverId, dayIso, len, note, includedSiblingIds);
   });
 
   document.getElementById('sched-clear-selection-btn').addEventListener('click', () => {
