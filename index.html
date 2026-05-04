@@ -5797,6 +5797,12 @@ function schedInitMap() {
   });
   schedState.map.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
+  // Disable Mapbox's built-in box-zoom handler. Box-zoom activates on
+  // shift-drag (same gesture as our lasso) and renders a grey dashed
+  // rectangle that overlaps with our yellow lasso. Without this, the user
+  // sees a phantom second rectangle while lassoing.
+  if (schedState.map.boxZoom) schedState.map.boxZoom.disable();
+
   // Set up vending pins as a Mapbox layer (not DOM markers). Mirrors the
   // approach used on the public Map tab — works correctly with map zoom/pan
   // and renders SVG icons reliably without CSS transform conflicts.
