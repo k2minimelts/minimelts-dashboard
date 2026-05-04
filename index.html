@@ -5911,20 +5911,56 @@ function schedInitMap() {
       const f = e.features && e.features[0];
       if (!f) return;
       const p = f.properties;
+
+      // Mapbox feature properties come back as strings — coerce numerics back.
       const pct = p.pct_sold != null && p.pct_sold !== '' ? Number(p.pct_sold) : null;
-      const pctColor = pct == null ? '#666' : (pct >= 70 ? '#dc2626' : (pct >= 40 ? '#d97706' : '#15803d'));
-      const lines = [];
-      lines.push(`<strong>${schedEscapeHtml(p.name || '')}</strong>`);
-      if (p.venue_name && p.venue_name !== p.name) {
-        lines.push(`<span style="opacity:0.7;font-size:11px">${schedEscapeHtml(p.venue_name)}</span>`);
+      const qty = p.qty_sold_since_visit != null && p.qty_sold_since_visit !== '' ? Number(p.qty_sold_since_visit) : null;
+      const cap = p.capacity_units != null && p.capacity_units !== '' ? Number(p.capacity_units) : 300;
+      const daysSinceSale = p.days_since_last_sale != null && p.days_since_last_sale !== '' ? Number(p.days_since_last_sale) : null;
+      const daysSinceVisit = p.days_since_last_visit != null && p.days_since_last_visit !== '' ? Number(p.days_since_last_visit) : null;
+      const needsRestock = p.needs_restock === true || p.needs_restock === 'true';
+      const noSales3d = p.no_sales_3d === true || p.no_sales_3d === 'true';
+      const online = p.mqtt_online === true || p.mqtt_online === 'true';
+      const assigned = p.assigned === true || p.assigned === 'true';
+
+      // % sold colour-coded pill (green/yellow/red gradient — same thresholds as Map tab)
+      let pctColor = '#888', pctBg = '#f3f4f6';
+      if (pct != null) {
+        if (pct >= 70) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
+        else if (pct >= 40) { pctColor = '#92400e'; pctBg = '#fef3c7'; }
+        else { pctColor = '#065f46'; pctBg = '#d1fae5'; }
       }
-      const stats = [];
-      if (pct != null) stats.push(`<span style="color:${pctColor};font-weight:700">${Math.round(pct)}% sold</span>`);
-      if (p.no_sales_3d === 'true' || p.no_sales_3d === true) stats.push(`<span style="color:#dc2626">no sales ${p.days_since_last_sale}d</span>`);
-      if (p.assigned === 'true' || p.assigned === true) stats.push(`<span style="opacity:0.6">scheduled</span>`);
-      if (stats.length) lines.push(`<div style="margin-top:3px">${stats.join(' · ')}</div>`);
-      lines.push(`<span style="opacity:0.8;font-size:11px">${schedEscapeHtml([p.city, p.province].filter(Boolean).join(', '))}</span>`);
-      const popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.5;font-weight:500;min-width:180px">${lines.join('<br>')}</div>`;
+
+      const alertBadges = [];
+      if (needsRestock) alertBadges.push(`<span style="background:#fee2e2;color:#9b1c1c;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ Needs restock</span>`);
+      if (noSales3d) alertBadges.push(`<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ No sales ${daysSinceSale}d</span>`);
+      if (!online) alertBadges.push(`<span style="background:#e5e7eb;color:#374151;padding:2px 6px;border-radius:4px;font-size:11px">📵 Offline</span>`);
+      if (assigned) alertBadges.push(`<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">📅 Scheduled</span>`);
+
+      const machineName = p.name && p.name !== '' ? p.name : '(unnamed machine)';
+      const venueName = p.venue_name && p.venue_name !== '' && p.venue_name !== machineName ? p.venue_name : '';
+
+      const popupHtml = `
+        <div style="font-family:inherit;color:#0d1117;min-width:240px;max-width:300px">
+          <div style="font-weight:700;font-size:14px;margin-bottom:2px">${schedEscapeHtml(machineName)}</div>
+          ${venueName ? `<div style="font-size:12px;color:#6b7280;margin-bottom:6px">${schedEscapeHtml(venueName)}</div>` : ''}
+          <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+            <span style="background:#fce7f3;color:#9d174d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">VENDING</span>
+            ${p.venue_chain ? `<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:11px">${schedEscapeHtml(String(p.venue_chain).toUpperCase())}</span>` : ''}
+            ${alertBadges.join('')}
+          </div>
+          ${pct != null ? `
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <span style="background:${pctBg};color:${pctColor};padding:4px 8px;border-radius:6px;font-size:13px;font-weight:700">${pct.toFixed(0)}% sold</span>
+              ${qty != null ? `<span style="font-size:12px;color:#6b7280">${qty} of ${cap} units</span>` : ''}
+            </div>` : ''}
+          <div style="font-size:12px;color:#374151;line-height:1.6;border-top:1px solid #e5e7eb;padding-top:6px;margin-top:6px">
+            ${daysSinceSale != null ? `<div>Last sale: <strong>${daysSinceSale === 0 ? 'today' : daysSinceSale + 'd ago'}</strong></div>` : ''}
+            ${daysSinceVisit != null ? `<div>Last visit: <strong>${daysSinceVisit === 0 ? 'today' : daysSinceVisit + 'd ago'}</strong></div>` : ''}
+            ${p.address ? `<div style="color:#6b7280;margin-top:4px">${schedEscapeHtml(p.address)}${p.city ? ', ' + schedEscapeHtml(p.city) : ''}</div>` : ''}
+          </div>
+        </div>`;
+
       if (hoverPopup) hoverPopup.remove();
       hoverPopup = new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false })
         .setLngLat(f.geometry.coordinates)
@@ -6191,11 +6227,18 @@ function schedRenderVendingLayer() {
           id: store.id,
           name: store.qb_name || '',
           venue_name: store.venue_name || '',
+          venue_chain: store.venue_chain || '',
+          address: store.ship_addr1 || '',
           city: store.ship_city || '',
           province: store.province || '',
           pct_sold: store.pct_sold != null ? Number(store.pct_sold) : null,
+          qty_sold_since_visit: store.qty_sold_since_visit,
+          capacity_units: store.capacity_units,
+          needs_restock: store.needs_restock === true,
           no_sales_3d: store.no_sales_3d === true,
           days_since_last_sale: store.days_since_last_sale,
+          days_since_last_visit: store.days_since_last_visit,
+          mqtt_online: store.mqtt_online === true,
           assigned: store.assigned === true,
           needs_attention: needsAttention,
           selected: schedState.selected.has(store.id),
