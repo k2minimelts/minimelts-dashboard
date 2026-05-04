@@ -232,10 +232,26 @@
     border-radius: 6px;
     cursor: pointer;
     font-size: 11px;
-    transition: border-color 0.15s;
+    transition: all 0.15s;
+    /* Default state for chips NOT marked .active: dimmed to signal they're hiding pins */
+    opacity: 0.45;
+    text-decoration: line-through;
+    text-decoration-color: rgba(255,255,255,0.3);
   }
-  .sched-counter:hover { border-color: var(--muted); }
-  .sched-counter.active { border-color: var(--gold); }
+  .sched-counter:hover {
+    border-color: var(--muted);
+    opacity: 0.7;
+  }
+  .sched-counter.active {
+    border-color: var(--gold);
+    opacity: 1;
+    text-decoration: none;
+  }
+  .sched-counter.active:hover {
+    border-color: var(--gold);
+    opacity: 1;
+    background: rgba(226,176,74,0.08);
+  }
   .sched-counter .sw {
     width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
   }
@@ -767,75 +783,81 @@
   .sched-pin.stale {
     animation: sched-pulse 2.4s infinite;
   }
-  /* Vending pins: diamond shape via rotation. Healthy machines stay calm pink;
-     machines needing service jump out with size, color, ring, pulse, and a
-     numeric badge. */
+  /* Vending pins: diamond shape via clip-path (NOT rotate, since Mapbox's
+     marker container applies its own transform: translate() which would conflict).
+     Healthy machines stay calm pink; machines needing service jump out with
+     size, color, glow, pulse, and a numeric badge. */
   .sched-pin.vending {
-    border-radius: 2px;
-    transform: rotate(45deg);
-    border-color: rgba(255,255,255,0.95);
+    border-radius: 0;
+    border: none;
+    background: #e87bb5;
+    clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+    /* clip-path removes the border, so simulate a white outline using filter */
+    filter: drop-shadow(0 0 1.5px #fff) drop-shadow(0 1px 3px rgba(0,0,0,0.5));
     position: relative;
   }
-  .sched-pin.vending.selected {
-    transform: rotate(45deg);
-  }
-  /* Needs-attention vending: distinctly larger, deep red, persistent pulse */
+  /* Needs-attention vending: distinctly larger, deep red, persistent pulse.
+     box-shadow doesn't work well with clip-path, so use bigger filter glow. */
   .sched-pin.vending.needs-attn {
-    width: 24px !important;
-    height: 24px !important;
+    width: 26px !important;
+    height: 26px !important;
     background: #dc2626 !important;
-    border: 2.5px solid #fff;
-    box-shadow:
-      0 0 0 3px rgba(220,38,38,0.4),
-      0 0 12px rgba(220,38,38,0.6),
-      0 2px 6px rgba(0,0,0,0.5);
+    filter:
+      drop-shadow(0 0 1.5px #fff)
+      drop-shadow(0 0 6px rgba(220,38,38,0.9))
+      drop-shadow(0 0 12px rgba(220,38,38,0.5));
     animation: sched-vending-pulse 1.8s infinite;
     z-index: 10;
   }
-  .sched-pin.vending.needs-attn.selected {
-    width: 28px !important;
-    height: 28px !important;
-    box-shadow:
-      0 0 0 3px var(--gold),
-      0 0 0 6px rgba(220,38,38,0.5),
-      0 0 14px rgba(220,38,38,0.7),
-      0 2px 6px rgba(0,0,0,0.6);
+  .sched-pin.vending.selected {
+    filter:
+      drop-shadow(0 0 0 #e2b04a)
+      drop-shadow(0 0 4px #e2b04a)
+      drop-shadow(0 1px 3px rgba(0,0,0,0.5));
   }
-  /* The numeric badge sits on the upper-right corner of the rotated diamond.
-     We counter-rotate so the text reads upright. */
+  .sched-pin.vending.needs-attn.selected {
+    width: 30px !important;
+    height: 30px !important;
+    filter:
+      drop-shadow(0 0 4px #e2b04a)
+      drop-shadow(0 0 8px rgba(220,38,38,0.9));
+  }
+  /* The numeric badge sits on the upper-right corner of the diamond.
+     The diamond is clipped to its tips so we offset slightly inside the bbox. */
   .sched-vending-badge {
     position: absolute;
-    top: -8px;
-    right: -8px;
-    min-width: 18px;
+    top: -10px;
+    right: -10px;
+    min-width: 20px;
     height: 18px;
-    padding: 0 4px;
+    padding: 0 5px;
     background: #fef2f2;
     color: #991b1b;
     border: 1.5px solid #dc2626;
     border-radius: 9px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     line-height: 15px;
     text-align: center;
-    transform: rotate(-45deg);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.5);
     pointer-events: none;
     white-space: nowrap;
+    z-index: 11;
   }
   @keyframes sched-vending-pulse {
     0%, 100% {
-      box-shadow:
-        0 0 0 3px rgba(220,38,38,0.4),
-        0 0 12px rgba(220,38,38,0.6),
-        0 2px 6px rgba(0,0,0,0.5);
+      filter:
+        drop-shadow(0 0 1.5px #fff)
+        drop-shadow(0 0 6px rgba(220,38,38,0.9))
+        drop-shadow(0 0 12px rgba(220,38,38,0.5));
     }
     50% {
-      box-shadow:
-        0 0 0 8px rgba(220,38,38,0.0),
-        0 0 16px rgba(220,38,38,0.8),
-        0 2px 6px rgba(0,0,0,0.5);
+      filter:
+        drop-shadow(0 0 1.5px #fff)
+        drop-shadow(0 0 12px rgba(220,38,38,1))
+        drop-shadow(0 0 20px rgba(220,38,38,0.7));
     }
+  }
   }
   @keyframes sched-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(229,72,72,0.5), 0 2px 6px rgba(0,0,0,0.5); }
@@ -5703,6 +5725,143 @@ function schedInitMap() {
   });
   schedState.map.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
+  // Set up vending pins as a Mapbox layer (not DOM markers). Mirrors the
+  // approach used on the public Map tab — works correctly with map zoom/pan
+  // and renders SVG icons reliably without CSS transform conflicts.
+  schedState.map.on('load', async () => {
+    const addSvgIcon = async (name, svg, size = 24) => {
+      const blob = new Blob([svg], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const img = new Image(size, size);
+      await new Promise((resolve, reject) => {
+        img.onload = resolve; img.onerror = reject; img.src = url;
+      });
+      if (!schedState.map.hasImage(name)) schedState.map.addImage(name, img, { pixelRatio: 2 });
+      URL.revokeObjectURL(url);
+    };
+
+    // Pink diamond — base vending pin
+    await addSvgIcon('sched-vending-diamond', `
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+        <path d="M12 2 L22 12 L12 22 L2 12 Z" fill="#e87bb5" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+      </svg>`);
+
+    // Same shape but assigned/scheduled stops (muted gray)
+    await addSvgIcon('sched-vending-diamond-assigned', `
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+        <path d="M12 2 L22 12 L12 22 L2 12 Z" fill="#8b949e" stroke="#fff" stroke-width="1.5" stroke-linejoin="round" opacity="0.55"/>
+      </svg>`);
+
+    // Red ring overlay — needs_restock or no_sales_3d
+    await addSvgIcon('sched-vending-ring', `
+      <svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">
+        <circle cx="17" cy="17" r="14" fill="none" stroke="#ef4444" stroke-width="3"/>
+        <circle cx="17" cy="17" r="14" fill="rgba(239,68,68,0.12)"/>
+      </svg>`, 34);
+
+    // Gold ring overlay — selected
+    await addSvgIcon('sched-vending-selected-ring', `
+      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+        <circle cx="18" cy="18" r="15" fill="none" stroke="#e2b04a" stroke-width="3.5"/>
+      </svg>`, 36);
+
+    schedState.map.addSource('sched-vending', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    });
+
+    // Diamond layer — base symbol per machine. icon-image picks between
+    // assigned (gray) and active (pink) based on the feature property.
+    schedState.map.addLayer({
+      id: 'sched-vending-points',
+      type: 'symbol',
+      source: 'sched-vending',
+      layout: {
+        'icon-image': ['case',
+          ['get', 'assigned'], 'sched-vending-diamond-assigned',
+          'sched-vending-diamond'
+        ],
+        'icon-size': ['case',
+          ['get', 'needs_attention'], 1.15,
+          0.95
+        ],
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+      }
+    });
+
+    // Red ring overlay — needs-attention pins
+    schedState.map.addLayer({
+      id: 'sched-vending-rings',
+      type: 'symbol',
+      source: 'sched-vending',
+      filter: ['all', ['get', 'needs_attention'], ['!', ['get', 'assigned']]],
+      layout: {
+        'icon-image': 'sched-vending-ring',
+        'icon-size': 1.0,
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+      }
+    });
+
+    // Gold ring overlay — selected pins (sits on top of red)
+    schedState.map.addLayer({
+      id: 'sched-vending-selected',
+      type: 'symbol',
+      source: 'sched-vending',
+      filter: ['get', 'selected'],
+      layout: {
+        'icon-image': 'sched-vending-selected-ring',
+        'icon-size': 1.0,
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+      }
+    });
+
+    // Click on a vending diamond → toggle selection
+    schedState.map.on('click', 'sched-vending-points', (e) => {
+      const f = e.features && e.features[0];
+      if (!f) return;
+      const id = f.properties.id;
+      schedTogglePinSelect(id);
+    });
+
+    // Cursor + hover popup for vending
+    let hoverPopup = null;
+    schedState.map.on('mouseenter', 'sched-vending-points', (e) => {
+      schedState.map.getCanvas().style.cursor = 'pointer';
+      const f = e.features && e.features[0];
+      if (!f) return;
+      const p = f.properties;
+      const pct = p.pct_sold != null && p.pct_sold !== '' ? Number(p.pct_sold) : null;
+      const pctColor = pct == null ? '#666' : (pct >= 70 ? '#dc2626' : (pct >= 40 ? '#d97706' : '#15803d'));
+      const lines = [];
+      lines.push(`<strong>${schedEscapeHtml(p.name || '')}</strong>`);
+      if (p.venue_name && p.venue_name !== p.name) {
+        lines.push(`<span style="opacity:0.7;font-size:11px">${schedEscapeHtml(p.venue_name)}</span>`);
+      }
+      const stats = [];
+      if (pct != null) stats.push(`<span style="color:${pctColor};font-weight:700">${Math.round(pct)}% sold</span>`);
+      if (p.no_sales_3d === 'true' || p.no_sales_3d === true) stats.push(`<span style="color:#dc2626">no sales ${p.days_since_last_sale}d</span>`);
+      if (p.assigned === 'true' || p.assigned === true) stats.push(`<span style="opacity:0.6">scheduled</span>`);
+      if (stats.length) lines.push(`<div style="margin-top:3px">${stats.join(' · ')}</div>`);
+      lines.push(`<span style="opacity:0.8;font-size:11px">${schedEscapeHtml([p.city, p.province].filter(Boolean).join(', '))}</span>`);
+      const popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.5;font-weight:500;min-width:180px">${lines.join('<br>')}</div>`;
+      if (hoverPopup) hoverPopup.remove();
+      hoverPopup = new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false })
+        .setLngLat(f.geometry.coordinates)
+        .setHTML(popupHtml)
+        .addTo(schedState.map);
+    });
+    schedState.map.on('mouseleave', 'sched-vending-points', () => {
+      schedState.map.getCanvas().style.cursor = '';
+      if (hoverPopup) { hoverPopup.remove(); hoverPopup = null; }
+    });
+
+    // Initial render in case data is already loaded by the time 'load' fires
+    if (typeof schedRenderVendingLayer === 'function') schedRenderVendingLayer();
+  });
+
   // ResizeObserver: if the map container changes size for any reason
   // (tab activation, window resize, layout reflow), tell Mapbox immediately.
   // This eliminates the "click chip a few times until it eventually works"
@@ -5817,37 +5976,23 @@ function schedRenderMarkers() {
   for (const [id, marker] of schedState.markers) marker.remove();
   schedState.markers.clear();
 
+  // Vending pins are rendered as a Mapbox layer (handled separately) to
+  // avoid CSS-transform conflicts with mapboxgl.Marker. Render that layer
+  // first, then DOM markers for store/order/overdue pins.
+  schedRenderVendingLayer();
+
   let visibleCount = 0;
   for (const store of schedState.storesIndex.values()) {
     if (store.lat == null || store.lng == null) continue;
     if (schedIsFiltered(store)) continue;
+    if (store.type === 'vending') continue;  // rendered as layer, not marker
     const el = schedMakePinElement(store);
     el.addEventListener('click', (e) => {
       e.stopPropagation();
       schedTogglePinSelect(store.id);
     });
-    // Build the hover popup. Stores get a simple name+city. Vending machines
-    // get richer info — venue name, % sold, last sale — so the manager doesn't
-    // have to click each pin to assess it.
-    let popupHtml;
-    if (store.type === 'vending') {
-      const pct = store.pct_sold != null ? Math.round(Number(store.pct_sold)) : null;
-      const pctColor = pct == null ? '#666' : (pct >= 70 ? '#dc2626' : (pct >= 40 ? '#d97706' : '#15803d'));
-      const lines = [];
-      lines.push(`<strong>${schedEscapeHtml(store.qb_name)}</strong>`);
-      if (store.venue_name && store.venue_name !== store.qb_name) {
-        lines.push(`<span style="opacity:0.7;font-size:11px">${schedEscapeHtml(store.venue_name)}</span>`);
-      }
-      const stats = [];
-      if (pct != null) stats.push(`<span style="color:${pctColor};font-weight:700">${pct}% sold</span>`);
-      if (store.no_sales_3d) stats.push(`<span style="color:#dc2626">no sales ${store.days_since_last_sale}d</span>`);
-      if (store.assigned) stats.push(`<span style="opacity:0.6">scheduled</span>`);
-      if (stats.length) lines.push(`<div style="margin-top:3px">${stats.join(' · ')}</div>`);
-      lines.push(`<span style="opacity:0.8;font-size:11px">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>`);
-      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.5;font-weight:500;min-width:180px">${lines.join('<br>')}</div>`;
-    } else {
-      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`;
-    }
+    // Stores get a simple name+city popup. Vending is handled by the layer above.
+    const popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`;
     const marker = new mapboxgl.Marker({ element: el })
       .setLngLat([store.lng, store.lat])
       .setPopup(new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false })
@@ -5880,15 +6025,55 @@ function schedRenderMarkers() {
   }
 }
 
+// Render vending machines as Mapbox GeoJSON features (not DOM markers).
+// Same source feeds three layers: base diamond, red attention ring, gold
+// selection ring. Re-running this is cheap — it's a single setData call.
+function schedRenderVendingLayer() {
+  if (!schedState.map) return;
+  const src = schedState.map.getSource('sched-vending');
+  if (!src) return;  // map still loading; the on('load') handler will call us
+  const features = [];
+  for (const store of schedState.storesIndex.values()) {
+    if (store.type !== 'vending') continue;
+    if (store.lat == null || store.lng == null) continue;
+    if (schedIsFiltered(store)) continue;
+    const isHighlight = schedState.highlightedDriver && schedIsStoreOnDriver(store.id, schedState.highlightedDriver);
+    const needsAttention = (store.needs_restock || store.no_sales_3d) && !store.assigned;
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [store.lng, store.lat] },
+      properties: {
+        id: store.id,
+        name: store.qb_name || '',
+        venue_name: store.venue_name || '',
+        city: store.ship_city || '',
+        province: store.province || '',
+        pct_sold: store.pct_sold != null ? Number(store.pct_sold) : null,
+        no_sales_3d: store.no_sales_3d === true,
+        days_since_last_sale: store.days_since_last_sale,
+        assigned: store.assigned === true,
+        needs_attention: needsAttention,
+        selected: schedState.selected.has(store.id),
+        highlighted: !!isHighlight,
+      },
+    });
+  }
+  src.setData({ type: 'FeatureCollection', features });
+}
+
 // Safety: log and self-heal if a render produced 0 visible markers
 function schedRenderMarkersSafety(startMarkers, indexSize) {
   const after = schedState.markers.size;
-  if (after === 0 && indexSize > 0) {
-    console.warn('[sched] render produced 0 markers from', indexSize, 'stores. This is a bug. Self-healing by rebuilding...');
-    // Force-clear and try again (might be the only path that works in some races)
+  // Don't false-trigger when the index has only vending machines (which render
+  // via layer, not DOM markers). Count non-vending stores in the index.
+  let nonVendingCount = 0;
+  for (const s of schedState.storesIndex.values()) {
+    if (s.type !== 'vending') nonVendingCount++;
+  }
+  if (after === 0 && nonVendingCount > 0) {
+    console.warn('[sched] render produced 0 markers from', nonVendingCount, 'non-vending stores. This is a bug. Self-healing by rebuilding...');
     for (const [id, m] of schedState.markers) m.remove();
     schedState.markers.clear();
-    // Recurse only once to avoid infinite loop
     if (!schedRenderMarkers._recursing) {
       schedRenderMarkers._recursing = true;
       try { schedRenderMarkers(); }
@@ -5904,6 +6089,9 @@ function schedMakePinElement(store) {
 }
 
 function schedUpdatePinElement(el, store) {
+  // Note: vending machines render via Mapbox layer, not DOM markers. This
+  // function only handles store/order/overdue pins. Any vending-specific
+  // class names below are leftovers; they have no effect on layer rendering.
   const info = schedPinInfo(store);
   const isSelected = schedState.selected.has(store.id);
   const isHighlight = schedState.highlightedDriver && schedIsStoreOnDriver(store.id, schedState.highlightedDriver);
@@ -5913,38 +6101,10 @@ function schedUpdatePinElement(el, store) {
   if (store.assigned && !isHighlight) classes.push('scheduled');
   if (isHighlight) classes.push('driver-highlight');
   if (info.stale && !store.assigned && !isSelected) classes.push('stale');
-  if (info.vending) classes.push('vending');
-  const isNeedsAttn = info.vending && (store.needs_restock || store.no_sales_3d) && !store.assigned;
-  if (isNeedsAttn) classes.push('needs-attn');
   el.className = classes.join(' ');
   let bg = info.color;
-  if (isHighlight) bg = store.type === 'order' ? '#4fc3d4' : (store.type === 'vending' ? '#e87bb5' : schedCadenceStyle(store.days_overdue || 0).color);
+  if (isHighlight) bg = store.type === 'order' ? '#4fc3d4' : schedCadenceStyle(store.days_overdue || 0).color;
   el.style.background = bg;
-
-  // Numeric badge on needs-attention vending pins. Restock signal (% sold)
-  // takes priority — it's directly actionable. Falls back to days-since-sale
-  // when only the no-sales signal is present.
-  let existingBadge = el.querySelector('.sched-vending-badge');
-  if (isNeedsAttn) {
-    let badgeText = '';
-    if (store.needs_restock && store.pct_sold != null) {
-      badgeText = `${Math.round(Number(store.pct_sold))}%`;
-    } else if (store.no_sales_3d && store.days_since_last_sale != null) {
-      badgeText = `${store.days_since_last_sale}d`;
-    } else if (store.needs_restock) {
-      badgeText = '!';
-    } else {
-      badgeText = '!';
-    }
-    if (!existingBadge) {
-      existingBadge = document.createElement('span');
-      existingBadge.className = 'sched-vending-badge';
-      el.appendChild(existingBadge);
-    }
-    existingBadge.textContent = badgeText;
-  } else if (existingBadge) {
-    existingBadge.remove();
-  }
 }
 
 function schedIsFiltered(store) {
