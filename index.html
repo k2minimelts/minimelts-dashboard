@@ -295,6 +295,10 @@
   #sched-map {
     width: 100%; height: 100%;
     background: #1a1d27;
+    /* Suppress the browser's native shift-drag text-selection rectangle so
+       the lasso isn't visually doubled by a phantom grey box. */
+    user-select: none;
+    -webkit-user-select: none;
   }
 
   .sched-map-overlay {
@@ -442,55 +446,64 @@
   .sched-siblings-section {
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
-    background: #fff8e6;
+    background: rgba(226,176,74,0.10);     /* subtle gold tint, dark-theme friendly */
+    border-left: 3px solid var(--gold);
   }
   .sched-siblings-header {
     font-size: 13px;
     color: var(--text);
-    margin-bottom: 8px;
+    margin-bottom: 10px;
+    line-height: 1.4;
   }
-  .sched-siblings-header strong { font-weight: 700; }
+  .sched-siblings-header strong { font-weight: 700; color: var(--gold); }
   .sched-siblings-hint {
-    color: var(--text-muted);
+    color: var(--muted);
     font-size: 11px;
-    margin-left: 8px;
+    margin-left: 6px;
     font-weight: 500;
   }
   .sched-sibling-group {
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
   .sched-sibling-group:last-child { margin-bottom: 0; }
   .sched-sibling-venue {
-    font-size: 11px;
-    color: var(--text-muted);
+    font-size: 10px;
+    color: var(--muted);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
     margin-bottom: 4px;
-    margin-left: 4px;
+    margin-left: 2px;
+    font-weight: 600;
   }
   .sched-sibling-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 5px 8px;
+    gap: 10px;
+    padding: 6px 8px;
     border-radius: 4px;
     cursor: pointer;
     user-select: none;
+    background: rgba(255,255,255,0.03);
   }
-  .sched-sibling-item:hover { background: rgba(0,0,0,0.04); }
-  .sched-sibling-checkbox { margin: 0; cursor: pointer; }
+  .sched-sibling-item:hover { background: rgba(255,255,255,0.06); }
+  .sched-sibling-item + .sched-sibling-item { margin-top: 3px; }
+  .sched-sibling-checkbox { margin: 0; cursor: pointer; flex-shrink: 0; }
   .sched-sibling-name {
     font-size: 13px;
     color: var(--text);
     flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .sched-sibling-pct {
     font-size: 11px;
-    color: #9d174d;
-    background: #fce7f3;
+    color: #f9a8d4;
+    background: rgba(157,23,77,0.25);
     padding: 1px 6px;
     border-radius: 3px;
     font-weight: 600;
+    flex-shrink: 0;
   }
 
   .sched-assign-form {
@@ -6277,6 +6290,8 @@ function schedLassoStart(e) {
 }
 function schedLassoMove(e) {
   if (!schedState.lassoActive || !schedState.lassoRect) return;
+  // Prevent native browser drag-selection rectangle (the phantom grey box)
+  e.preventDefault();
   const x = Math.min(schedState.lassoStart.x, e.clientX);
   const y = Math.min(schedState.lassoStart.y, e.clientY);
   const w = Math.abs(e.clientX - schedState.lassoStart.x);
