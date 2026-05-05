@@ -1233,8 +1233,9 @@
       <div class="filters">
         <div class="filter-group"><label>Status</label>
           <select id="orders-filter-status" onchange="loadOrders()">
-            <option value="pending" selected>Pending</option>
-            <option value="scheduled">Scheduled</option>
+            <option value="active" selected>Active (Pending + Scheduled)</option>
+            <option value="pending">Pending only</option>
+            <option value="scheduled">Scheduled only</option>
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
             <option value="">All</option>
@@ -3203,15 +3204,26 @@ async function loadOrders() {
   const bodyEl = document.getElementById('orders-body');
   bodyEl.innerHTML = '<div class="loading">Loading orders...</div>';
 
-  // Embed the store info via Supabase's resource embedding
-  // stores!store_id brings in the FK target row
+  // Read from the orders_with_schedule view so the schedule context (driver
+  // name + day) comes back joined in the same trip. The view has the same
+  // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
-  params.set('select', 'id,source,stock_level,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,created_at,store:stores!store_id(id,public_code,qb_name,ship_city,province,phone,email)');
+  params.set('select',
+    'id,source,stock_level,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,' +
+    'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
+    'store:stores!store_id(id,public_code,qb_name,ship_city,province,phone,email)'
+  );
   params.set('order', 'submitted_at.desc');
-  if (status) params.append('status', `eq.${status}`);
+
+  // "Active" means pending OR scheduled — the manager's working queue.
+  if (status === 'active') {
+    params.append('status', 'in.(pending,scheduled)');
+  } else if (status) {
+    params.append('status', `eq.${status}`);
+  }
   if (source) params.append('source', `eq.${source}`);
 
-  const data = await sbFetch(`orders?${params.toString()}`);
+  const data = await sbFetch(`orders_with_schedule?${params.toString()}`);
   let orders = Array.isArray(data) ? data : [];
 
   // Client-side province filter (since it's on the joined store)
@@ -3317,19 +3329,29 @@ function renderOrdersTable(orders) {
     if (o.notes) notesPieces.push(escapeHtml(o.notes));
     const notesHtml = notesPieces.join('<br>') || '<span style="color:var(--muted)">—</span>';
 
+    // Actions: scheduling happens on the map. The orders tab only owns Cancel
+    // for active orders; completed/cancelled rows are audit log (no actions).
     let actionsHtml = '';
-    if (o.status === 'pending') {
-      actionsHtml = `
-        <button class="btn-sm" style="border-color:rgba(79,195,212,0.5);color:var(--mm-cyan)" onclick="window.scheduleOrder('${o.id}')">📅 Schedule</button>
-        <button class="btn-sm" style="border-color:rgba(63,185,80,0.5);color:var(--success)" onclick="window.completeOrder('${o.id}')">✓ Complete</button>
-        <button class="btn-sm" style="border-color:rgba(248,81,73,0.3);color:#f85149" onclick="window.cancelOrder('${o.id}')">✕ Cancel</button>`;
-    } else if (o.status === 'scheduled') {
-      actionsHtml = `
-        <button class="btn-sm" style="border-color:rgba(63,185,80,0.5);color:var(--success)" onclick="window.completeOrder('${o.id}')">✓ Complete</button>
-        <button class="btn-sm" style="border-color:rgba(210,153,34,0.5);color:var(--warning)" onclick="window.unscheduleOrder('${o.id}')">↶ Unschedule</button>
-        <button class="btn-sm" style="border-color:rgba(248,81,73,0.3);color:#f85149" onclick="window.cancelOrder('${o.id}')">✕ Cancel</button>`;
+    if (o.status === 'pending' || o.status === 'scheduled') {
+      actionsHtml = `<button class="btn-sm" style="border-color:rgba(248,81,73,0.3);color:#f85149" onclick="window.cancelOrder('${o.id}')">✕ Cancel</button>`;
     } else {
-      actionsHtml = `<button class="btn-sm" onclick="window.reopenOrder('${o.id}')">↺ Reopen</button>`;
+      actionsHtml = `<span style="color:var(--muted);font-size:11px">—</span>`;
+    }
+
+    // Status cell: for scheduled orders show driver + day inline; otherwise the plain badge.
+    let statusCell;
+    if (o.status === 'scheduled' && o.scheduled_driver_name && o.scheduled_day_date) {
+      const dayStr = new Date(o.scheduled_day_date + 'T12:00:00').toLocaleDateString('en-CA',
+        { weekday: 'short', month: 'short', day: 'numeric' });
+      statusCell = `
+        <div style="display:flex;flex-direction:column;gap:3px">
+          ${statusBadge(o.status)}
+          <div style="font-size:11px;color:var(--muted);line-height:1.3">
+            ${escapeHtml(o.scheduled_driver_name)} · ${escapeHtml(dayStr)}
+          </div>
+        </div>`;
+    } else {
+      statusCell = statusBadge(o.status);
     }
 
     html += `<tr>
@@ -3348,7 +3370,7 @@ function renderOrdersTable(orders) {
       <td>${stockLevelBadge(o.stock_level)}</td>
       <td style="font-size:12px">${escapeHtml(contact) || '<span style="color:var(--muted)">—</span>'}</td>
       <td style="font-size:12px;max-width:280px">${notesHtml}</td>
-      <td>${statusBadge(o.status)}</td>
+      <td>${statusCell}</td>
       <td style="text-align:right;white-space:nowrap">${actionsHtml}</td>
     </tr>`;
   }
@@ -3371,21 +3393,9 @@ async function patchOrder(id, patch) {
   return true;
 }
 
-window.scheduleOrder = async (id) => {
-  if (await patchOrder(id, { status: 'scheduled' })) { await loadOrders(); updateOrdersBadge(); }
-};
-window.unscheduleOrder = async (id) => {
-  if (await patchOrder(id, { status: 'pending' })) { await loadOrders(); updateOrdersBadge(); }
-};
-window.completeOrder = async (id) => {
-  if (await patchOrder(id, { status: 'completed' })) { await loadOrders(); updateOrdersBadge(); }
-};
 window.cancelOrder = async (id) => {
-  if (!confirm('Cancel this order?')) return;
+  if (!confirm('Cancel this order?\n\nIf it is currently scheduled on a trip, the trip stop will be removed automatically.')) return;
   if (await patchOrder(id, { status: 'cancelled' })) { await loadOrders(); updateOrdersBadge(); }
-};
-window.reopenOrder = async (id) => {
-  if (await patchOrder(id, { status: 'pending' })) { await loadOrders(); updateOrdersBadge(); }
 };
 
 // ── New Order Modal ──
