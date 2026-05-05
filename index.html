@@ -3089,7 +3089,17 @@ document.getElementById('store-modal').addEventListener('click', e => { if (e.ta
 
 // ── Tabs ──
 window.switchTab = (tab) => {
-  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','schedule','lot','drivers','access'].forEach(t => { const el = document.getElementById(`tab-${t}`); if (el) el.style.display = t===tab?'block':'none'; });
+  // The schedule tab uses a flex column layout; setting display:block
+  // breaks it. Every other tab is fine with block, so we special-case here.
+  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','schedule','lot','drivers','access'].forEach(t => {
+    const el = document.getElementById(`tab-${t}`);
+    if (!el) return;
+    if (t !== tab) {
+      el.style.display = 'none';
+    } else {
+      el.style.display = (t === 'schedule') ? 'flex' : 'block';
+    }
+  });
   document.querySelectorAll('.tab').forEach((el) => {
     const m = (el.getAttribute('onclick')||'').match(/switchTab\('([^']+)'\)/);
     el.classList.toggle('active', !!m && m[1] === tab);
