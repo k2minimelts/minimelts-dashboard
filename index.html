@@ -281,20 +281,19 @@
 
   /* Body: map + sidebar 2-column */
   /* ─── Schedule layout modes ────────────────────────────────────────────────
-     The schedule tab is a flex column: header + body (map+sidebar) + strip
-     (week grid). Three modes redistribute body/strip heights:
-       split — body 60%, strip 40% (default; also the original behaviour)
+     Three modes redistribute the body (map+sidebar) and strip (week grid):
+       split — body 60%, strip 40% (the original layout, just proportional)
        map   — body fills, strip hidden
-       grid  — strip fills, body hidden
-     Heights are computed against the available viewport (subtracting the
-     dashboard's outer chrome) so resizing the window keeps the layout tidy.
+       grid  — body hidden, strip fills
+
+     Implementation note: we use flex with `flex-basis: 0` (not `auto`) so the
+     children's intrinsic content sizes don't interfere with how flex
+     distributes the parent's height. This is the pattern that works
+     reliably when the children have grids inside them.
      ──────────────────────────────────────────────────────────────────────── */
   #tab-schedule {
     display: flex;
     flex-direction: column;
-    /* The dashboard's outer chrome is roughly 130px (topbar + tab bar). Using
-       calc here means the schedule fills whatever's left without scrolling
-       the outer page. */
     height: calc(100vh - 130px);
     min-height: 600px;
   }
@@ -303,10 +302,9 @@
     display: grid;
     grid-template-columns: 1fr 380px;
     border-bottom: 1px solid var(--border);
-    /* Height comes from the mode class below — these rules are the defaults
-       for split mode. */
-    flex: 0 0 60%;
     min-height: 0;
+    /* Default flex value; mode overrides below adjust the grow/basis. */
+    flex: 6 0 0;
   }
 
   .sched-map-wrap {
@@ -323,12 +321,17 @@
     -webkit-user-select: none;
   }
 
-  /* Mode-specific overrides on the parent. */
-  #tab-schedule.sched-mode-map .sched-body  { flex: 1 1 auto; }
-  #tab-schedule.sched-mode-map .sched-strip { display: none; }
-  #tab-schedule.sched-mode-grid .sched-body { display: none; }
-  #tab-schedule.sched-mode-grid .sched-strip { flex: 1 1 auto; height: auto; }
-  #tab-schedule.sched-mode-split .sched-strip { flex: 0 0 40%; height: auto; }
+  /* Map mode — body fills, strip hidden. */
+  #tab-schedule.sched-mode-map .sched-body  { flex: 1 0 0 !important; }
+  #tab-schedule.sched-mode-map .sched-strip { display: none !important; }
+
+  /* Grid mode — body hidden, strip fills. */
+  #tab-schedule.sched-mode-grid .sched-body  { display: none !important; }
+  #tab-schedule.sched-mode-grid .sched-strip { flex: 1 0 0 !important; }
+
+  /* Split mode (default) — body 6 / strip 4 ratio. */
+  /* No overrides needed; the defaults on .sched-body (flex: 6 0 0) and
+     .sched-strip (flex: 4 0 0 below) produce a 60/40 split. */
 
   /* Mode toggle buttons. Sit between the counters and the Publish button. */
   .sched-mode-toggle {
@@ -683,12 +686,13 @@
   /* Schedule grid strip */
   .sched-strip {
     background: var(--bg2);
-    /* Height set by the mode class on #tab-schedule. Default split mode
-       gives the strip 40% of the schedule tab's height. */
     display: flex;
     flex-direction: column;
     overflow: hidden;
     min-height: 0;
+    /* Default flex value; mode overrides above adjust the grow/basis. With
+       body=6 and strip=4 the schedule tab's body+strip area is split 60/40. */
+    flex: 4 0 0;
   }
   .sched-strip-header {
     display: flex;
