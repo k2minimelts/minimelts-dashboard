@@ -7166,12 +7166,34 @@ async function schedRemoveStopFromCell(tripStopId) {
   const stop = (cell.stops || []).find(s => s.id === tripStopId);
   if (!stop) return;
 
+  // Resolve a friendly name for the confirm dialog.
+  const lookupKey = stop.linked_machine_id ? `vm:${stop.linked_machine_id}` : stop.store_id;
+  const store = schedState.storesIndex.get(lookupKey) || { qb_name: 'this stop' };
+
+  // Build a confirmation message. Tone is calm — destructive but reversible
+  // by re-adding from the map. Three pieces of context worth surfacing:
+  //   1) The stop's name (so they know which one)
+  //   2) "Will revert order to Pending" if it's order-linked (chunk 5c trigger)
+  //   3) "The driver may have already received an email" if the trip is published
+  const trip = schedFindTripContainingDay(cell.trip_day_id);
+  const isPublished = trip && trip.status === 'published';
+
+  const lines = [`Remove "${store.qb_name}" from this day?`];
+  if (stop.linked_order_id) {
+    lines.push('');
+    lines.push('This stop came from a customer order. The order will return to Pending so it can be re-scheduled.');
+  }
+  if (isPublished) {
+    lines.push('');
+    lines.push('Heads up: this trip is already published. The driver may have received their schedule email. Their app will reflect the change immediately, but you may want to message them.');
+  }
+  if (!confirm(lines.join('\n'))) return;
+
   try {
-    // If linked to an order, unlink it first
-    if (stop.linked_order_id) {
-      await schedUpdate('orders', `id=eq.${stop.linked_order_id}`,
-        { trip_stop_id: null });
-    }
+    // Just delete the trip_stop. The chunk 5c trigger
+    // fn_trip_stop_delete_revert_order will revert any linked order back
+    // to 'pending' and clear orders.trip_stop_id automatically. No need to
+    // patch the order ourselves — doing so would race with the trigger.
     await schedDelete('trip_stops', `id=eq.${tripStopId}`);
 
     // Find the parent trip and check if it should be deleted
@@ -7193,7 +7215,7 @@ async function schedRemoveStopFromCell(tripStopId) {
       }
     }
     schedReopenEditingCell(cell.trip_day_id);
-    schedToast(`✓ Removed`);
+    schedToast(`✓ Removed ${store.qb_name}`);
     schedMaybeReoptimizeDay(cell.trip_day_id);
   } catch (e) {
     console.error('[sched] remove stop failed:', e);
@@ -7535,6 +7557,10 @@ function schedRenderCellEditSidebar(container) {
     const store = schedState.storesIndex.get(lookupKey) || { qb_name: '?', ship_city: '', province: '' };
     const lateness = (store.days_overdue || 0) > 0 ? `<span class="${(store.days_overdue || 0) > 90 ? 'late' : ''}">${store.days_overdue}d overdue</span>` : '';
     const vendingTag = store.type === 'vending' ? `<span style="color:#e87bb5;font-weight:600">vending</span>` : '';
+    // Show an "order" pill when this stop came from a customer order, so
+    // the manager can tell at a glance that removing it will revert the
+    // order to Pending. Cyan to match the "Order pending" map legend.
+    const orderTag = stop.linked_order_id ? `<span style="color:var(--mm-cyan);font-weight:600">order</span>` : '';
     return `<div class="sched-cell-edit-stop" data-trip-stop-id="${schedEscapeHtml(stop.id)}" data-store-id="${schedEscapeHtml(lookupKey || '')}">
       <span class="sched-stop-seq">${idx + 1}</span>
       <div class="sched-stop-info">
@@ -7543,6 +7569,7 @@ function schedRenderCellEditSidebar(container) {
           <span>${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>
           ${lateness}
           ${vendingTag}
+          ${orderTag}
         </div>
       </div>
       <button class="sched-stop-remove" title="Remove from this day">×</button>
@@ -7600,15 +7627,25 @@ function schedRenderCellEditSidebar(container) {
 
   // Delete day
   document.getElementById('sched-delete-day-btn').addEventListener('click', async () => {
-    if (!confirm(`Delete this entire day for ${driver?.name}? All ${cell.stops.length} stops will be unassigned.`)) return;
+    // Build a confirmation that surfaces the same context as single-stop
+    // removal: how many orders are involved, whether the trip is published.
+    const linkedOrderCount = (cell.stops || []).filter(s => s.linked_order_id).length;
+    const lines = [`Delete this entire day for ${driver?.name}?`];
+    lines.push(`All ${cell.stops.length} stop${cell.stops.length === 1 ? '' : 's'} will be removed.`);
+    if (linkedOrderCount > 0) {
+      lines.push('');
+      lines.push(`${linkedOrderCount} of these came from customer orders. Those orders will return to Pending so they can be re-scheduled.`);
+    }
+    if (isPublished) {
+      lines.push('');
+      lines.push('Heads up: this trip is already published. The driver may have received their schedule email.');
+    }
+    if (!confirm(lines.join('\n'))) return;
+
     try {
-      // Unlink any orders
-      for (const stop of (cell.stops || [])) {
-        if (stop.linked_order_id) {
-          await schedUpdate('orders', `id=eq.${stop.linked_order_id}`, { trip_stop_id: null });
-        }
-      }
-      // Delete trip_stops (cascade may handle, but be explicit)
+      // Just delete the trip_stops. The chunk 5c trigger
+      // fn_trip_stop_delete_revert_order will revert each linked order to
+      // 'pending' automatically — no manual unlink needed.
       await schedDelete('trip_stops', `trip_day_id=eq.${cell.trip_day_id}`);
       // If this was the only day in the trip, delete the trip too
       const remainingDays = (trip.days || []).filter(d => d.id !== cell.trip_day_id);
