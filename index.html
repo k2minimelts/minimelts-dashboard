@@ -280,11 +280,33 @@
   }
 
   /* Body: map + sidebar 2-column */
+  /* ─── Schedule layout modes ────────────────────────────────────────────────
+     The schedule tab is a flex column: header + body (map+sidebar) + strip
+     (week grid). Three modes redistribute body/strip heights:
+       split — body 60%, strip 40% (default; also the original behaviour)
+       map   — body fills, strip hidden
+       grid  — strip fills, body hidden
+     Heights are computed against the available viewport (subtracting the
+     dashboard's outer chrome) so resizing the window keeps the layout tidy.
+     ──────────────────────────────────────────────────────────────────────── */
+  #tab-schedule {
+    display: flex;
+    flex-direction: column;
+    /* The dashboard's outer chrome is roughly 130px (topbar + tab bar). Using
+       calc here means the schedule fills whatever's left without scrolling
+       the outer page. */
+    height: calc(100vh - 130px);
+    min-height: 600px;
+  }
+
   .sched-body {
     display: grid;
     grid-template-columns: 1fr 380px;
-    height: 560px;
     border-bottom: 1px solid var(--border);
+    /* Height comes from the mode class below — these rules are the defaults
+       for split mode. */
+    flex: 0 0 60%;
+    min-height: 0;
   }
 
   .sched-map-wrap {
@@ -300,6 +322,41 @@
     user-select: none;
     -webkit-user-select: none;
   }
+
+  /* Mode-specific overrides on the parent. */
+  #tab-schedule.sched-mode-map .sched-body  { flex: 1 1 auto; }
+  #tab-schedule.sched-mode-map .sched-strip { display: none; }
+  #tab-schedule.sched-mode-grid .sched-body { display: none; }
+  #tab-schedule.sched-mode-grid .sched-strip { flex: 1 1 auto; height: auto; }
+  #tab-schedule.sched-mode-split .sched-strip { flex: 0 0 40%; height: auto; }
+
+  /* Mode toggle buttons. Sit between the counters and the Publish button. */
+  .sched-mode-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg2);
+  }
+  .sched-mode-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    padding: 6px 11px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border-right: 1px solid var(--border);
+    transition: background 0.12s, color 0.12s;
+  }
+  .sched-mode-btn:last-child { border-right: none; }
+  .sched-mode-btn:hover { background: var(--bg3); color: var(--text); }
+  .sched-mode-btn.active {
+    background: var(--gold);
+    color: #1d1810;
+  }
+  .sched-mode-btn.active:hover { background: var(--gold); color: #1d1810; }
 
   .sched-map-overlay {
     position: absolute;
@@ -626,10 +683,12 @@
   /* Schedule grid strip */
   .sched-strip {
     background: var(--bg2);
-    height: 220px;
+    /* Height set by the mode class on #tab-schedule. Default split mode
+       gives the strip 40% of the schedule tab's height. */
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    min-height: 0;
   }
   .sched-strip-header {
     display: flex;
@@ -948,9 +1007,12 @@
     .sched-body {
       grid-template-columns: 1fr;
       grid-template-rows: 1fr 320px;
-      height: auto;
+      /* height removed — flex on #tab-schedule controls vertical sizing now */
     }
     .sched-sidebar { border-left: none; border-top: 1px solid var(--border); }
+    /* Hide the mode toggle on narrow viewports — split mode is the only
+       sensible layout when the sidebar already stacks below the map. */
+    .sched-mode-toggle { display: none; }
   }
 
 
@@ -1453,7 +1515,7 @@
          overdue stops on a Mapbox map, assign to drivers per day, publish
          to optimize routes (Mapbox) and send weekly emails (Resend).
          ════════════════════════════════════════════════════════════════════ -->
-    <div id="tab-schedule" style="display:none">
+    <div id="tab-schedule" class="sched-mode-split" style="display:none">
 
       <!-- Header bar: week nav, depot chips, counters, publish -->
       <div class="sched-header">
@@ -1489,6 +1551,14 @@
               <span class="num" id="sched-count-scheduled">0</span>
               <span class="lbl">scheduled</span>
             </div>
+          </div>
+          <!-- Layout mode toggle. Lets the manager give either the map or the
+               weekly grid the full screen. Keyboard: M / S / G. Persisted
+               in localStorage so the choice sticks across reloads. -->
+          <div class="sched-mode-toggle" role="group" aria-label="Layout mode">
+            <button class="sched-mode-btn" data-mode="map"   title="Map only (M)">🗺 Map</button>
+            <button class="sched-mode-btn active" data-mode="split" title="Split view (S)">⊟ Split</button>
+            <button class="sched-mode-btn" data-mode="grid"  title="Grid only (G)">📅 Grid</button>
           </div>
           <button class="sched-publish-btn" id="sched-publish-btn" disabled>
             Publish 0 plans →
@@ -5332,6 +5402,29 @@ function schedPinInfo(store) {
 // ════════════════════════════════════════════════════════════════════
 // MAIN INIT
 // ════════════════════════════════════════════════════════════════════
+
+// Switch between Map / Split / Grid layout modes. Updates the wrapper class
+// (which CSS reads to show/hide and resize the body and strip), syncs the
+// toggle button highlighting, persists the choice, and tells Mapbox to
+// recompute its canvas size after the DOM settles.
+function schedSetLayoutMode(mode) {
+  if (mode !== 'map' && mode !== 'grid' && mode !== 'split') mode = 'split';
+  const tab = document.getElementById('tab-schedule');
+  if (!tab) return;
+  tab.classList.remove('sched-mode-map', 'sched-mode-grid', 'sched-mode-split');
+  tab.classList.add(`sched-mode-${mode}`);
+  document.querySelectorAll('.sched-mode-btn[data-mode]').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+  try { localStorage.setItem('mm.schedLayoutMode', mode); } catch (e) { /* private mode etc. */ }
+  // Mapbox keeps its canvas at the old container size until told otherwise;
+  // wait one frame for the CSS to apply, then resize. Skipping this leaves
+  // the map either letterboxed or clipped depending on which way we toggled.
+  requestAnimationFrame(() => {
+    if (schedState.map) schedState.map.resize();
+  });
+}
+
 async function initScheduleTab() {
   if (schedState.initialized) {
     // Tab was already initialized — just resize (in case window changed) and refresh
@@ -5385,6 +5478,31 @@ async function initScheduleTab() {
       schedRenderMarkers();
       schedRenderSidebar();
     });
+  });
+
+  // Layout-mode toggle. The user can flip between Map / Split / Grid; keyboard
+  // shortcuts M, S, G work as long as no input/textarea has focus. Last
+  // selected mode is persisted to localStorage so it sticks across reloads.
+  const restoredMode = (() => {
+    try { return localStorage.getItem('mm.schedLayoutMode'); } catch (e) { return null; }
+  })();
+  if (restoredMode === 'map' || restoredMode === 'grid' || restoredMode === 'split') {
+    schedSetLayoutMode(restoredMode);
+  }
+  document.querySelectorAll('.sched-mode-btn[data-mode]').forEach(btn => {
+    btn.addEventListener('click', () => schedSetLayoutMode(btn.dataset.mode));
+  });
+  document.addEventListener('keydown', (e) => {
+    // Skip if a form control has focus, or any modifier key is pressed.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    // Only act when the schedule tab is the one currently visible.
+    const tab = document.getElementById('tab-schedule');
+    if (!tab || tab.style.display === 'none') return;
+    if (e.key === 'm' || e.key === 'M') { schedSetLayoutMode('map');   e.preventDefault(); }
+    else if (e.key === 's' || e.key === 'S') { schedSetLayoutMode('split'); e.preventDefault(); }
+    else if (e.key === 'g' || e.key === 'G') { schedSetLayoutMode('grid');  e.preventDefault(); }
   });
 
   // Sidebar tabs
