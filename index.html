@@ -7185,19 +7185,47 @@ async function schedAddStopToCell(storeId) {
   const maxSeq = existingStops.reduce((m, s) => Math.max(m, s.sequence || 0), 0);
   const nextSeq = maxSeq + 10;
 
-  try {
-    const [newStop] = await schedInsert('trip_stops', {
+  // Branch: vending machines store the machine UUID under linked_machine_id
+  // (and leave store_id NULL), while real stores go in store_id directly.
+  // The dashboard's internal lookup key for vending is "vm:<uuid>" so we must
+  // strip that prefix before INSERT — the column is uuid-typed.
+  const isVending = store.type === 'vending';
+  let payload;
+  if (isVending) {
+    // store.machine_id holds the raw UUID (set in the storesIndex builder);
+    // fall back to stripping the "vm:" prefix from the lookup key in case
+    // the field is missing for some reason.
+    const machineId = store.machine_id || (typeof storeId === 'string' && storeId.startsWith('vm:') ? storeId.slice(3) : null);
+    if (!machineId) {
+      schedToast('⚠ Could not resolve machine ID');
+      return;
+    }
+    payload = {
+      trip_day_id: cell.trip_day_id,
+      store_id: null,
+      linked_machine_id: machineId,
+      sequence: nextSeq,
+      source: 'vending_restock',
+      status: 'planned',
+      linked_order_id: null,
+    };
+  } else {
+    payload = {
       trip_day_id: cell.trip_day_id,
       store_id: storeId,
+      linked_machine_id: null,
       sequence: nextSeq,
       source: store.type === 'order' ? 'order' : 'cadence_overdue',
       status: 'planned',
       linked_order_id: store.order_id || null,
-    }, true);
-    if (newStop && store.order_id) {
-      await schedUpdate('orders', `id=eq.${store.order_id}`,
-        { trip_stop_id: newStop.id });
-    }
+    };
+  }
+
+  try {
+    // Note: we used to manually patch orders.trip_stop_id after this insert.
+    // The chunk 5c trigger fn_trip_stop_sync_order does that automatically
+    // now, so no follow-up update is needed (and adding one would race).
+    await schedInsert('trip_stops', payload, true);
     schedToast(`✓ Added ${store.qb_name}`);
     await schedRefreshData();
     // Re-locate the cell after refresh (its trip_day_id is the same)
