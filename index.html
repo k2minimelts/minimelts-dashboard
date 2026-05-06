@@ -7253,23 +7253,16 @@ async function schedSendDayEmail(tripDayId, driverId, dayIso, isResend) {
 
   schedToast(`✉ ${verb}ing…`);
   try {
-    const resp = await fetch(`${SUPABASE_URL}/functions/v1/send-driver-day-email`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        'apikey': SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({
-        driver_id: driverId,
-        day_date: dayIso,
-        is_resend: !!isResend,
-      }),
+    // Use the shared edge-function helper so we send the user's session JWT
+    // (via headers()), not the bare anon key. Edge functions reject anon-only
+    // requests in this project's config.
+    const result = await schedCallEdgeFunction('send-driver-day-email', {
+      driver_id: driverId,
+      day_date: dayIso,
+      is_resend: !!isResend,
     });
-    const result = await resp.json();
-    if (!resp.ok || !result.ok) {
-      const errMsg = result?.error || `HTTP ${resp.status}`;
-      throw new Error(errMsg);
+    if (!result || !result.ok) {
+      throw new Error(result?.error || 'unknown error');
     }
     schedToast(`✓ Email ${isResend ? 'resent' : 'sent'}`);
     await schedRefreshData();
