@@ -1157,6 +1157,58 @@
   }
   .sched-cell-stop-list::-webkit-scrollbar { width: 6px; }
   .sched-cell-stop-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* Email status panel — sits between the cell-edit header and the stop list.
+     Three flavours via modifier classes:
+       (default)         — neutral; "Driver emailed Xh ago" + Resend button
+       .sched-email-pending — amber tint; "Resend queued · firing in N min"
+       .sched-email-never   — muted; "Driver hasn't been emailed yet"
+  */
+  .sched-email-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    background: rgba(79,195,212,0.08);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .sched-email-panel.sched-email-pending {
+    background: rgba(210,153,34,0.12);
+  }
+  .sched-email-panel.sched-email-never {
+    background: rgba(139,148,158,0.08);
+  }
+  .sched-email-status {
+    color: var(--text);
+    flex: 1;
+    line-height: 1.4;
+  }
+  .sched-email-panel.sched-email-pending .sched-email-status {
+    color: #d29922;
+    font-weight: 600;
+  }
+  .sched-email-panel.sched-email-never .sched-email-status {
+    color: var(--muted);
+  }
+  .sched-email-resend-btn {
+    background: var(--bg3);
+    border: 1px solid var(--mm-cyan);
+    color: var(--mm-cyan);
+    padding: 5px 12px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.1s;
+    flex-shrink: 0;
+  }
+  .sched-email-resend-btn:hover {
+    background: var(--mm-cyan);
+    color: var(--bg);
+  }
 </style>
 </head>
 <body>
@@ -5893,7 +5945,8 @@ async function schedLoadTripsForWeek() {
   const select =
     'id,driver_id,depot_id,start_date,end_date,status,notes,published_at,' +
     'days:trip_days(id,day_date,day_index,status,estimated_drive_hours,' +
-      'stops:trip_stops(id,sequence,source,manager_note,store_id,linked_machine_id,' +
+      'last_email_sent_at,email_resend_pending_at,' +
+      'stops:trip_stops(id,sequence,source,manager_note,store_id,linked_machine_id,linked_order_id,' +
         'store:stores(qb_name,ship_addr1,ship_city,province,lat,lng,depot_id),' +
         'machine:vending_machines(id,nayax_machine_number,lat,lng,' +
           'venue:vending_venues(name,address,city,province,lat,lng))))';
@@ -7158,6 +7211,58 @@ async function schedAddStopToCell(storeId) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// EMAIL HELPERS (chunk: re-email on edits)
+//
+// schedSendDayEmail invokes the send-driver-day-email edge function for a
+// specific driver+day. Used by the manual Resend / Send Now button in the
+// cell-edit panel. The function on the server side stamps last_email_sent_at
+// and clears any pending-resend flag, so on success we just refresh data so
+// the UI shows the new state.
+// ════════════════════════════════════════════════════════════════════
+async function schedSendDayEmail(tripDayId, driverId, dayIso, isResend) {
+  const verb = isResend ? 'Resend' : 'Send';
+  if (!confirm(`${verb} the schedule email for this day?\n\nThe driver will receive a fresh email with the current stop list.`)) return;
+
+  schedToast(`✉ ${verb}ing…`);
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/functions/v1/send-driver-day-email`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'apikey': SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({
+        driver_id: driverId,
+        day_date: dayIso,
+        is_resend: !!isResend,
+      }),
+    });
+    const result = await resp.json();
+    if (!resp.ok || !result.ok) {
+      const errMsg = result?.error || `HTTP ${resp.status}`;
+      throw new Error(errMsg);
+    }
+    schedToast(`✓ Email ${isResend ? 'resent' : 'sent'}`);
+    await schedRefreshData();
+    schedReopenEditingCell(tripDayId);
+  } catch (e) {
+    console.error('[sched] email send failed:', e);
+    schedToast(`⚠ Send failed: ${e.message}`);
+  }
+}
+
+// Render a relative-time string ("2h ago", "5m ago") for the email panel.
+function schedTimeAgo(date) {
+  const ms = Date.now() - date.getTime();
+  if (ms < 60 * 1000) return 'just now';
+  if (ms < 60 * 60 * 1000) return `${Math.round(ms / 60000)}m ago`;
+  if (ms < 24 * 60 * 60 * 1000) return `${Math.round(ms / 3600000)}h ago`;
+  const days = Math.round(ms / 86400000);
+  return days === 1 ? 'yesterday' : `${days}d ago`;
+}
+
+// ════════════════════════════════════════════════════════════════════
 // REMOVE a stop from a trip_day. May leave the day empty or trip empty.
 // ════════════════════════════════════════════════════════════════════
 async function schedRemoveStopFromCell(tripStopId) {
@@ -7335,6 +7440,8 @@ function schedEnterCellEdit(tripDayId, driverId, dayIso) {
     driver_id: driverId,
     day_iso: dayIso,
     stops: day.stops || [],
+    last_email_sent_at: day.last_email_sent_at || null,
+    email_resend_pending_at: day.email_resend_pending_at || null,
   };
   schedState.cellAddMode = false;
   schedState.selected.clear();
@@ -7382,6 +7489,8 @@ function schedReopenEditingCell(tripDayId) {
     driver_id: trip.driver_id,
     day_iso: day.day_date,
     stops: day.stops || [],
+    last_email_sent_at: day.last_email_sent_at || null,
+    email_resend_pending_at: day.email_resend_pending_at || null,
   };
   schedRenderAll();
 }
@@ -7576,6 +7685,50 @@ function schedRenderCellEditSidebar(container) {
     </div>`;
   }).join('');
 
+  // Email status panel — only shown for published trips. Three flavours:
+  //   - never sent: muted "Driver hasn't been emailed yet"
+  //   - sent + nothing pending: timestamp + Resend button
+  //   - sent + resend pending: amber "Resend queued in N min"
+  let emailPanelHtml = '';
+  if (isPublished) {
+    const lastSent = cell.last_email_sent_at ? new Date(cell.last_email_sent_at) : null;
+    const pendingAt = cell.email_resend_pending_at ? new Date(cell.email_resend_pending_at) : null;
+    const lastSentRel = lastSent ? schedTimeAgo(lastSent) : null;
+
+    if (pendingAt) {
+      const minsUntil = Math.max(0, Math.round((pendingAt.getTime() - Date.now()) / 60000));
+      emailPanelHtml = `
+        <div class="sched-email-panel sched-email-pending">
+          <div class="sched-email-status">
+            ⏱ Resend queued · firing in ~${minsUntil} min
+          </div>
+          <button class="sched-email-resend-btn" id="sched-resend-now-btn" title="Send the updated email immediately instead of waiting">
+            Send now
+          </button>
+        </div>`;
+    } else if (lastSent) {
+      emailPanelHtml = `
+        <div class="sched-email-panel">
+          <div class="sched-email-status">
+            ✉ Driver emailed ${lastSentRel}
+          </div>
+          <button class="sched-email-resend-btn" id="sched-resend-now-btn">
+            Resend
+          </button>
+        </div>`;
+    } else {
+      emailPanelHtml = `
+        <div class="sched-email-panel sched-email-never">
+          <div class="sched-email-status">
+            ✉ Driver hasn't been emailed yet — night-before cron will send.
+          </div>
+          <button class="sched-email-resend-btn" id="sched-resend-now-btn" title="Send the schedule email now instead of waiting for the night-before cron">
+            Send now
+          </button>
+        </div>`;
+    }
+  }
+
   container.innerHTML = `
     <div class="sched-cell-edit-header">
       <button class="sched-cell-back" id="sched-cell-back-btn">← Back</button>
@@ -7585,6 +7738,7 @@ function schedRenderCellEditSidebar(container) {
         ${isPublished ? '<div class="sched-cell-pub-badge">Published</div>' : ''}
       </div>
     </div>
+    ${emailPanelHtml}
     <div class="sched-cell-stop-list">
       ${(cell.stops && cell.stops.length) ? stopsHtml : '<div class="sched-empty"><p>No stops on this day yet.</p></div>'}
     </div>
@@ -7598,6 +7752,12 @@ function schedRenderCellEditSidebar(container) {
 
   // Wire interactions
   document.getElementById('sched-cell-back-btn').addEventListener('click', () => schedExitCellEdit());
+
+  // Resend / Send-now button (only present on published days)
+  const resendBtn = document.getElementById('sched-resend-now-btn');
+  if (resendBtn) {
+    resendBtn.addEventListener('click', () => schedSendDayEmail(cell.trip_day_id, cell.driver_id, cell.day_iso, !!cell.last_email_sent_at));
+  }
 
   container.querySelectorAll('.sched-stop-remove').forEach(btn => {
     btn.addEventListener('click', (e) => {
