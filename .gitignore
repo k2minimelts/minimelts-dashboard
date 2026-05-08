@@ -4,3 +4,10 @@ echo .DS_Store>> .gitignore
 echo *.log>> .gitignore
 echo .env>> .gitignore
 echo .env.local>> .gitignore
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example

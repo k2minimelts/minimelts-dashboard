@@ -2906,58 +2906,261 @@ window.unapproveQB = async (id) => {
 };
 
 // ── Lot Lookup ──
+// ════════════════════════════════════════════════════════════════════
+// 🔬 LOT LOOKUP
+// Searches THREE sources for a lot code (recall traceability):
+//   1. deliveries.items[].lotBatch       — legacy per-item lot codes
+//   2. deliveries.lot_<flavor>           — new per-delivery lot columns
+//   3. vending_refills.lot_<flavor>      — vending refill lot columns
+// All formats are 8-digit "MMDDYYYY". Search is exact-match / substring
+// against the digits (any non-digit input characters are stripped first
+// so "02/12/2026" and "02122026" both match the same row).
+// ════════════════════════════════════════════════════════════════════
+
+// Map column name -> human-readable product label, used in result rows
+const LOT_COLUMN_TO_PRODUCT = {
+  lot_cotton_candy:  'Cotton Candy',
+  lot_cookies_cream: 'Cookies & Cream',
+  lot_banana_split:  'Banana Split',
+  lot_cookie_dough:  'Cookie Dough',
+  lot_orange:        'Orange',
+  lot_mint_choc:     'Mint Chocolate',
+  lot_rainbow:       'Rainbow',
+  lot_big_cherry:    'BIG Cherry',
+  lot_big_mango:     'BIG Mango',
+  lot_big_kiwi:      'BIG Kiwi',
+};
+
+// Strip non-digits so user can type "02/12/2026" or "02122026"; match either way
+function normalizeLot(s) {
+  return String(s || '').replace(/\D/g, '');
+}
+
 window.searchLot = async () => {
-  const lotCode = document.getElementById('lot-input').value.trim();
-  if (!lotCode) { alert('Please enter a lot/batch code.'); return; }
+  const rawInput = document.getElementById('lot-input').value.trim();
+  if (!rawInput) { alert('Please enter a lot/batch code.'); return; }
+  const needle = normalizeLot(rawInput);
+  if (!needle) { alert('Please enter at least one digit.'); return; }
+
   const resultsEl = document.getElementById('lot-results');
-  resultsEl.innerHTML = '<div class="loading">Searching deliveries...</div>';
-  // Search all deliveries for matching lot codes in items array
-  const matched = allDeliveries.filter(d => {
-    if (!Array.isArray(d.items)) return false;
-    return d.items.some(i => i.lotBatch && i.lotBatch.toLowerCase().includes(lotCode.toLowerCase()));
+  resultsEl.innerHTML = '<div class="loading">Searching deliveries and vending refills...</div>';
+
+  // Pull both tables in parallel. Refills include their machine + venue.
+  let deliveries = allDeliveries;
+  let refills = [];
+  try {
+    refills = await sbFetch(
+      'vending_refills?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
+    );
+    if (!Array.isArray(refills)) refills = [];
+  } catch (e) {
+    console.error('Could not load vending refills for lot search', e);
+  }
+
+  // Normalize all three sources into a unified record shape so grouping/render
+  // logic stays simple. Each match becomes:
+  //   { source, location, date, driver, product, qty, lot, receipt }
+  const matches = [];
+
+  // Source 1 + 2: Deliveries
+  deliveries.forEach(d => {
+    const dateStr = d.delivered_at ? new Date(d.delivered_at).toLocaleDateString('en-CA') : '';
+    // 1a: items[].lotBatch (legacy / mobile-app current path for item-level lots)
+    if (Array.isArray(d.items)) {
+      d.items.forEach(i => {
+        const itemLot = normalizeLot(i.lotBatch);
+        if (itemLot && itemLot.includes(needle)) {
+          matches.push({
+            source: 'delivery',
+            location: d.store_name || 'Unknown store',
+            date: dateStr,
+            driver: d.driver_name || '',
+            product: i.product || '',
+            qty: parseInt(i.qtyDelivered) || 0,
+            lot: itemLot,
+            receipt: d.receipt_number || '',
+          });
+        }
+      });
+    }
+    // 1b: lot_<flavor> columns (new per-delivery lot tracking)
+    Object.entries(LOT_COLUMN_TO_PRODUCT).forEach(([col, productLabel]) => {
+      const colLot = normalizeLot(d[col]);
+      if (!colLot || !colLot.includes(needle)) return;
+      // Skip if items already covered this exact lot+product combo (avoid duplicates)
+      const itemQty = Array.isArray(d.items)
+        ? d.items
+            .filter(i => i.product === productLabel && normalizeLot(i.lotBatch) === colLot)
+            .reduce((s, i) => s + (parseInt(i.qtyDelivered) || 0), 0)
+        : 0;
+      if (itemQty > 0) return; // covered by source 1a already
+      // Otherwise add a column-level match. Try to find qty from items by product alone.
+      const fallbackQty = Array.isArray(d.items)
+        ? d.items
+            .filter(i => i.product === productLabel)
+            .reduce((s, i) => s + (parseInt(i.qtyDelivered) || 0), 0)
+        : 0;
+      matches.push({
+        source: 'delivery',
+        location: d.store_name || 'Unknown store',
+        date: dateStr,
+        driver: d.driver_name || '',
+        product: productLabel,
+        qty: fallbackQty,
+        lot: colLot,
+        receipt: d.receipt_number || '',
+      });
+    });
   });
-  if (!matched.length) {
-    resultsEl.innerHTML = `<div class="lot-result-card safe"><div class="lot-result-title">✅ No matches found</div><div style="color:var(--muted);font-size:13px">No deliveries found containing lot code "<strong>${lotCode}</strong>". This lot code may not have been delivered yet, or was not recorded.</div></div>`;
+
+  // Source 3: Vending refills (per-flavor columns; no per-flavor qty)
+  refills.forEach(r => {
+    const dateStr = r.serviced_at ? new Date(r.serviced_at).toLocaleDateString('en-CA') : '';
+    const venueName = r.machine?.venue?.name || 'Unknown venue';
+    const machineDesc = r.machine?.nayax_machine_number || '';
+    const locationLabel = machineDesc && machineDesc !== venueName
+      ? `${venueName} — ${machineDesc}`
+      : venueName;
+    Object.entries(LOT_COLUMN_TO_PRODUCT).forEach(([col, productLabel]) => {
+      const colLot = normalizeLot(r[col]);
+      if (!colLot || !colLot.includes(needle)) return;
+      matches.push({
+        source: 'vending',
+        location: locationLabel,
+        date: dateStr,
+        driver: r.driver_name || '',
+        product: productLabel,
+        qty: 0, // vending has no per-flavor qty, so leave blank in render
+        lot: colLot,
+        receipt: '', // vending doesn't have a receipt number
+      });
+    });
+  });
+
+  if (matches.length === 0) {
+    resultsEl.innerHTML = `<div class="lot-result-card safe"><div class="lot-result-title">✅ No matches found</div><div style="color:var(--muted);font-size:13px">No deliveries or vending refills found containing lot code "<strong>${rawInput}</strong>". This lot code may not have been recorded yet.</div></div>`;
     return;
   }
-  // Group by store
-  const storeMap = {};
-  matched.forEach(d => {
-    if (!storeMap[d.store_name]) storeMap[d.store_name] = [];
-    storeMap[d.store_name].push(d);
+
+  // Group by location (= store name OR venue+machine label)
+  const locationMap = {};
+  matches.forEach(m => {
+    if (!locationMap[m.location]) locationMap[m.location] = [];
+    locationMap[m.location].push(m);
   });
-  const storeCount = Object.keys(storeMap).length;
-  const totalQty = matched.reduce((s,d) => { return s + d.items.filter(i => i.lotBatch?.toLowerCase().includes(lotCode.toLowerCase())).reduce((q,i) => q + (parseInt(i.qtyDelivered)||0), 0); }, 0);
+
+  const locationCount = Object.keys(locationMap).length;
+  const totalQty = matches.reduce((s, m) => s + (m.qty || 0), 0);
+  const deliveryCount = matches.filter(m => m.source === 'delivery').length;
+  const refillCount = matches.filter(m => m.source === 'vending').length;
+
+  // Header card
   let html = `<div class="lot-result-card">
-    <div class="lot-result-title">⚠️ Lot Code "${lotCode}" Found</div>
-    <div style="color:var(--muted);font-size:13px;margin-top:6px">${storeCount} stores affected · ${matched.length} deliveries · ~${totalQty} units delivered</div>
-    <button class="lot-export-btn" onclick="exportLotCSV('${lotCode}')">⬇ Export Affected Stores CSV</button>
+    <div class="lot-result-title">⚠️ Lot Code "${rawInput}" Found</div>
+    <div style="color:var(--muted);font-size:13px;margin-top:6px">
+      ${locationCount} location(s) affected · ${deliveryCount} store delivery match(es) · ${refillCount} vending refill match(es)${totalQty > 0 ? ` · ~${totalQty} units delivered to stores` : ''}
+    </div>
+    <button class="lot-export-btn" onclick="exportLotCSV('${rawInput.replace(/'/g, "\\'")}')">⬇ Export Affected Locations CSV</button>
   </div>`;
-  Object.entries(storeMap).forEach(([store, deliveries]) => {
-    const rows = deliveries.map(d => {
-      const lotItems = d.items.filter(i => i.lotBatch?.toLowerCase().includes(lotCode.toLowerCase()));
-      return lotItems.map(i => `<tr><td>${new Date(d.delivered_at).toLocaleDateString('en-CA')}</td><td>${d.driver_name}</td><td>${i.product}</td><td style="text-align:center">${i.qtyDelivered}</td><td style="text-align:center">${i.lotBatch}</td><td>${d.receipt_number}</td></tr>`).join('');
+
+  // One table per location, sorted alphabetically
+  Object.keys(locationMap).sort().forEach(loc => {
+    const rows = locationMap[loc].map(m => {
+      const sourceBadge = m.source === 'vending'
+        ? '<span style="background:rgba(91,201,255,0.15);color:var(--mm-cyan);padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700">🥤 VENDING</span>'
+        : '<span style="background:rgba(226,176,74,0.15);color:var(--gold);padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700">🏪 STORE</span>';
+      const qtyCell = m.source === 'vending'
+        ? '<span style="color:var(--muted)">—</span>'
+        : (m.qty || '—');
+      const receiptCell = m.receipt || '<span style="color:var(--muted)">—</span>';
+      return `<tr>
+        <td>${m.date}</td>
+        <td>${sourceBadge}</td>
+        <td>${m.driver}</td>
+        <td>${m.product}</td>
+        <td style="text-align:center">${qtyCell}</td>
+        <td style="text-align:center;font-family:monospace">${m.lot}</td>
+        <td>${receiptCell}</td>
+      </tr>`;
     }).join('');
     html += `<div class="table-wrap" style="margin-bottom:12px">
-      <div class="table-header"><span class="table-title">🏪 ${store}</span><span class="table-count">${deliveries.length} delivery(s)</span></div>
-      <table><thead><tr><th>Date</th><th>Driver</th><th>Product</th><th>Qty</th><th>Lot Code</th><th>Receipt</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="table-header">
+        <span class="table-title">📍 ${loc}</span>
+        <span class="table-count">${locationMap[loc].length} match(es)</span>
+      </div>
+      <table>
+        <thead><tr><th>Date</th><th>Source</th><th>Driver</th><th>Product</th><th>Qty</th><th>Lot Code</th><th>Receipt</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
     </div>`;
   });
   resultsEl.innerHTML = html;
 };
 
-window.exportLotCSV = (lotCode) => {
-  const matched = allDeliveries.filter(d => Array.isArray(d.items) && d.items.some(i => i.lotBatch?.toLowerCase().includes(lotCode.toLowerCase())));
-  const rows = [['Store','Date','Driver','Product','Qty Delivered','Lot Code','Receipt #']];
-  matched.forEach(d => {
-    d.items.filter(i => i.lotBatch?.toLowerCase().includes(lotCode.toLowerCase())).forEach(i => {
-      rows.push([d.store_name, new Date(d.delivered_at).toLocaleDateString('en-CA'), d.driver_name, i.product, i.qtyDelivered, i.lotBatch, d.receipt_number]);
+window.exportLotCSV = async (rawInput) => {
+  const needle = normalizeLot(rawInput);
+  if (!needle) return;
+
+  // Re-run the same logic as searchLot but spit out CSV.
+  // We don't keep a global `lastMatches` state because this avoids stale data
+  // if the user changes search input but exports before re-searching.
+  let refills = [];
+  try {
+    refills = await sbFetch(
+      'vending_refills?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
+    );
+    if (!Array.isArray(refills)) refills = [];
+  } catch (e) { /* ignore */ }
+
+  const rows = [['Source','Location','Date','Driver','Product','Qty Delivered','Lot Code','Receipt #']];
+
+  // Deliveries (item-level + column-level)
+  allDeliveries.forEach(d => {
+    const dateStr = d.delivered_at ? new Date(d.delivered_at).toLocaleDateString('en-CA') : '';
+    const seenColumnProducts = new Set();
+    if (Array.isArray(d.items)) {
+      d.items.forEach(i => {
+        const itemLot = normalizeLot(i.lotBatch);
+        if (itemLot && itemLot.includes(needle)) {
+          rows.push(['Store', d.store_name || '', dateStr, d.driver_name || '', i.product || '', i.qtyDelivered || 0, itemLot, d.receipt_number || '']);
+          seenColumnProducts.add(`${i.product}|${itemLot}`);
+        }
+      });
+    }
+    Object.entries(LOT_COLUMN_TO_PRODUCT).forEach(([col, productLabel]) => {
+      const colLot = normalizeLot(d[col]);
+      if (!colLot || !colLot.includes(needle)) return;
+      if (seenColumnProducts.has(`${productLabel}|${colLot}`)) return;
+      const fallbackQty = Array.isArray(d.items)
+        ? d.items.filter(i => i.product === productLabel).reduce((s, i) => s + (parseInt(i.qtyDelivered) || 0), 0)
+        : 0;
+      rows.push(['Store', d.store_name || '', dateStr, d.driver_name || '', productLabel, fallbackQty, colLot, d.receipt_number || '']);
     });
   });
-  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+
+  // Vending refills
+  refills.forEach(r => {
+    const dateStr = r.serviced_at ? new Date(r.serviced_at).toLocaleDateString('en-CA') : '';
+    const venueName = r.machine?.venue?.name || 'Unknown venue';
+    const machineDesc = r.machine?.nayax_machine_number || '';
+    const locationLabel = machineDesc && machineDesc !== venueName
+      ? `${venueName} — ${machineDesc}`
+      : venueName;
+    Object.entries(LOT_COLUMN_TO_PRODUCT).forEach(([col, productLabel]) => {
+      const colLot = normalizeLot(r[col]);
+      if (!colLot || !colLot.includes(needle)) return;
+      rows.push(['Vending', locationLabel, dateStr, r.driver_name || '', productLabel, '', colLot, '']);
+    });
+  });
+
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = `MiniMelts_Lot_${lotCode}_${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(url);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `MiniMelts_Lot_${needle}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 };
 
 // ── Stores ──
@@ -3713,11 +3916,10 @@ const VENDING_FLAVORS_DASH = [
   { key: 'lot_rainbow',        label: 'Rainbow' },
 ];
 
-// Convert "MMDDYYYY" string to "MM/DD/YYYY" for display, or empty
-function formatLotDate(s) {
-  if (!s || typeof s !== 'string' || s.length !== 8) return '';
-  return `${s.substring(0,2)}/${s.substring(2,4)}/${s.substring(4,8)}`;
-}
+// Lot codes are stored as raw 8-digit "MMDDYYYY" strings to match the
+// driver app input format. We display them raw (no slashes) on the
+// dashboard for consistency with the printed receipt and to make
+// search/copy-paste straightforward.
 
 async function loadRefills() {
   document.getElementById('refills-body').innerHTML = '<div class="loading">Loading...</div>';
@@ -3835,11 +4037,11 @@ function renderRefillsTable() {
 }
 
 function renderRefillDetail(r) {
-  // Lot codes block
+  // Lot codes block — display raw 8-digit MMDDYYYY (matches DB / driver app / receipt)
   const lotRows = VENDING_FLAVORS_DASH.map(f => {
     const v = r[f.key];
-    const formatted = formatLotDate(v);
-    return `<tr><td style="color:var(--muted);font-size:11px">${f.label}</td><td style="text-align:right">${formatted ? `<strong>${formatted}</strong>` : '<span style="color:var(--muted)">—</span>'}</td></tr>`;
+    const display = (v && typeof v === 'string' && v.length === 8) ? v : '';
+    return `<tr><td style="color:var(--muted);font-size:11px">${f.label}</td><td style="text-align:right;font-family:monospace">${display ? `<strong>${display}</strong>` : '<span style="color:var(--muted)">—</span>'}</td></tr>`;
   }).join('');
 
   // Roll breakdown
