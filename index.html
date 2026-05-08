@@ -140,6 +140,11 @@
   .tab { padding: 8px 20px; border-radius: 7px; border: none; background: none; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 600; }
   .tab.active { background: linear-gradient(135deg, var(--mm-cyan), var(--gold)); color: #0d1117; }
 
+  /* Vending Refills */
+  .refill-row:hover { background: rgba(255,255,255,0.03); }
+  .refill-row-expanded { background: rgba(91,201,255,0.06); }
+  .refill-detail-row td { padding: 0 !important; border-bottom: 2px solid var(--border) !important; }
+
   /* Lot Lookup */
   .lot-search-box { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
   .lot-search-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
@@ -1286,6 +1291,7 @@
       <button class="tab" onclick="switchTab('stores')">🏪 Stores</button>
       <button class="tab" onclick="switchTab('map')">🗺️ Map</button>
       <button class="tab" onclick="switchTab('routes')">🛣️ Routes</button>
+      <button class="tab" onclick="switchTab('refills')">🥤 Vending Refills</button>
       <button class="tab" onclick="switchTab('schedule')" data-scheduler-only style="display:none">📅 Schedule</button>
       <button class="tab" onclick="switchTab('lot')">🔬 Lot Lookup</button>
       <button class="tab" onclick="switchTab('drivers')">👤 Drivers</button>
@@ -1562,6 +1568,27 @@
           <button class="btn-sm" onclick="window.closeRouteModal()">Cancel</button>
           <button class="btn-primary" onclick="window.saveRoute()" style="background:var(--gold);color:var(--bg);border:none;padding:8px 14px;border-radius:6px;font-weight:600;cursor:pointer">Save</button>
         </div>
+      </div>
+    </div>
+
+        <!-- ════════════════════════════════════════════════════════════════════
+         🥤 VENDING REFILLS TAB
+         List of vending machine refills logged by drivers. Filter by driver,
+         date range, and venue. Click any row to expand and view photos.
+         ════════════════════════════════════════════════════════════════════ -->
+    <div id="tab-refills" style="display:none">
+      <div class="filters">
+        <div class="filter-group"><label>Search</label><input type="text" id="refills-filter-search" placeholder="Venue, driver, machine..." oninput="applyRefillFilters()" style="min-width:200px"/></div>
+        <div class="filter-group"><label>Driver</label><select id="refills-filter-driver" onchange="applyRefillFilters()"><option value="">All Drivers</option></select></div>
+        <div class="filter-group"><label>From</label><input type="date" id="refills-filter-from" onchange="applyRefillFilters()"/></div>
+        <div class="filter-group"><label>To</label><input type="date" id="refills-filter-to" onchange="applyRefillFilters()"/></div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-header">
+          <span class="table-title">🥤 Vending Refills</span>
+          <span class="table-count" id="refills-count">Loading...</span>
+        </div>
+        <div id="refills-body"><div class="loading">Loading refills...</div></div>
       </div>
     </div>
 
@@ -3143,7 +3170,7 @@ document.getElementById('store-modal').addEventListener('click', e => { if (e.ta
 window.switchTab = (tab) => {
   // The schedule tab uses a flex column layout; setting display:block
   // breaks it. Every other tab is fine with block, so we special-case here.
-  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','schedule','lot','drivers','access'].forEach(t => {
+  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','refills','schedule','lot','drivers','access'].forEach(t => {
     const el = document.getElementById(`tab-${t}`);
     if (!el) return;
     if (t !== tab) {
@@ -3162,6 +3189,7 @@ window.switchTab = (tab) => {
   if (tab==='orders') loadOrders();
   if (tab==='map') initMapTab();
   if (tab==='routes') loadRoutes();
+  if (tab==='refills') loadRefills();
   if (tab==='schedule') initScheduleTab();
   if (tab==='access') loadAccess();
 };
@@ -3662,6 +3690,219 @@ window.saveOrder = async () => {
   closeOrderModal();
   await loadOrders();
   updateOrdersBadge();
+};
+
+// ════════════════════════════════════════════════════════════════════
+// 🥤 VENDING REFILLS TAB
+// Lists vending_refills rows with the linked machine + venue + driver.
+// Filterable by driver, date range, and free-text. Click a row to expand
+// inline showing photos (freezer + coin mech), lot codes, change details.
+// ════════════════════════════════════════════════════════════════════
+
+let _allRefills = [];           // raw rows from the DB
+let _filteredRefills = [];      // after filters applied
+let _expandedRefillId = null;   // currently-expanded row id (null = none)
+
+const VENDING_FLAVORS_DASH = [
+  { key: 'lot_cotton_candy',   label: 'Cotton Candy' },
+  { key: 'lot_cookies_cream',  label: 'Cookies & Cream' },
+  { key: 'lot_banana_split',   label: 'Banana Split' },
+  { key: 'lot_cookie_dough',   label: 'Cookie Dough' },
+  { key: 'lot_orange',         label: 'Orange' },
+  { key: 'lot_mint_choc',      label: 'Mint Choc' },
+  { key: 'lot_rainbow',        label: 'Rainbow' },
+];
+
+// Convert "MMDDYYYY" string to "MM/DD/YYYY" for display, or empty
+function formatLotDate(s) {
+  if (!s || typeof s !== 'string' || s.length !== 8) return '';
+  return `${s.substring(0,2)}/${s.substring(2,4)}/${s.substring(4,8)}`;
+}
+
+async function loadRefills() {
+  document.getElementById('refills-body').innerHTML = '<div class="loading">Loading...</div>';
+  // Embed machine -> venue + sister tables in one Supabase query (PostgREST resource embedding)
+  const data = await sbFetch(
+    'vending_refills?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
+  );
+  _allRefills = Array.isArray(data) ? data : [];
+  _filteredRefills = [..._allRefills];
+  populateRefillDriverFilter();
+  renderRefillsTable();
+}
+window.loadRefills = loadRefills;
+
+function populateRefillDriverFilter() {
+  const select = document.getElementById('refills-filter-driver');
+  if (!select) return;
+  const previous = select.value;
+  // Distinct driver names, sorted
+  const names = Array.from(new Set(_allRefills.map(r => r.driver_name).filter(Boolean))).sort();
+  select.innerHTML = '<option value="">All Drivers</option>' +
+    names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+  if (previous) select.value = previous;
+}
+
+window.applyRefillFilters = () => {
+  const search = (document.getElementById('refills-filter-search').value || '').trim().toLowerCase();
+  const driver = document.getElementById('refills-filter-driver').value;
+  const from = document.getElementById('refills-filter-from').value;
+  const to = document.getElementById('refills-filter-to').value;
+
+  _filteredRefills = _allRefills.filter(r => {
+    if (driver && r.driver_name !== driver) return false;
+    if (from && r.serviced_at < from) return false;
+    // 'to' is end-of-day inclusive — pad with T23:59:59
+    if (to && r.serviced_at > (to + 'T23:59:59')) return false;
+    if (search) {
+      const haystack = [
+        r.driver_name,
+        r.machine?.nayax_machine_number,
+        r.machine?.nayax_machine_name,
+        r.machine?.venue?.name,
+        r.machine?.venue?.city,
+        r.notes,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  });
+  renderRefillsTable();
+};
+
+function renderRefillsTable() {
+  const body = document.getElementById('refills-body');
+  const count = document.getElementById('refills-count');
+  if (!body) return;
+  count.textContent = `${_filteredRefills.length} of ${_allRefills.length}`;
+
+  if (_filteredRefills.length === 0) {
+    body.innerHTML = '<div class="loading" style="color:var(--muted)">No refills match the current filters.</div>';
+    return;
+  }
+
+  const rows = _filteredRefills.map(r => {
+    const date = r.serviced_at ? new Date(r.serviced_at).toLocaleString('en-CA', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+    // Per Nayax UI convention, swap labels: nayax_machine_number = descriptive name, nayax_machine_name = serial
+    const venue = r.machine?.venue?.name || '—';
+    const machineDesc = r.machine?.nayax_machine_number || '';
+    const machineSerial = r.machine?.nayax_machine_name || '';
+    const driver = r.driver_name || '—';
+    const change = `$${parseFloat(r.total_change_added || 0).toFixed(2)}`;
+    const lcd = `$${parseFloat(r.coin_mech_reading || 0).toFixed(2)}`;
+    const lotCount = VENDING_FLAVORS_DASH.filter(f => r[f.key]).length;
+    const photoIcons = [
+      r.freezer_photo_base64 ? '📸' : '',
+      r.coinmech_photo_base64 ? '🪙' : '',
+      r.receipt_pdf_base64 ? '🧾' : '',
+    ].filter(Boolean).join(' ');
+    const expanded = _expandedRefillId === r.id;
+
+    return `
+      <tr class="refill-row${expanded ? ' refill-row-expanded' : ''}" onclick="toggleRefillRow('${r.id}')" style="cursor:pointer">
+        <td>${date}</td>
+        <td><strong>${escapeHtml(venue)}</strong>${machineDesc && machineDesc !== venue ? `<br/><span style="color:var(--muted);font-size:11px">${escapeHtml(machineDesc)}</span>` : ''}</td>
+        <td style="font-family:monospace;font-size:11px;color:var(--muted)">${escapeHtml(machineSerial)}</td>
+        <td>${escapeHtml(driver)}</td>
+        <td style="text-align:right">${change}</td>
+        <td style="text-align:right">${lcd}</td>
+        <td style="text-align:center">${lotCount}/7</td>
+        <td style="text-align:center;font-size:14px">${photoIcons}</td>
+        <td style="color:var(--muted);font-size:11px">${expanded ? '▼' : '▶'}</td>
+      </tr>
+      ${expanded ? `<tr class="refill-detail-row"><td colspan="9">${renderRefillDetail(r)}</td></tr>` : ''}
+    `;
+  }).join('');
+
+  body.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Date / Time</th>
+          <th>Venue / Machine</th>
+          <th>Serial</th>
+          <th>Driver</th>
+          <th style="text-align:right">Change Added</th>
+          <th style="text-align:right">LCD</th>
+          <th style="text-align:center">Lots</th>
+          <th style="text-align:center">Files</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderRefillDetail(r) {
+  // Lot codes block
+  const lotRows = VENDING_FLAVORS_DASH.map(f => {
+    const v = r[f.key];
+    const formatted = formatLotDate(v);
+    return `<tr><td style="color:var(--muted);font-size:11px">${f.label}</td><td style="text-align:right">${formatted ? `<strong>${formatted}</strong>` : '<span style="color:var(--muted)">—</span>'}</td></tr>`;
+  }).join('');
+
+  // Roll breakdown
+  const r2 = parseInt(r.rolls_2dollar) || 0;
+  const r1 = parseInt(r.rolls_1dollar) || 0;
+  const rq = parseInt(r.rolls_quarter) || 0;
+  const rn = parseInt(r.rolls_nickel) || 0;
+  const rollsBlock = (r2 + r1 + rq + rn === 0)
+    ? '<span style="color:var(--muted);font-style:italic">No change added</span>'
+    : `<table style="width:100%;font-size:12px">
+        ${r2 > 0 ? `<tr><td>$2 rolls × ${r2}</td><td style="text-align:right">$${(r2 * 50).toFixed(2)}</td></tr>` : ''}
+        ${r1 > 0 ? `<tr><td>$1 rolls × ${r1}</td><td style="text-align:right">$${(r1 * 25).toFixed(2)}</td></tr>` : ''}
+        ${rq > 0 ? `<tr><td>$0.25 rolls × ${rq}</td><td style="text-align:right">$${(rq * 10).toFixed(2)}</td></tr>` : ''}
+        ${rn > 0 ? `<tr><td>$0.05 rolls × ${rn}</td><td style="text-align:right">$${(rn * 2).toFixed(2)}</td></tr>` : ''}
+      </table>`;
+
+  // Photos
+  const freezerImg = r.freezer_photo_base64
+    ? `<div><div style="color:var(--muted);font-size:11px;margin-bottom:4px">FREEZER PHOTO</div><img src="data:image/jpeg;base64,${r.freezer_photo_base64}" style="max-width:300px;max-height:300px;border-radius:8px;border:1px solid var(--border);cursor:pointer" onclick="event.stopPropagation();openRefillPhoto('data:image/jpeg;base64,${r.freezer_photo_base64}')"/></div>`
+    : '';
+  const coinImg = r.coinmech_photo_base64
+    ? `<div><div style="color:var(--muted);font-size:11px;margin-bottom:4px">COIN MECH PHOTO</div><img src="data:image/jpeg;base64,${r.coinmech_photo_base64}" style="max-width:300px;max-height:300px;border-radius:8px;border:1px solid var(--border);cursor:pointer" onclick="event.stopPropagation();openRefillPhoto('data:image/jpeg;base64,${r.coinmech_photo_base64}')"/></div>`
+    : '';
+  const photosBlock = (freezerImg || coinImg)
+    ? `<div style="display:flex;gap:16px;flex-wrap:wrap">${freezerImg}${coinImg}</div>`
+    : '<span style="color:var(--muted);font-style:italic">No photos uploaded</span>';
+
+  const notesBlock = r.notes
+    ? `<div><div style="color:var(--muted);font-size:11px;margin-bottom:4px">DRIVER NOTES</div><div style="background:var(--bg);padding:10px;border-radius:6px;font-style:italic;border-left:3px solid var(--mm-cyan)">${escapeHtml(r.notes)}</div></div>`
+    : '';
+
+  return `
+    <div style="padding:16px;background:rgba(255,255,255,0.02);display:grid;grid-template-columns:1fr 1fr;gap:24px" onclick="event.stopPropagation()">
+      <div>
+        <div style="color:var(--muted);font-size:10px;letter-spacing:1px;margin-bottom:8px">CHANGE BREAKDOWN</div>
+        ${rollsBlock}
+        <div style="margin-top:16px;color:var(--muted);font-size:10px;letter-spacing:1px;margin-bottom:8px">LOT / BATCH NUMBERS</div>
+        <table style="width:100%">${lotRows}</table>
+        ${notesBlock ? `<div style="margin-top:16px">${notesBlock}</div>` : ''}
+      </div>
+      <div>
+        <div style="color:var(--muted);font-size:10px;letter-spacing:1px;margin-bottom:8px">PHOTOS</div>
+        ${photosBlock}
+      </div>
+    </div>
+  `;
+}
+
+window.toggleRefillRow = (id) => {
+  _expandedRefillId = (_expandedRefillId === id) ? null : id;
+  renderRefillsTable();
+};
+
+window.openRefillPhoto = (src) => {
+  // Reuse the existing image modal pattern if one exists; otherwise inject a quick lightbox
+  const existing = document.getElementById('refill-photo-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'refill-photo-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;cursor:zoom-out';
+  modal.onclick = () => modal.remove();
+  modal.innerHTML = `<img src="${src}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:6px"/>`;
+  document.body.appendChild(modal);
 };
 
 // ════════════════════════════════════════════════════════════════════
