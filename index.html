@@ -1290,7 +1290,7 @@
       <button class="tab" onclick="switchTab('corrections')" id="tab-btn-corrections">⚠️ Corrections</button>
       <button class="tab" onclick="switchTab('stores')">🏪 Stores</button>
       <button class="tab" onclick="switchTab('map')">🗺️ Map</button>
-      <button class="tab" onclick="switchTab('routes')">🛣️ Routes</button>
+      <button class="tab" onclick="switchTab('routes')" style="display:none">🛣️ Routes</button>
       <button class="tab" onclick="switchTab('refills')">🥤 Vending Refills</button>
       <button class="tab" onclick="switchTab('schedule')" data-scheduler-only style="display:none">📅 Schedule</button>
       <button class="tab" onclick="switchTab('lot')">🔬 Lot Lookup</button>
@@ -1464,7 +1464,7 @@
                 <option value="">All Provinces</option>
               </select>
             </div>
-            <div style="margin-bottom:14px">
+            <div style="margin-bottom:14px;display:none">
               <label id="map-route-label" style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;letter-spacing:0.5px">Route</label>
               <select id="map-route-filter" onchange="window.applyMapFiltersAndRecenter()" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-size:13px">
                 <option value="">All Routes</option>
@@ -4923,7 +4923,7 @@ async function initMapboxGL() {
           ${p.address ? escapeHtmlMap(p.address) + '<br>' : ''}
           ${[p.city, p.province].filter(Boolean).map(escapeHtmlMap).join(', ')}
         </div>
-        <div id="popup-route-block-${escapeHtmlMap(p.id)}" style="margin-top:6px;font-size:11px;color:#666">
+        <div id="popup-route-block-${escapeHtmlMap(p.id)}" style="margin-top:6px;font-size:11px;color:#666;display:none">
           ${p.route_code
             ? `Route: <strong>${escapeHtmlMap(p.route_code)}</strong> — ${escapeHtmlMap(p.route_name||'')}`
             : '<span style="color:#999;font-style:italic">Unassigned</span>'}
