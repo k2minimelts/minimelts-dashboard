@@ -1660,6 +1660,10 @@
               <span>Order pending</span>
             </div>
             <div class="sched-legend-row">
+              <span class="sw" style="background:#ff4d9d"></span>
+              <span>🆕 New freezer install</span>
+            </div>
+            <div class="sched-legend-row">
               <span class="sw sw-gradient"></span>
               <span>Overdue for a visit</span>
             </div>
@@ -2054,6 +2058,19 @@
           <option value="half">Half full</option>
           <option value="three_quarter">3/4 full</option>
         </select>
+      </div>
+
+      <!-- New Freezer Install flag — visual indicator only, no workflow change -->
+      <div class="field" style="background:rgba(232,123,181,0.06);border:1px solid rgba(232,123,181,0.25);border-radius:8px;padding:10px 14px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;margin:0;text-transform:none;letter-spacing:0">
+          <input type="checkbox" id="order-is-new-install" style="accent-color:var(--mm-pink);cursor:pointer;width:18px;height:18px"/>
+          <span style="font-size:14px;color:var(--text);font-weight:600">
+            🆕 This is a <span style="color:var(--mm-pink)">new freezer install</span>
+          </span>
+        </label>
+        <div style="margin-top:4px;font-size:11px;color:var(--muted);padding-left:28px">
+          Pink pin on the schedule map. Driver will see an indicator on their stop card.
+        </div>
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -3635,7 +3652,7 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,' +
+    'id,source,stock_level,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
     'store:stores!store_id(id,public_code,qb_name,ship_city,province,phone,email)'
   );
@@ -3789,7 +3806,7 @@ function renderOrdersTable(orders) {
         <span style="font-family:monospace;font-weight:600;color:var(--gold);font-size:13px">#${o.id.replace(/-/g,'').slice(-8).toUpperCase()}</span>
       </td>
       <td>
-        <div style="font-weight:600">${escapeHtml(storeName)}</div>
+        <div style="font-weight:600">${escapeHtml(storeName)}${o.is_new_install ? ' <span style="background:rgba(232,123,181,0.18);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px">🆕 NEW INSTALL</span>' : ''}</div>
         <div style="font-size:12px;color:var(--muted)">${storeCode ? `<span style="font-family:monospace;color:var(--gold)">${storeCode}</span> · ` : ''}${escapeHtml(cityProv)}</div>
       </td>
       <td>${sourceBadge(o.source)}</td>
@@ -3838,6 +3855,7 @@ window.showNewOrderModal = (source) => {
   document.getElementById('order-contact-phone').value = '';
   document.getElementById('order-contact-email').value = '';
   document.getElementById('order-notes').value = '';
+  document.getElementById('order-is-new-install').checked = false;
   document.getElementById('order-modal-error').style.display = 'none';
   document.getElementById('order-modal').classList.add('open');
 };
@@ -3919,6 +3937,7 @@ window.saveOrder = async () => {
   const contactPhone = document.getElementById('order-contact-phone').value.trim() || null;
   const contactEmail = document.getElementById('order-contact-email').value.trim() || null;
   const notes = document.getElementById('order-notes').value.trim() || null;
+  const isNewInstall = document.getElementById('order-is-new-install').checked;
 
   if (!storeId) { errEl.textContent = 'Please select a store.'; errEl.style.display = 'block'; return; }
   if (source === 'staples_po' && !poNumber) { errEl.textContent = 'PO number is required for Staples orders.'; errEl.style.display = 'block'; return; }
@@ -3933,6 +3952,7 @@ window.saveOrder = async () => {
     submitted_by_email: contactEmail,
     po_number: source === 'staples_po' ? poNumber : null,
     status: 'pending',
+    is_new_install: isNewInstall,
     raw_form_payload: { entered_from: 'admin_dashboard' }
   };
 
@@ -6111,7 +6131,13 @@ function schedCadenceStyle(daysOverdue) {
 }
 function schedPinInfo(store) {
   if (store.assigned) return { color: '#8b949e', size: '', stale: false };
-  if (store.type === 'order') return { color: '#4fc3d4', size: '', stale: false };
+  if (store.type === 'order') {
+    // New freezer install orders get a distinct hot-pink color (and bigger
+    // size) so depot managers can spot them at a glance. Regular restock
+    // orders keep the cyan pin.
+    if (store.is_new_install) return { color: '#ff4d9d', size: 'size-lg', stale: false };
+    return { color: '#4fc3d4', size: '', stale: false };
+  }
   if (store.type === 'vending') {
     // Pink base; size up if needs restock; "stale" if no sales 3d+ (uses pulse animation)
     const needsAttn = store.needs_restock || store.no_sales_3d;
@@ -6408,10 +6434,10 @@ async function schedLoadOrdersAndOverdue() {
   );
 
   // Pending unscheduled orders. We pull the full order metadata (date, notes,
-  // source, stock level, contact) so the order pin's hover popup can show the
-  // depot manager useful context for scheduling decisions.
+  // source, stock level, contact, install flag) so the order pin's hover popup
+  // can show the depot manager useful context for scheduling decisions.
   const ordersPromise = sbFetch(
-    `orders?select=id,store_id,submitted_at,notes,source,stock_level,submitted_by_name,submitted_by_phone,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
+    `orders?select=id,store_id,submitted_at,notes,source,stock_level,submitted_by_name,submitted_by_phone,is_new_install,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
     `&status=eq.pending&trip_stop_id=is.null` +
     `&limit=500`
   );
@@ -6485,6 +6511,7 @@ async function schedLoadOrdersAndOverdue() {
       order_stock_level: o.stock_level || null,
       order_submitted_by_name: o.submitted_by_name || null,
       order_submitted_by_phone: o.submitted_by_phone || null,
+      is_new_install: !!o.is_new_install,
     });
   }
 
@@ -6994,6 +7021,7 @@ function schedRenderMarkers() {
         ? `<div style="margin-top:6px;padding:6px 8px;background:#f9fafb;border-left:3px solid #5BC9FF;border-radius:0 4px 4px 0;font-size:11px;color:#374151;font-style:italic;line-height:1.4">${schedEscapeHtml(store.order_notes.slice(0, 200))}${store.order_notes.length > 200 ? '…' : ''}</div>`
         : '';
       popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;min-width:240px;max-width:300px">
+        ${store.is_new_install ? '<div style="background:#ff4d9d;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.5px;margin-bottom:6px;text-align:center">🆕 NEW FREEZER INSTALL</div>' : ''}
         <div style="font-weight:700;font-size:13px">${schedEscapeHtml(store.qb_name)}</div>
         <div style="opacity:0.8;font-size:11px;margin-top:1px">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</div>
         <div style="margin-top:6px;font-size:11px;color:#444">
@@ -7191,7 +7219,13 @@ function schedUpdatePinElement(el, store) {
   if (info.stale && !store.assigned && !isSelected) classes.push('stale');
   el.className = classes.join(' ');
   let bg = info.color;
-  if (isHighlight) bg = store.type === 'order' ? '#4fc3d4' : schedCadenceStyle(store.days_overdue || 0).color;
+  if (isHighlight) {
+    if (store.type === 'order') {
+      bg = store.is_new_install ? '#ff4d9d' : '#4fc3d4';
+    } else {
+      bg = schedCadenceStyle(store.days_overdue || 0).color;
+    }
+  }
   el.style.background = bg;
 }
 
