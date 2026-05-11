@@ -5141,7 +5141,7 @@ async function initMapboxGL() {
     // pct_sold may come back as a string from Mapbox property serialization
     const pct = p.pct_sold != null && p.pct_sold !== '' ? Number(p.pct_sold) : null;
     const qty = p.qty_sold_since_visit != null && p.qty_sold_since_visit !== '' ? Number(p.qty_sold_since_visit) : null;
-    const cap = p.capacity_units != null && p.capacity_units !== '' ? Number(p.capacity_units) : 300;
+    const cap = p.capacity_units != null && p.capacity_units !== '' ? Number(p.capacity_units) : 276;
     const daysSinceSale = p.days_since_last_sale != null && p.days_since_last_sale !== '' ? Number(p.days_since_last_sale) : null;
     const daysSinceVisit = p.days_since_last_visit != null && p.days_since_last_visit !== '' ? Number(p.days_since_last_visit) : null;
     const needsRestock = p.needs_restock === true || p.needs_restock === 'true';
@@ -6936,7 +6936,7 @@ function schedInitMap() {
       // Mapbox feature properties come back as strings — coerce numerics back.
       const pct = p.pct_sold != null && p.pct_sold !== '' ? Number(p.pct_sold) : null;
       const qty = p.qty_sold_since_visit != null && p.qty_sold_since_visit !== '' ? Number(p.qty_sold_since_visit) : null;
-      const cap = p.capacity_units != null && p.capacity_units !== '' ? Number(p.capacity_units) : 300;
+      const cap = p.capacity_units != null && p.capacity_units !== '' ? Number(p.capacity_units) : 276;
       const daysSinceSale = p.days_since_last_sale != null && p.days_since_last_sale !== '' ? Number(p.days_since_last_sale) : null;
       const daysSinceVisit = p.days_since_last_visit != null && p.days_since_last_visit !== '' ? Number(p.days_since_last_visit) : null;
       const needsRestock = p.needs_restock === true || p.needs_restock === 'true';
