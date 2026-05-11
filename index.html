@@ -8924,17 +8924,32 @@ async function schedPublishWeek() {
 // MID-WEEK auto re-optimization for published trips
 // Called after stops are added/removed on a single trip_day.
 // ════════════════════════════════════════════════════════════════════
+// Awaits the optimize call so the user sees the route updated in the UI
+// (and so we can surface Mapbox errors). The send-driver-day-email
+// function defers resends until optimized_at > latest stop edit, so even
+// if the user closes the tab mid-flight the resend won't ship un-optimized.
 async function schedMaybeReoptimizeDay(tripDayId) {
   const trip = schedFindTripContainingDay(tripDayId);
   if (!trip || trip.status !== 'published') return;
-  // Fire-and-forget — no need to block UI
-  schedCallEdgeFunction('optimize-trip-routes', { trip_day_id: tripDayId })
-    .then(() => {
-      schedRefreshData(); // sequence may have changed
-    })
-    .catch(e => {
-      console.warn('[sched] re-optimize failed (non-blocking):', e.message);
-    });
+  schedToast('Re-optimizing route…');
+  try {
+    const result = await schedCallEdgeFunction('optimize-trip-routes', { trip_day_id: tripDayId });
+    // Single-day response shape: { ok: true, result: { status, reason?, ... } }
+    const dayResult = result && result.result;
+    if (dayResult && dayResult.status === 'failed') {
+      // Show the actual reason (usually Mapbox 4xx/5xx) so depot manager
+      // can route the issue. Resend worker will keep deferring the email
+      // until this gets resolved.
+      schedToast(`⚠ Route optimization failed: ${dayResult.reason || 'unknown error'}`);
+      console.warn('[sched] optimize returned failed:', dayResult);
+      return;
+    }
+    schedToast('✓ Route re-optimized');
+    await schedRefreshData(); // sequence has changed; refresh UI
+  } catch (e) {
+    schedToast(`⚠ Re-optimize failed: ${e.message}`);
+    console.warn('[sched] re-optimize failed:', e.message);
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════
