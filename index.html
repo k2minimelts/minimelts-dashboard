@@ -2687,6 +2687,36 @@ window.markAsPaid = async (id) => {
     if (!res.ok) throw new Error('Update failed');
     d.paid = true;
     renderUnpaid();
+
+    // Fire-and-forget customer confirmation email for E-Transfer payments.
+    // The edge function silently skips if there's no store email; we only
+    // surface an error if the request itself fails (network/auth).
+    // The Unpaid tab already removes the row on .paid flip, so a re-fire
+    // through the UI isn't reachable.
+    if (d.payment_type === 'E-Transfer') {
+      const session = window._session;
+      if (session?.access_token) {
+        fetch(`${SUPABASE_URL}/functions/v1/send-payment-confirmation`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': SUPABASE_ANON_KEY,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ delivery_id: id }),
+        }).then(r => r.json()).then(data => {
+          if (data?.ok && data.sent_to) {
+            console.log(`Payment confirmation emailed to ${data.sent_to}`);
+          } else if (data?.skipped === 'no_email') {
+            console.log('Skipped payment email — store has no email on file');
+          } else if (!data?.ok) {
+            console.warn('Payment confirmation email failed:', data?.error);
+          }
+        }).catch(err => {
+          console.warn('Payment confirmation email error:', err.message);
+        });
+      }
+    }
   } catch(err) {
     alert('Error updating payment: ' + err.message);
   }
