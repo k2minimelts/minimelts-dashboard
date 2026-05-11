@@ -3244,20 +3244,30 @@ async function loadStores(search='', province='', hideInactive=true, depotId='')
   let query = 'stores?select=*,depot:depots(code,name)&order=name.asc&limit=100';
   if (search) {
     // Search across name, qb_name, public_code, and ship_city.
-    // PostgREST `or` syntax: or=(col1.ilike.*X*,col2.ilike.*X*,...)
-    const s = search.trim();
-    // If user typed just digits, also try matching against the full ST-NNNN code
-    const codeVariant = /^\d+$/.test(s) ? `ST-${s}` : s;
-    const patterns = new Set([s, codeVariant]);
-    const parts = [];
-    for (const p of patterns) {
-      const enc = encodeURIComponent(`*${p}*`);
-      parts.push(`name.ilike.${enc}`);
-      parts.push(`qb_name.ilike.${enc}`);
-      parts.push(`public_code.ilike.${enc}`);
-      parts.push(`ship_city.ilike.${enc}`);
+    // 
+    // We TOKENIZE the user input on whitespace and require EACH token to
+    // appear in at least one column. This makes "staples 2" find "Staples #2"
+    // (each token matches qb_name independently of punctuation like '#').
+    //
+    // PostgREST nested boolean syntax:
+    //   and=(or=(c1.ilike.*tok1*,c2.ilike.*tok1*),or=(c1.ilike.*tok2*,c2.ilike.*tok2*))
+    const tokens = search.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length > 0) {
+      const tokenClauses = tokens.map(tok => {
+        // For pure-digit tokens, also try ST-NNNN code variant
+        const variants = new Set([tok, /^\d+$/.test(tok) ? `ST-${tok}` : tok]);
+        const orParts = [];
+        for (const v of variants) {
+          const enc = encodeURIComponent(`*${v}*`);
+          orParts.push(`name.ilike.${enc}`);
+          orParts.push(`qb_name.ilike.${enc}`);
+          orParts.push(`public_code.ilike.${enc}`);
+          orParts.push(`ship_city.ilike.${enc}`);
+        }
+        return `or(${orParts.join(',')})`;
+      });
+      query += `&and=(${tokenClauses.join(',')})`;
     }
-    query += `&or=(${parts.join(',')})`;
   }
   if (province) query += `&province=eq.${encodeURIComponent(province)}`;
   if (depotId) query += `&depot_id=eq.${encodeURIComponent(depotId)}`;
@@ -3877,17 +3887,47 @@ window.searchOrderStore = () => {
   const staplesOnly = source === 'staples_po';
   const staplesFilter = staplesOnly ? `&qb_name=ilike.*staples*` : '';
   orderStoreSearchTimer = setTimeout(async () => {
-    // Try MM-code match first (exact), then name/city fuzzy
+    // Try MM-code match first (exact), then tokenized name/city/code fuzzy.
+    // Tokenizing means "staples 2" finds "Staples #2" — each space-separated
+    // token must appear in at least one column.
+    //
+    // We sort by qb_name ASCENDING so users typing partial names see results
+    // in a predictable A-Z order. We bumped the limit to 25 because alphabetic
+    // sort can bury low-numbered stores (e.g. "Staples #2" comes after
+    // "Staples #103" alphabetically); 25 results almost always covers it.
     const upperQ = q.toUpperCase();
     let data;
+    let tokens = [];
     if (/^MM-\d+$/i.test(q)) {
       data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1&limit=10`);
     } else {
-      // Use or() with ilike for name OR city
-      const enc = encodeURIComponent(`qb_name.ilike.*${q}*,ship_city.ilike.*${q}*,public_code.ilike.*${q}*`);
-      data = await sbFetch(`stores?or=(${enc})&active=eq.true${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1&limit=10`);
+      tokens = q.split(/\s+/).filter(Boolean);
+      const tokenClauses = tokens.map(tok => {
+        const enc = encodeURIComponent(`*${tok}*`);
+        return `or(qb_name.ilike.${enc},ship_city.ilike.${enc},public_code.ilike.${enc})`;
+      });
+      const filter = tokenClauses.length > 0 ? `&and=(${tokenClauses.join(',')})` : '';
+      data = await sbFetch(`stores?active=eq.true${filter}${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1&order=qb_name.asc&limit=25`);
     }
-    const stores = Array.isArray(data) ? data : [];
+    let stores = Array.isArray(data) ? data : [];
+    // Client-side relevance boost. Stores where a numeric token appears at a
+    // word boundary (e.g. "Staples #2 -" for token "2") rank above stores
+    // where it appears in the middle of a longer number (e.g. "#22", "#123").
+    // Without this, "staples 2" surfaces "#20, #21, #22..." before "#2".
+    if (tokens && tokens.length > 0) {
+      const scoreStore = (s) => {
+        const haystack = `${s.qb_name||''} ${s.ship_city||''} ${s.public_code||''}`;
+        let score = 0;
+        for (const tok of tokens) {
+          // Word-boundary regex (digits or letters): tok must be surrounded by non-token chars
+          const escaped = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const re = new RegExp(`(^|[^\\w#])${escaped}(?![\\w])`, 'i');
+          if (re.test(haystack)) score += 10;
+        }
+        return -score; // negative because we sort ascending
+      };
+      stores = stores.slice().sort((a, b) => scoreStore(a) - scoreStore(b) || (a.qb_name||'').localeCompare(b.qb_name||''));
+    }
     if (!stores.length) {
       const noMatchMsg = staplesOnly
         ? 'No Staples stores match. PO entry is restricted to Staples locations only.'
