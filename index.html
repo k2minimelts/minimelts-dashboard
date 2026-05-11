@@ -2049,7 +2049,8 @@
         <input type="text" id="order-po-number" placeholder="e.g. 4567890" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
       </div>
 
-      <div class="field">
+      <!-- Stock Level (shown for non-Staples-PO sources) -->
+      <div class="field" id="order-stock-level-row">
         <label>Stock Level</label>
         <select id="order-stock-level" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none">
           <option value="">— Not specified —</option>
@@ -2058,6 +2059,13 @@
           <option value="half">Half full</option>
           <option value="three_quarter">3/4 full</option>
         </select>
+      </div>
+
+      <!-- Total Units ordered (shown only for Staples PO; matches the PO line item count) -->
+      <div class="field" id="order-total-units-row" style="display:none">
+        <label>Total Units Ordered <span style="color:var(--danger)">*</span></label>
+        <input type="number" id="order-total-units" min="1" step="1" placeholder="e.g. 24" inputmode="numeric" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
+        <div style="margin-top:4px;font-size:11px;color:var(--muted)">Number of units listed on the Staples PO.</div>
       </div>
 
       <!-- New Freezer Install flag — visual indicator only, no workflow change -->
@@ -3662,7 +3670,7 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,' +
+    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
     'store:stores!store_id(id,public_code,qb_name,ship_city,province,phone,email)'
   );
@@ -3724,6 +3732,13 @@ function stockLevelBadge(sl) {
   return `<span class="badge" style="background:${m.bg};color:${m.color};border:1px solid ${m.border}">${m.label}</span>`;
 }
 
+// Badge for Staples PO order quantity. Shown in place of stockLevelBadge when
+// the order is a Staples PO (which always specifies an exact unit count).
+function totalUnitsBadge(units) {
+  if (units == null) return '<span class="badge" style="background:rgba(139,148,158,0.15);color:var(--muted);border:1px solid rgba(139,148,158,0.3)">—</span>';
+  return `<span class="badge" style="background:rgba(226,176,74,0.15);color:var(--gold);border:1px solid rgba(226,176,74,0.4);font-weight:700">📦 ${units} units</span>`;
+}
+
 function sourceBadge(src) {
   const map = {
     online:         { label: '📱 Online',  bg: 'rgba(79,195,212,0.15)',  color: 'var(--mm-cyan)',  border: 'rgba(79,195,212,0.3)' },
@@ -3768,7 +3783,7 @@ function renderOrdersTable(orders) {
   }
 
   let html = '<table><thead><tr>';
-  html += '<th>When</th><th style="white-space:nowrap">Order #</th><th>Store</th><th>Source</th><th>Stock</th><th>Contact</th><th>Notes / PO</th><th>Status</th><th style="text-align:right">Actions</th>';
+  html += '<th>When</th><th style="white-space:nowrap">Order #</th><th>Store</th><th>Source</th><th>Stock / Qty</th><th>Contact</th><th>Notes / PO</th><th>Status</th><th style="text-align:right">Actions</th>';
   html += '</tr></thead><tbody>';
 
   for (const o of orders) {
@@ -3820,7 +3835,7 @@ function renderOrdersTable(orders) {
         <div style="font-size:12px;color:var(--muted)">${storeCode ? `<span style="font-family:monospace;color:var(--gold)">${storeCode}</span> · ` : ''}${escapeHtml(cityProv)}</div>
       </td>
       <td>${sourceBadge(o.source)}</td>
-      <td>${stockLevelBadge(o.stock_level)}</td>
+      <td>${o.source === 'staples_po' ? totalUnitsBadge(o.total_units) : stockLevelBadge(o.stock_level)}</td>
       <td style="font-size:12px">${escapeHtml(contact) || '<span style="color:var(--muted)">—</span>'}</td>
       <td style="font-size:12px;max-width:280px">${notesHtml}</td>
       <td>${statusCell}</td>
@@ -3855,12 +3870,17 @@ window.cancelOrder = async (id) => {
 window.showNewOrderModal = (source) => {
   document.getElementById('order-source').value = source;
   document.getElementById('order-modal-title').textContent = source === 'staples_po' ? 'New Staples PO' : 'New Phone Order';
-  document.getElementById('order-po-row').style.display = source === 'staples_po' ? 'block' : 'none';
+  const isStaples = source === 'staples_po';
+  document.getElementById('order-po-row').style.display = isStaples ? 'block' : 'none';
+  // Staples PO uses Total Units (required); other sources use Stock Level (optional)
+  document.getElementById('order-stock-level-row').style.display = isStaples ? 'none' : 'block';
+  document.getElementById('order-total-units-row').style.display = isStaples ? 'block' : 'none';
   document.getElementById('order-store-search').value = '';
   document.getElementById('order-store-id').value = '';
   document.getElementById('order-store-selected').style.display = 'none';
   document.getElementById('order-po-number').value = '';
   document.getElementById('order-stock-level').value = '';
+  document.getElementById('order-total-units').value = '';
   document.getElementById('order-contact-name').value = '';
   document.getElementById('order-contact-phone').value = '';
   document.getElementById('order-contact-email').value = '';
@@ -3973,6 +3993,8 @@ window.saveOrder = async () => {
   const storeId = document.getElementById('order-store-id').value;
   const poNumber = document.getElementById('order-po-number').value.trim();
   const stockLevel = document.getElementById('order-stock-level').value || null;
+  const totalUnitsRaw = document.getElementById('order-total-units').value.trim();
+  const totalUnits = totalUnitsRaw ? parseInt(totalUnitsRaw, 10) : null;
   const contactName = document.getElementById('order-contact-name').value.trim() || null;
   const contactPhone = document.getElementById('order-contact-phone').value.trim() || null;
   const contactEmail = document.getElementById('order-contact-email').value.trim() || null;
@@ -3980,17 +4002,29 @@ window.saveOrder = async () => {
   const isNewInstall = document.getElementById('order-is-new-install').checked;
 
   if (!storeId) { errEl.textContent = 'Please select a store.'; errEl.style.display = 'block'; return; }
-  if (source === 'staples_po' && !poNumber) { errEl.textContent = 'PO number is required for Staples orders.'; errEl.style.display = 'block'; return; }
+  if (source === 'staples_po') {
+    if (!poNumber) { errEl.textContent = 'PO number is required for Staples orders.'; errEl.style.display = 'block'; return; }
+    if (totalUnits === null || isNaN(totalUnits) || totalUnits < 1) {
+      errEl.textContent = 'Total Units is required for Staples PO and must be a positive whole number.';
+      errEl.style.display = 'block';
+      return;
+    }
+  }
 
+  // Field-by-source: Staples PO sends total_units (no stock_level);
+  // other sources send stock_level (no total_units). Constraint in DB
+  // also enforces this rule.
+  const isStaples = source === 'staples_po';
   const payload = {
     store_id: storeId,
     source,
-    stock_level: stockLevel,
+    stock_level: isStaples ? null : stockLevel,
+    total_units: isStaples ? totalUnits : null,
     notes,
     submitted_by_name: contactName,
     submitted_by_phone: contactPhone,
     submitted_by_email: contactEmail,
-    po_number: source === 'staples_po' ? poNumber : null,
+    po_number: isStaples ? poNumber : null,
     status: 'pending',
     is_new_install: isNewInstall,
     raw_form_payload: { entered_from: 'admin_dashboard' }
@@ -4619,7 +4653,7 @@ async function loadMapData() {
     fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
-    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,notes,po_number,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email&order=submitted_at.desc'),
+    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email&order=submitted_at.desc'),
   ]);
   _mapStores = stores;
   _mapMachines = venues;
@@ -5137,16 +5171,27 @@ async function initMapboxGL() {
       const shortId = (o.id || '').replace(/-/g, '').slice(-8).toUpperCase();
       const submitted = o.submitted_at ? new Date(o.submitted_at).toLocaleDateString('en-CA', { year:'numeric', month:'short', day:'numeric' }) : '';
       const stockMap = { empty:'Empty', almost_empty:'Almost empty', half:'Half full', three_quarter:'3/4 full' };
-      const stockLabel = stockMap[o.stock_level] || o.stock_level || '—';
       const sourceMap = { online:'📱 Online', phone:'📞 Phone', staples_po:'📋 Staples', staples_vmi:'🏪 VMI', driver_walk_in:'🚚 Walk-in' };
       const sourceLabel = sourceMap[o.source] || o.source || '';
+      // Staples PO orders carry an exact total_units count; others carry a
+      // rough stock_level. Show whichever applies for this order.
+      let detailLabel;
+      if (o.source === 'staples_po' && o.total_units != null) {
+        detailLabel = `📦 <strong>${o.total_units} units</strong>`;
+      } else {
+        const stockLabel = stockMap[o.stock_level] || o.stock_level || '—';
+        detailLabel = `Stock: <strong>${stockLabel}</strong>`;
+      }
+      const installLabel = o.is_new_install
+        ? '<span style="background:#ff4d9d;color:#fff;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px">🆕 INSTALL</span>'
+        : '';
       const noteSnippet = o.notes ? `<div style="color:#666;font-size:11px;margin-top:2px;font-style:italic">${escapeHtmlMap(o.notes.slice(0, 80))}${o.notes.length > 80 ? '…' : ''}</div>` : '';
-      return `<div style="border-left:3px solid #ef4444;padding:6px 8px;margin-bottom:6px;background:#fef2f2;border-radius:0 4px 4px 0">
+      return `<div style="border-left:3px solid ${o.is_new_install ? '#ff4d9d' : '#ef4444'};padding:6px 8px;margin-bottom:6px;background:${o.is_new_install ? '#fdf2f8' : '#fef2f2'};border-radius:0 4px 4px 0">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
-          <span style="font-family:monospace;font-weight:700;color:#991b1b;font-size:12px">#${shortId}</span>
+          <span style="font-family:monospace;font-weight:700;color:#991b1b;font-size:12px">#${shortId}${installLabel}</span>
           <span style="font-size:10px;color:#666">${submitted}</span>
         </div>
-        <div style="font-size:11px;color:#444;margin-top:2px">${sourceLabel} · Stock: <strong>${stockLabel}</strong></div>
+        <div style="font-size:11px;color:#444;margin-top:2px">${sourceLabel} · ${detailLabel}</div>
         ${o.submitted_by_name ? `<div style="font-size:11px;color:#666;margin-top:2px">${escapeHtmlMap(o.submitted_by_name)}${o.submitted_by_phone ? ' · ' + escapeHtmlMap(o.submitted_by_phone) : ''}</div>` : ''}
         ${noteSnippet}
       </div>`;
@@ -5524,8 +5569,9 @@ function applyMapFiltersInternal() {
             order_count: orders.length > 1 ? String(orders.length) : '',
             // Mapbox flattens nested objects in properties, so JSON-stringify here and parse on click
             orders: JSON.stringify(orders.map(o => ({
-              id: o.id, source: o.source, stock_level: o.stock_level,
-              notes: o.notes, submitted_at: o.submitted_at,
+              id: o.id, source: o.source, stock_level: o.stock_level, total_units: o.total_units,
+              notes: o.notes, submitted_at: o.submitted_at, po_number: o.po_number,
+              is_new_install: !!o.is_new_install,
               submitted_by_name: o.submitted_by_name, submitted_by_phone: o.submitted_by_phone
             }))),
           }
@@ -6474,10 +6520,10 @@ async function schedLoadOrdersAndOverdue() {
   );
 
   // Pending unscheduled orders. We pull the full order metadata (date, notes,
-  // source, stock level, contact, install flag) so the order pin's hover popup
-  // can show the depot manager useful context for scheduling decisions.
+  // source, stock level, total units, contact, install flag) so the order
+  // pin's hover popup can show the depot manager useful context for scheduling.
   const ordersPromise = sbFetch(
-    `orders?select=id,store_id,submitted_at,notes,source,stock_level,submitted_by_name,submitted_by_phone,is_new_install,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
+    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
     `&status=eq.pending&trip_stop_id=is.null` +
     `&limit=500`
   );
@@ -6549,6 +6595,7 @@ async function schedLoadOrdersAndOverdue() {
       order_notes: o.notes || null,
       order_source: o.source || null,
       order_stock_level: o.stock_level || null,
+      order_total_units: o.total_units != null ? Number(o.total_units) : null,
       order_submitted_by_name: o.submitted_by_name || null,
       order_submitted_by_phone: o.submitted_by_phone || null,
       is_new_install: !!o.is_new_install,
@@ -7054,6 +7101,14 @@ function schedRenderMarkers() {
       const sourceLabel = sourceMap[store.order_source] || store.order_source || '';
       const stockMap = { empty:'Empty', almost_empty:'Almost empty', half:'Half full', three_quarter:'3/4 full' };
       const stockLabel = stockMap[store.order_stock_level] || store.order_stock_level || '';
+      // Staples PO uses Total Units, others use Stock Level. Build the detail
+      // fragment so we don't show "Stock: —" for Staples or "Units: —" for phone.
+      let qtyOrStockFragment = '';
+      if (store.order_source === 'staples_po' && store.order_total_units != null) {
+        qtyOrStockFragment = `📦 <strong>${store.order_total_units} units</strong>`;
+      } else if (stockLabel) {
+        qtyOrStockFragment = `Stock: <strong>${stockLabel}</strong>`;
+      }
       const contactLine = store.order_submitted_by_name
         ? `<div style="font-size:11px;color:#555;margin-top:4px">👤 ${schedEscapeHtml(store.order_submitted_by_name)}${store.order_submitted_by_phone ? ' · ' + schedEscapeHtml(store.order_submitted_by_phone) : ''}</div>`
         : '';
@@ -7067,7 +7122,7 @@ function schedRenderMarkers() {
         <div style="margin-top:6px;font-size:11px;color:#444">
           📅 <strong>${submittedDate}</strong>${ageBadge}
         </div>
-        ${sourceLabel || stockLabel ? `<div style="font-size:11px;color:#444;margin-top:3px">${sourceLabel}${sourceLabel && stockLabel ? ' · ' : ''}${stockLabel ? `Stock: <strong>${stockLabel}</strong>` : ''}</div>` : ''}
+        ${sourceLabel || qtyOrStockFragment ? `<div style="font-size:11px;color:#444;margin-top:3px">${sourceLabel}${sourceLabel && qtyOrStockFragment ? ' · ' : ''}${qtyOrStockFragment}</div>` : ''}
         ${contactLine}
         ${notesLine}
       </div>`;
