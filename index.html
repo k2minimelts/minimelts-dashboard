@@ -1800,6 +1800,64 @@
       </div>
     </div>
 
+    <!-- Reset Password Modal — used for both drivers and admins/depot managers -->
+    <div class="modal-overlay" id="reset-password-modal">
+      <div class="modal" style="max-width:500px">
+        <div class="modal-header">
+          <span class="modal-title">🔑 Reset Password</span>
+          <button class="modal-close" onclick="window.closeResetPasswordModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div style="font-size:13px;color:var(--text);background:var(--bg2);padding:12px 14px;border-radius:6px;margin-bottom:14px;line-height:1.5">
+            Reset password for: <strong id="rpwd-target-name">—</strong><br/>
+            <span style="color:var(--muted);font-size:12px;font-family:monospace" id="rpwd-target-email">—</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Choose how to reset:</div>
+          <div style="display:flex;gap:10px;margin-bottom:14px">
+            <button id="rpwd-mode-email" class="btn-sm" style="flex:1;padding:14px;font-size:13px;font-weight:700;border:2px solid rgba(79,195,212,0.5);color:var(--mm-cyan)" onclick="window.selectResetMode('email_link')">
+              📧 Send Reset Email
+              <div style="font-size:10px;font-weight:400;color:var(--muted);margin-top:4px">User clicks link to set password</div>
+            </button>
+            <button id="rpwd-mode-direct" class="btn-sm" style="flex:1;padding:14px;font-size:13px;font-weight:700;border:2px solid rgba(232,123,181,0.5);color:var(--mm-pink)" onclick="window.selectResetMode('direct_set')">
+              🔒 Set Password Now
+              <div style="font-size:10px;font-weight:400;color:var(--muted);margin-top:4px">You enter their new password</div>
+            </button>
+          </div>
+
+          <!-- Email link confirmation section -->
+          <div id="rpwd-email-section" style="display:none">
+            <div style="background:rgba(79,195,212,0.08);border:1px solid rgba(79,195,212,0.3);border-radius:6px;padding:10px 12px;font-size:13px;color:var(--text);margin-bottom:14px;line-height:1.5">
+              An email with a password reset link will be sent to <strong id="rpwd-email-target-display">—</strong>. They'll click the link and choose their own password.
+            </div>
+          </div>
+
+          <!-- Direct set section -->
+          <div id="rpwd-direct-section" style="display:none">
+            <div style="background:rgba(232,123,181,0.08);border:1px solid rgba(232,123,181,0.3);border-radius:6px;padding:10px 12px;font-size:13px;color:var(--text);margin-bottom:14px;line-height:1.5">
+              ⚠️ The new password will be set immediately. Communicate it securely to the user.
+            </div>
+            <div class="field" style="margin-bottom:10px">
+              <label style="display:block;font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">New Password (8+ characters)</label>
+              <input type="text" id="rpwd-new-password" placeholder="Type a strong password" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:9px 12px;color:var(--text);font-size:14px;font-family:monospace" oninput="window.updateResetSubmitButton()"/>
+            </div>
+          </div>
+
+          <div id="rpwd-error" style="display:none;background:rgba(248,81,73,0.1);color:#f85149;border:1px solid rgba(248,81,73,0.3);border-radius:6px;padding:8px 12px;font-size:13px;margin-bottom:12px"></div>
+
+          <!-- Confirmation step -->
+          <div id="rpwd-confirm-section" style="display:none;background:rgba(210,153,34,0.08);border:1px solid rgba(210,153,34,0.4);border-radius:6px;padding:12px 14px;margin-bottom:14px">
+            <div style="font-size:13px;color:var(--warning);font-weight:600;margin-bottom:8px">Are you sure?</div>
+            <div id="rpwd-confirm-message" style="font-size:12px;color:var(--text);line-height:1.5"></div>
+          </div>
+
+          <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button class="btn-sm" onclick="window.closeResetPasswordModal()">Cancel</button>
+            <button class="btn-export" id="rpwd-submit-btn" onclick="window.submitResetPassword()" disabled style="opacity:0.5;cursor:not-allowed">Reset Password</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Invite Depot Manager Modal -->
     <div class="modal-overlay" id="invite-dm-modal">
       <div class="modal" style="max-width:460px">
@@ -2332,8 +2390,8 @@ window.doPasswordUpdate = async () => {
   const errEl = document.getElementById('new-password-error');
   errEl.style.display = 'none';
 
-  if (!newPassword || newPassword.length < 6) {
-    errEl.textContent = 'Password must be at least 6 characters.';
+  if (!newPassword || newPassword.length < 8) {
+    errEl.textContent = 'Password must be at least 8 characters.';
     errEl.style.display = 'block';
     return;
   }
@@ -3423,6 +3481,7 @@ function renderDriversTable(drivers) {
       <td>
         <button class="btn-sm" onclick="window.viewDriverStats('${d.name}')">📊 Stats</button>
         <button class="btn-sm" onclick="window.editDriver('${d.id}')">Edit</button>
+        <button class="btn-sm" onclick="window.openResetPasswordModal('${d.user_id || ''}', '${(d.name || '').replace(/'/g, "\\'")}', '${(d.email || '').replace(/'/g, "\\'")}')" ${!d.user_id ? 'disabled title="No linked auth user"' : ''}>🔑 Reset Password</button>
         <button class="btn-sm" onclick="window.toggleDriver('${d.id}',${d.active})">${d.active ? 'Deactivate' : 'Activate'}</button>
       </td>
     </tr>`;
@@ -3504,7 +3563,7 @@ window.saveDriver = async () => {
 
   if (!id) {
     // Create new driver via Edge Function (needs service role)
-    if (!password || password.length < 6) { msg.style.color='var(--danger)'; msg.textContent = '⚠️ Password must be at least 6 characters.'; return; }
+    if (!password || password.length < 8) { msg.style.color='var(--danger)'; msg.textContent = '⚠️ Password must be at least 8 characters.'; return; }
     try {
       const res = await fetch(EDGE_URL, {
         method: 'POST',
@@ -5483,6 +5542,159 @@ function applyMapFiltersInternal() {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// 🔑 RESET PASSWORD MODAL
+// Shared by Drivers tab + Access tab (admins, depot managers).
+// 
+// Flow:
+//   1. openResetPasswordModal(targetUserId, targetName, targetEmail) — opens modal
+//   2. User picks "Send Reset Email" or "Set Password Now"
+//   3. (If direct_set) User types new password
+//   4. User clicks "Reset Password" → confirmation appears
+//   5. User clicks the same button again → request is sent
+//
+// The server enforces authorization. If the caller isn't a super admin or
+// depot manager-with-driver-scope, the request returns 403.
+// ════════════════════════════════════════════════════════════════════
+
+let _rpwdState = {
+  targetUserId: null,
+  targetName: '',
+  targetEmail: '',
+  mode: null,            // 'email_link' | 'direct_set' | null
+  confirmed: false,      // true after user clicked Reset once
+};
+
+window.openResetPasswordModal = (targetUserId, targetName, targetEmail) => {
+  if (!targetUserId) {
+    alert('This user has no linked auth account, so their password cannot be reset.');
+    return;
+  }
+  _rpwdState = {
+    targetUserId,
+    targetName: targetName || 'this user',
+    targetEmail: targetEmail || '',
+    mode: null,
+    confirmed: false,
+  };
+  document.getElementById('rpwd-target-name').textContent = _rpwdState.targetName;
+  document.getElementById('rpwd-target-email').textContent = _rpwdState.targetEmail;
+  document.getElementById('rpwd-email-target-display').textContent = _rpwdState.targetEmail;
+  document.getElementById('rpwd-new-password').value = '';
+  document.getElementById('rpwd-email-section').style.display = 'none';
+  document.getElementById('rpwd-direct-section').style.display = 'none';
+  document.getElementById('rpwd-confirm-section').style.display = 'none';
+  document.getElementById('rpwd-error').style.display = 'none';
+  document.getElementById('rpwd-submit-btn').textContent = 'Reset Password';
+  document.getElementById('rpwd-submit-btn').disabled = true;
+  document.getElementById('rpwd-submit-btn').style.opacity = '0.5';
+  document.getElementById('rpwd-submit-btn').style.cursor = 'not-allowed';
+  // Reset button highlight states
+  document.getElementById('rpwd-mode-email').style.background = '';
+  document.getElementById('rpwd-mode-direct').style.background = '';
+  document.getElementById('reset-password-modal').classList.add('active');
+};
+
+window.closeResetPasswordModal = () => {
+  document.getElementById('reset-password-modal').classList.remove('active');
+};
+
+window.selectResetMode = (mode) => {
+  _rpwdState.mode = mode;
+  _rpwdState.confirmed = false; // re-arm confirmation if mode changed
+  document.getElementById('rpwd-confirm-section').style.display = 'none';
+  document.getElementById('rpwd-error').style.display = 'none';
+
+  if (mode === 'email_link') {
+    document.getElementById('rpwd-email-section').style.display = 'block';
+    document.getElementById('rpwd-direct-section').style.display = 'none';
+    document.getElementById('rpwd-mode-email').style.background = 'rgba(79,195,212,0.15)';
+    document.getElementById('rpwd-mode-direct').style.background = '';
+  } else {
+    document.getElementById('rpwd-email-section').style.display = 'none';
+    document.getElementById('rpwd-direct-section').style.display = 'block';
+    document.getElementById('rpwd-mode-email').style.background = '';
+    document.getElementById('rpwd-mode-direct').style.background = 'rgba(232,123,181,0.15)';
+  }
+  window.updateResetSubmitButton();
+};
+
+window.updateResetSubmitButton = () => {
+  const btn = document.getElementById('rpwd-submit-btn');
+  const password = document.getElementById('rpwd-new-password').value;
+  let enabled = false;
+  if (_rpwdState.mode === 'email_link') {
+    enabled = true;
+  } else if (_rpwdState.mode === 'direct_set') {
+    enabled = password.length >= 8;
+  }
+  btn.disabled = !enabled;
+  btn.style.opacity = enabled ? '1' : '0.5';
+  btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+};
+
+window.submitResetPassword = async () => {
+  if (!_rpwdState.mode || !_rpwdState.targetUserId) return;
+
+  // First click = show confirmation. Second click = actually send.
+  if (!_rpwdState.confirmed) {
+    _rpwdState.confirmed = true;
+    const confirmMsg = _rpwdState.mode === 'email_link'
+      ? `Send a password reset email to <strong>${escapeHtml(_rpwdState.targetEmail)}</strong>?`
+      : `Set a new password for <strong>${escapeHtml(_rpwdState.targetName)}</strong> immediately? They will need to use the new password on their next sign-in.`;
+    document.getElementById('rpwd-confirm-message').innerHTML = confirmMsg;
+    document.getElementById('rpwd-confirm-section').style.display = 'block';
+    document.getElementById('rpwd-submit-btn').textContent = 'Yes, Reset Password';
+    return;
+  }
+
+  // Send the request
+  const btn = document.getElementById('rpwd-submit-btn');
+  const errEl = document.getElementById('rpwd-error');
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Working...';
+
+  try {
+    const session = window._session;
+    if (!session?.access_token) throw new Error('Session expired — please refresh and sign in again.');
+
+    const payload = {
+      action: 'reset_password',
+      userId: _rpwdState.targetUserId,
+      mode: _rpwdState.mode,
+    };
+    if (_rpwdState.mode === 'direct_set') {
+      payload.newPassword = document.getElementById('rpwd-new-password').value;
+    }
+
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/create-driver`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      throw new Error(data.error || `Request failed (HTTP ${r.status})`);
+    }
+
+    const successMsg = _rpwdState.mode === 'email_link'
+      ? `✅ Reset email sent to ${_rpwdState.targetEmail}.`
+      : `✅ Password reset. Communicate the new password securely to ${_rpwdState.targetName}.`;
+    window.closeResetPasswordModal();
+    alert(successMsg);
+  } catch (err) {
+    errEl.textContent = '❌ ' + (err.message || 'Unknown error');
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Yes, Reset Password';
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════
 // ACCESS TAB — manage admins + depot managers (super-admin only)
 // ════════════════════════════════════════════════════════════════════
 
@@ -5545,11 +5757,14 @@ function renderAccessAdmins() {
     const removeBtn = isMe
       ? '<button class="btn-sm" disabled title="You cannot remove yourself" style="opacity:0.4;cursor:not-allowed">✕ Revoke</button>'
       : `<button class="btn-sm" onclick="window.removeAdmin('${a.id}','${escapeHtmlAttr(a.email)}')" style="border-color:rgba(248,81,73,0.3);color:#f85149">✕ Revoke</button>`;
+    const resetBtn = isMe
+      ? '<button class="btn-sm" disabled title="Use the forgot-password flow for your own account" style="opacity:0.4;cursor:not-allowed">🔑 Reset Password</button>'
+      : `<button class="btn-sm" onclick="window.openResetPasswordModal('${a.user_id || ''}','${escapeHtmlAttr(a.name||'')}','${escapeHtmlAttr(a.email)}')" ${!a.user_id ? 'disabled' : ''}>🔑 Reset Password</button>`;
     return `<tr>
       <td><strong style="color:var(--text)">${escapeHtml(a.name||'')}</strong>${meLabel}</td>
       <td><span style="font-family:monospace;color:var(--text);font-size:12px">${escapeHtml(a.email)}</span></td>
       <td>${badge}</td>
-      <td style="text-align:right;white-space:nowrap">${promoteBtn} ${removeBtn}</td>
+      <td style="text-align:right;white-space:nowrap">${promoteBtn} ${resetBtn} ${removeBtn}</td>
     </tr>`;
   }).join('');
   document.getElementById('access-admins-body').innerHTML = `
@@ -5586,6 +5801,7 @@ function renderAccessDepotManagers() {
           onclick="window.removeDepotManagerRow('${r.id}','${escapeHtmlAttr(r.email)}','${escapeHtml(code)}')">✕</button>`;
     }).join('');
 
+    const userId = g.rows[0]?.user_id || '';
     return `<tr>
       <td><strong style="color:var(--text)">${escapeHtml(g.name||'')}</strong></td>
       <td><span style="font-family:monospace;color:var(--text);font-size:12px">${escapeHtml(g.email)}</span></td>
@@ -5593,6 +5809,7 @@ function renderAccessDepotManagers() {
       <td style="text-align:right;white-space:nowrap">
         <button class="btn-sm" onclick="window.showInviteDepotManagerModalFor('${escapeHtmlAttr(g.email)}','${escapeHtmlAttr(g.name)}')" 
           style="border-color:rgba(79,195,212,0.5);color:var(--mm-cyan)">+ Add Depot</button>
+        <button class="btn-sm" onclick="window.openResetPasswordModal('${userId}','${escapeHtmlAttr(g.name||'')}','${escapeHtmlAttr(g.email)}')" ${!userId ? 'disabled' : ''}>🔑 Reset Password</button>
       </td>
     </tr>`;
   }).join('');
@@ -7553,6 +7770,10 @@ async function schedAssignSelection(driverId, startDateIso, tripLength, managerN
     // 4. Insert trip_stops rows. Branch by stop type — store stops use store_id,
     // vending stops use linked_machine_id (and store_id MUST be NULL because of
     // the trip_stops_target_check constraint).
+    //
+    // IMPORTANT: every payload object MUST have the SAME set of keys, otherwise
+    // PostgREST rejects the bulk insert with PGRST102 "All object keys must match".
+    // We use the same set of keys in both branches with null values where not applicable.
     const tripStopPayloads = [];
     for (let dayIdx = 0; dayIdx < tripLength; dayIdx++) {
       const chunk = stopChunks[dayIdx];
@@ -7580,6 +7801,7 @@ async function schedAssignSelection(driverId, startDateIso, tripLength, managerN
             status: 'planned',
             linked_order_id: store.order_id || null,
             manager_note: null,
+            service_minutes: null,
           });
         }
       }
