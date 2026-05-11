@@ -6407,9 +6407,11 @@ async function schedLoadOrdersAndOverdue() {
     `&limit=2000`
   );
 
-  // Pending unscheduled orders
+  // Pending unscheduled orders. We pull the full order metadata (date, notes,
+  // source, stock level, contact) so the order pin's hover popup can show the
+  // depot manager useful context for scheduling decisions.
   const ordersPromise = sbFetch(
-    `orders?select=id,store_id,submitted_at,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
+    `orders?select=id,store_id,submitted_at,notes,source,stock_level,submitted_by_name,submitted_by_phone,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
     `&status=eq.pending&trip_stop_id=is.null` +
     `&limit=500`
   );
@@ -6476,6 +6478,13 @@ async function schedLoadOrdersAndOverdue() {
       days_overdue: 0,
       assigned: false,
       order_id: o.id,
+      // Order context for the pin hover popup
+      order_submitted_at: o.submitted_at || null,
+      order_notes: o.notes || null,
+      order_source: o.source || null,
+      order_stock_level: o.stock_level || null,
+      order_submitted_by_name: o.submitted_by_name || null,
+      order_submitted_by_phone: o.submitted_by_phone || null,
     });
   }
 
@@ -6960,11 +6969,46 @@ function schedRenderMarkers() {
       e.stopPropagation();
       schedTogglePinSelect(store.id);
     });
-    // Stores get a simple name+city popup. Vending is handled by the layer above.
-    const popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`;
+    // Stores get a simple name+city popup. Order pins get a richer one with
+    // submitted date, source, stock level, contact, and notes — info a depot
+    // manager needs to triage scheduling. Vending is handled by the layer above.
+    let popupHtml;
+    if (store.type === 'order') {
+      const submittedDate = store.order_submitted_at
+        ? new Date(store.order_submitted_at).toLocaleDateString('en-CA', { year:'numeric', month:'short', day:'numeric' })
+        : '—';
+      const ageDays = store.order_submitted_at
+        ? Math.floor((Date.now() - new Date(store.order_submitted_at).getTime()) / 86400000)
+        : null;
+      const ageBadge = ageDays != null
+        ? `<span style="background:${ageDays > 7 ? '#fee2e2' : ageDays > 3 ? '#fef3c7' : '#d1fae5'};color:${ageDays > 7 ? '#991b1b' : ageDays > 3 ? '#92400e' : '#065f46'};padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;margin-left:6px">${ageDays}d old</span>`
+        : '';
+      const sourceMap = { online:'📱 Online', phone:'📞 Phone', staples_po:'📋 Staples PO', staples_vmi:'🏪 Staples VMI', driver_walk_in:'🚚 Walk-in' };
+      const sourceLabel = sourceMap[store.order_source] || store.order_source || '';
+      const stockMap = { empty:'Empty', almost_empty:'Almost empty', half:'Half full', three_quarter:'3/4 full' };
+      const stockLabel = stockMap[store.order_stock_level] || store.order_stock_level || '';
+      const contactLine = store.order_submitted_by_name
+        ? `<div style="font-size:11px;color:#555;margin-top:4px">👤 ${schedEscapeHtml(store.order_submitted_by_name)}${store.order_submitted_by_phone ? ' · ' + schedEscapeHtml(store.order_submitted_by_phone) : ''}</div>`
+        : '';
+      const notesLine = store.order_notes
+        ? `<div style="margin-top:6px;padding:6px 8px;background:#f9fafb;border-left:3px solid #5BC9FF;border-radius:0 4px 4px 0;font-size:11px;color:#374151;font-style:italic;line-height:1.4">${schedEscapeHtml(store.order_notes.slice(0, 200))}${store.order_notes.length > 200 ? '…' : ''}</div>`
+        : '';
+      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;min-width:240px;max-width:300px">
+        <div style="font-weight:700;font-size:13px">${schedEscapeHtml(store.qb_name)}</div>
+        <div style="opacity:0.8;font-size:11px;margin-top:1px">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</div>
+        <div style="margin-top:6px;font-size:11px;color:#444">
+          📅 <strong>${submittedDate}</strong>${ageBadge}
+        </div>
+        ${sourceLabel || stockLabel ? `<div style="font-size:11px;color:#444;margin-top:3px">${sourceLabel}${sourceLabel && stockLabel ? ' · ' : ''}${stockLabel ? `Stock: <strong>${stockLabel}</strong>` : ''}</div>` : ''}
+        ${contactLine}
+        ${notesLine}
+      </div>`;
+    } else {
+      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`;
+    }
     const marker = new mapboxgl.Marker({ element: el })
       .setLngLat([store.lng, store.lat])
-      .setPopup(new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false })
+      .setPopup(new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false, maxWidth: '340px' })
         .setHTML(popupHtml))
       .addTo(schedState.map);
     el.addEventListener('mouseenter', () => marker.togglePopup());
