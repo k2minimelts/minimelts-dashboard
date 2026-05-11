@@ -7170,7 +7170,18 @@ function schedRenderMarkers() {
         ${notesLine}
       </div>`;
     } else {
-      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span></div>`;
+      // Overdue / regular store popup. Days-overdue badge color matches
+      // the pin tier (yellow <30, orange <90, red <180, dark red 180+).
+      let overdueBadge = '';
+      if (store.type === 'overdue' && store.days_overdue > 0) {
+        const d = store.days_overdue;
+        let badgeBg, badgeColor;
+        if (d < 30)      { badgeBg = '#fef3c7'; badgeColor = '#92400e'; } // yellow
+        else if (d < 90) { badgeBg = '#fed7aa'; badgeColor = '#9a3412'; } // orange
+        else             { badgeBg = '#fee2e2'; badgeColor = '#991b1b'; } // red
+        overdueBadge = `<div style="margin-top:6px"><span style="background:${badgeBg};color:${badgeColor};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏱ ${d} day${d === 1 ? '' : 's'} overdue</span></div>`;
+      }
+      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8;font-weight:400">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>${overdueBadge}</div>`;
     }
     const marker = new mapboxgl.Marker({ element: el })
       .setLngLat([store.lng, store.lat])
