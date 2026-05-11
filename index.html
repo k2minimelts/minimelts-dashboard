@@ -3775,6 +3775,40 @@ function timeAgo(iso) {
 
 function escapeHtml(s) { return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+// Orders table sort state. Persisted across re-renders (filter changes, etc).
+// Keyed by column key; direction is 'asc' or 'desc'. Default newest-first.
+let _ordersSort = { key: 'submitted_at', dir: 'desc' };
+
+// Click a sortable header to toggle. Re-renders the table with the current
+// filtered list. Other columns are wired up the same way when they need sort.
+window.toggleOrdersSort = (key) => {
+  if (_ordersSort.key === key) {
+    _ordersSort.dir = _ordersSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _ordersSort.key = key;
+    _ordersSort.dir = 'desc'; // first click on a new column = descending (newest/largest first)
+  }
+  renderOrdersFiltered();
+};
+
+function sortOrdersInPlace(orders) {
+  const { key, dir } = _ordersSort;
+  const mul = dir === 'asc' ? 1 : -1;
+  orders.sort((a, b) => {
+    let av, bv;
+    if (key === 'submitted_at') {
+      av = a.submitted_at ? new Date(a.submitted_at).getTime() : 0;
+      bv = b.submitted_at ? new Date(b.submitted_at).getTime() : 0;
+    } else {
+      av = a[key] ?? '';
+      bv = b[key] ?? '';
+    }
+    if (av < bv) return -1 * mul;
+    if (av > bv) return 1 * mul;
+    return 0;
+  });
+}
+
 function renderOrdersTable(orders) {
   document.getElementById('orders-count').textContent = orders.length ? `${orders.length} order${orders.length===1?'':'s'}` : 'None';
   if (!orders.length) {
@@ -3782,8 +3816,17 @@ function renderOrdersTable(orders) {
     return;
   }
 
+  // Sort by current sort key before render
+  sortOrdersInPlace(orders);
+
+  // Render When header with sort indicator. Other columns remain static for now.
+  const whenArrow = _ordersSort.key === 'submitted_at'
+    ? (_ordersSort.dir === 'asc' ? ' ▲' : ' ▼')
+    : '<span style="opacity:0.3"> ⇅</span>';
+  const whenTh = `<th style="cursor:pointer;user-select:none;white-space:nowrap" onclick="window.toggleOrdersSort('submitted_at')" title="Click to toggle sort">When${whenArrow}</th>`;
+
   let html = '<table><thead><tr>';
-  html += '<th>When</th><th style="white-space:nowrap">Order #</th><th>Store</th><th>Source</th><th>Stock / Qty</th><th>Contact</th><th>Notes / PO</th><th>Status</th><th style="text-align:right">Actions</th>';
+  html += `${whenTh}<th style="white-space:nowrap">Order #</th><th>Store</th><th>Source</th><th>Stock / Qty</th><th>Contact</th><th>Notes / PO</th><th>Status</th><th style="text-align:right">Actions</th>`;
   html += '</tr></thead><tbody>';
 
   for (const o of orders) {
