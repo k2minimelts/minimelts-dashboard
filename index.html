@@ -2051,15 +2051,52 @@
         <input type="text" id="order-po-number" placeholder="e.g. 4567890" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
       </div>
 
-      <!-- Stock Level (shown for non-Staples-PO sources) -->
+      <!-- Product type chooser (shown for non-Staples-PO sources).
+           Determines whether the order is ice cream, sorbet, or both — drives
+           which stock-level pickers show below. Staples PO is always ice cream
+           today, so this row stays hidden for that source. -->
+      <div class="field" id="order-product-type-row">
+        <label>Product</label>
+        <div id="order-product-type" role="radiogroup" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+          <label style="display:flex;align-items:center;justify-content:center;gap:8px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;font-size:14px;color:var(--text);user-select:none">
+            <input type="radio" name="order-product-type" value="ice_cream" checked onchange="window.onOrderProductTypeChange()" style="accent-color:var(--mm-pink);cursor:pointer"/>
+            🍦 Ice Cream
+          </label>
+          <label style="display:flex;align-items:center;justify-content:center;gap:8px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;font-size:14px;color:var(--text);user-select:none">
+            <input type="radio" name="order-product-type" value="sorbet" onchange="window.onOrderProductTypeChange()" style="accent-color:var(--mm-pink);cursor:pointer"/>
+            🍧 Sorbet
+          </label>
+          <label style="display:flex;align-items:center;justify-content:center;gap:8px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;font-size:14px;color:var(--text);user-select:none">
+            <input type="radio" name="order-product-type" value="both" onchange="window.onOrderProductTypeChange()" style="accent-color:var(--mm-pink);cursor:pointer"/>
+            🍦+🍧 Both
+          </label>
+        </div>
+      </div>
+
+      <!-- Ice Cream Stock Level (shown when product type is ice_cream or both) -->
       <div class="field" id="order-stock-level-row">
-        <label>Stock Level</label>
+        <label>Ice Cream Stock Level</label>
         <select id="order-stock-level" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none">
           <option value="">— Not specified —</option>
           <option value="empty">Empty</option>
           <option value="almost_empty">Almost empty</option>
           <option value="half">Half full</option>
           <option value="three_quarter">3/4 full</option>
+        </select>
+      </div>
+
+      <!-- Sorbet Stock Level (shown when product type is sorbet or both).
+           Extra 'own_freezer' option for customers who sell sorbet in their
+           existing freezer. -->
+      <div class="field" id="order-sorbet-stock-level-row" style="display:none">
+        <label>🍧 Sorbet Stock Level</label>
+        <select id="order-sorbet-stock-level" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none">
+          <option value="">— Not specified —</option>
+          <option value="empty">Empty</option>
+          <option value="almost_empty">Almost empty</option>
+          <option value="half">Half full</option>
+          <option value="three_quarter">3/4 full</option>
+          <option value="own_freezer">Customer's own freezer</option>
         </select>
       </div>
 
@@ -4036,22 +4073,48 @@ window.showNewOrderModal = (source) => {
   document.getElementById('order-modal-title').textContent = source === 'staples_po' ? 'New Staples PO' : 'New Phone Order';
   const isStaples = source === 'staples_po';
   document.getElementById('order-po-row').style.display = isStaples ? 'block' : 'none';
-  // Staples PO uses Total Units (required); other sources use Stock Level (optional)
-  document.getElementById('order-stock-level-row').style.display = isStaples ? 'none' : 'block';
+  // Staples PO: uses Total Units (required), no stock level, no product type chooser.
+  // Other sources: product type chooser drives which stock level pickers show.
+  document.getElementById('order-product-type-row').style.display = isStaples ? 'none' : 'block';
   document.getElementById('order-total-units-row').style.display = isStaples ? 'block' : 'none';
   document.getElementById('order-store-search').value = '';
   document.getElementById('order-store-id').value = '';
   document.getElementById('order-store-selected').style.display = 'none';
   document.getElementById('order-po-number').value = '';
   document.getElementById('order-stock-level').value = '';
+  document.getElementById('order-sorbet-stock-level').value = '';
   document.getElementById('order-total-units').value = '';
   document.getElementById('order-contact-name').value = '';
   document.getElementById('order-contact-phone').value = '';
   document.getElementById('order-contact-email').value = '';
   document.getElementById('order-notes').value = '';
   document.getElementById('order-is-new-install').checked = false;
+  // Reset product type to ice cream and reflect in the stock-level row visibility.
+  const iceRadio = document.querySelector('input[name="order-product-type"][value="ice_cream"]');
+  if (iceRadio) iceRadio.checked = true;
+  // Apply visibility for product type (no-op for Staples since the whole row is hidden).
+  window.onOrderProductTypeChange();
+  // For Staples PO, both stock rows must be hidden regardless of product type state.
+  if (isStaples) {
+    document.getElementById('order-stock-level-row').style.display = 'none';
+    document.getElementById('order-sorbet-stock-level-row').style.display = 'none';
+  }
   document.getElementById('order-modal-error').style.display = 'none';
   document.getElementById('order-modal').classList.add('open');
+};
+
+// Toggle which stock-level rows are visible based on the selected product type.
+// Called on radio change and once from showNewOrderModal to apply the initial state.
+window.onOrderProductTypeChange = () => {
+  const checked = document.querySelector('input[name="order-product-type"]:checked');
+  const value = checked ? checked.value : 'ice_cream';
+  const showIce = value === 'ice_cream' || value === 'both';
+  const showSorbet = value === 'sorbet' || value === 'both';
+  document.getElementById('order-stock-level-row').style.display = showIce ? 'block' : 'none';
+  document.getElementById('order-sorbet-stock-level-row').style.display = showSorbet ? 'block' : 'none';
+  // Clear any stale value in a hidden field so it doesn't leak into the payload.
+  if (!showIce) document.getElementById('order-stock-level').value = '';
+  if (!showSorbet) document.getElementById('order-sorbet-stock-level').value = '';
 };
 
 window.closeOrderModal = () => {
@@ -4157,6 +4220,7 @@ window.saveOrder = async () => {
   const storeId = document.getElementById('order-store-id').value;
   const poNumber = document.getElementById('order-po-number').value.trim();
   const stockLevel = document.getElementById('order-stock-level').value || null;
+  const sorbetStockLevel = document.getElementById('order-sorbet-stock-level').value || null;
   const totalUnitsRaw = document.getElementById('order-total-units').value.trim();
   const totalUnits = totalUnitsRaw ? parseInt(totalUnitsRaw, 10) : null;
   const contactName = document.getElementById('order-contact-name').value.trim() || null;
@@ -4164,6 +4228,13 @@ window.saveOrder = async () => {
   const contactEmail = document.getElementById('order-contact-email').value.trim() || null;
   const notes = document.getElementById('order-notes').value.trim() || null;
   const isNewInstall = document.getElementById('order-is-new-install').checked;
+  // Staples PO is always ice cream today; the product-type chooser is hidden
+  // for it. For other sources, read the selected radio.
+  const productType = source === 'staples_po'
+    ? 'ice_cream'
+    : (document.querySelector('input[name="order-product-type"]:checked')?.value || 'ice_cream');
+  const includesIceCream = productType === 'ice_cream' || productType === 'both';
+  const includesSorbet = productType === 'sorbet' || productType === 'both';
 
   if (!storeId) { errEl.textContent = 'Please select a store.'; errEl.style.display = 'block'; return; }
   if (source === 'staples_po') {
@@ -4174,15 +4245,25 @@ window.saveOrder = async () => {
       return;
     }
   }
+  // Sorbet consistency: if the order includes sorbet, we need a sorbet stock
+  // level. The DB enforces this via orders_sorbet_consistency CHECK; failing
+  // here gives a friendlier message than a raw SQL error.
+  if (includesSorbet && !sorbetStockLevel) {
+    errEl.textContent = 'Please select a sorbet stock level (or change Product to Ice Cream only).';
+    errEl.style.display = 'block';
+    return;
+  }
 
   // Field-by-source: Staples PO sends total_units (no stock_level);
   // other sources send stock_level (no total_units). Constraint in DB
   // also enforces this rule.
+  // For sorbet-only orders, stock_level is intentionally null (the order
+  // isn't for ice cream so there's no ice cream freezer to gauge).
   const isStaples = source === 'staples_po';
   const payload = {
     store_id: storeId,
     source,
-    stock_level: isStaples ? null : stockLevel,
+    stock_level: isStaples ? null : (includesIceCream ? stockLevel : null),
     total_units: isStaples ? totalUnits : null,
     notes,
     submitted_by_name: contactName,
@@ -4191,7 +4272,9 @@ window.saveOrder = async () => {
     po_number: isStaples ? poNumber : null,
     status: 'pending',
     is_new_install: isNewInstall,
-    raw_form_payload: { entered_from: 'admin_dashboard' }
+    includes_sorbet: includesSorbet,
+    sorbet_stock_level: includesSorbet ? sorbetStockLevel : null,
+    raw_form_payload: { entered_from: 'admin_dashboard', product_type: productType }
   };
 
   const resp = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
