@@ -3771,7 +3771,7 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,' +
+    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,includes_sorbet,sorbet_stock_level,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
     'store:stores!store_id(id,public_code,qb_name,ship_city,province,phone,email)'
   );
@@ -3838,6 +3838,21 @@ function stockLevelBadge(sl) {
 function totalUnitsBadge(units) {
   if (units == null) return '<span class="badge" style="background:rgba(139,148,158,0.15);color:var(--muted);border:1px solid rgba(139,148,158,0.3)">—</span>';
   return `<span class="badge" style="background:rgba(226,176,74,0.15);color:var(--gold);border:1px solid rgba(226,176,74,0.4);font-weight:700">📦 ${units} units</span>`;
+}
+
+// Badge for an order that also includes sorbet. Stacks below the ice cream
+// stock badge in the Stock/Qty cell. Always pink so it's visually distinct
+// from the ice cream stock (which uses red/yellow/green by level).
+function sorbetBadge(sorbetStockLevel) {
+  const labelMap = {
+    empty:         'Empty',
+    almost_empty:  'Almost empty',
+    half:          'Half full',
+    three_quarter: '3/4 full',
+    own_freezer:   'Own freezer',
+  };
+  const label = labelMap[sorbetStockLevel] || sorbetStockLevel || '—';
+  return `<span class="badge" style="background:rgba(232,123,181,0.15);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.45);font-weight:700" title="This order also includes Mini Melts BIG Sorbet (stock: ${label})">🍧 SORBET · ${label}</span>`;
 }
 
 function sourceBadge(src) {
@@ -3979,7 +3994,12 @@ function renderOrdersTable(orders) {
         <div style="font-size:12px;color:var(--muted)">${storeCode ? `<span style="font-family:monospace;color:var(--gold)">${storeCode}</span> · ` : ''}${escapeHtml(cityProv)}</div>
       </td>
       <td>${sourceBadge(o.source)}</td>
-      <td>${o.source === 'staples_po' ? totalUnitsBadge(o.total_units) : stockLevelBadge(o.stock_level)}</td>
+      <td>
+        <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">
+          ${o.source === 'staples_po' ? totalUnitsBadge(o.total_units) : stockLevelBadge(o.stock_level)}
+          ${o.includes_sorbet ? sorbetBadge(o.sorbet_stock_level) : ''}
+        </div>
+      </td>
       <td style="font-size:12px">${escapeHtml(contact) || '<span style="color:var(--muted)">—</span>'}</td>
       <td style="font-size:12px;max-width:280px">${notesHtml}</td>
       <td>${statusCell}</td>
@@ -4797,7 +4817,7 @@ async function loadMapData() {
     fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
-    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email&order=submitted_at.desc'),
+    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level&order=submitted_at.desc'),
   ]);
   _mapStores = stores;
   _mapMachines = venues;
@@ -5314,7 +5334,7 @@ async function initMapboxGL() {
     const ordersHtml = orders.map(o => {
       const shortId = (o.id || '').replace(/-/g, '').slice(-8).toUpperCase();
       const submitted = o.submitted_at ? new Date(o.submitted_at).toLocaleDateString('en-CA', { year:'numeric', month:'short', day:'numeric' }) : '';
-      const stockMap = { empty:'Empty', almost_empty:'Almost empty', half:'Half full', three_quarter:'3/4 full' };
+      const stockMap = { empty:'Empty', almost_empty:'Almost empty', half:'Half full', three_quarter:'3/4 full', own_freezer:'Own freezer' };
       const sourceMap = { online:'📱 Online', phone:'📞 Phone', staples_po:'📋 Staples', staples_vmi:'🏪 VMI', driver_walk_in:'🚚 Walk-in' };
       const sourceLabel = sourceMap[o.source] || o.source || '';
       // Staples PO orders carry an exact total_units count; others carry a
@@ -5329,13 +5349,21 @@ async function initMapboxGL() {
       const installLabel = o.is_new_install
         ? '<span style="background:#ff4d9d;color:#fff;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px">🆕 INSTALL</span>'
         : '';
+      // Compact sorbet pill — pink so depot manager spots it at a glance.
+      const sorbetLabel = o.includes_sorbet
+        ? `<span style="background:#fce7f3;color:#9d174d;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px" title="Order includes sorbet (stock: ${stockMap[o.sorbet_stock_level] || o.sorbet_stock_level || '—'})">🍧 SORBET</span>`
+        : '';
+      const sorbetStockLine = o.includes_sorbet
+        ? `<div style="font-size:11px;color:#9d174d;margin-top:2px;font-weight:600">🍧 Sorbet stock: <strong>${stockMap[o.sorbet_stock_level] || o.sorbet_stock_level || '—'}</strong></div>`
+        : '';
       const noteSnippet = o.notes ? `<div style="color:#666;font-size:11px;margin-top:2px;font-style:italic">${escapeHtmlMap(o.notes.slice(0, 80))}${o.notes.length > 80 ? '…' : ''}</div>` : '';
       return `<div style="border-left:3px solid ${o.is_new_install ? '#ff4d9d' : '#ef4444'};padding:6px 8px;margin-bottom:6px;background:${o.is_new_install ? '#fdf2f8' : '#fef2f2'};border-radius:0 4px 4px 0">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
-          <span style="font-family:monospace;font-weight:700;color:#991b1b;font-size:12px">#${shortId}${installLabel}</span>
+          <span style="font-family:monospace;font-weight:700;color:#991b1b;font-size:12px">#${shortId}${installLabel}${sorbetLabel}</span>
           <span style="font-size:10px;color:#666">${submitted}</span>
         </div>
         <div style="font-size:11px;color:#444;margin-top:2px">${sourceLabel} · ${detailLabel}</div>
+        ${sorbetStockLine}
         ${o.submitted_by_name ? `<div style="font-size:11px;color:#666;margin-top:2px">${escapeHtmlMap(o.submitted_by_name)}${o.submitted_by_phone ? ' · ' + escapeHtmlMap(o.submitted_by_phone) : ''}</div>` : ''}
         ${noteSnippet}
       </div>`;
@@ -6667,7 +6695,7 @@ async function schedLoadOrdersAndOverdue() {
   // source, stock level, total units, contact, install flag) so the order
   // pin's hover popup can show the depot manager useful context for scheduling.
   const ordersPromise = sbFetch(
-    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
+    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,includes_sorbet,sorbet_stock_level,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
     `&status=eq.pending&trip_stop_id=is.null` +
     `&limit=500`
   );
@@ -6742,6 +6770,8 @@ async function schedLoadOrdersAndOverdue() {
       order_total_units: o.total_units != null ? Number(o.total_units) : null,
       order_submitted_by_name: o.submitted_by_name || null,
       order_submitted_by_phone: o.submitted_by_phone || null,
+      order_includes_sorbet: !!o.includes_sorbet,
+      order_sorbet_stock_level: o.sorbet_stock_level || null,
       is_new_install: !!o.is_new_install,
     });
   }
@@ -7243,7 +7273,7 @@ function schedRenderMarkers() {
         : '';
       const sourceMap = { online:'📱 Online', phone:'📞 Phone', staples_po:'📋 Staples PO', staples_vmi:'🏪 Staples VMI', driver_walk_in:'🚚 Walk-in' };
       const sourceLabel = sourceMap[store.order_source] || store.order_source || '';
-      const stockMap = { empty:'Empty', almost_empty:'Almost empty', half:'Half full', three_quarter:'3/4 full' };
+      const stockMap = { empty:'Empty', almost_empty:'Almost empty', half:'Half full', three_quarter:'3/4 full', own_freezer:'Own freezer' };
       const stockLabel = stockMap[store.order_stock_level] || store.order_stock_level || '';
       // Staples PO uses Total Units, others use Stock Level. Build the detail
       // fragment so we don't show "Stock: —" for Staples or "Units: —" for phone.
@@ -7259,6 +7289,12 @@ function schedRenderMarkers() {
       const notesLine = store.order_notes
         ? `<div style="margin-top:6px;padding:6px 8px;background:#f9fafb;border-left:3px solid #5BC9FF;border-radius:0 4px 4px 0;font-size:11px;color:#374151;font-style:italic;line-height:1.4">${schedEscapeHtml(store.order_notes.slice(0, 200))}${store.order_notes.length > 200 ? '…' : ''}</div>`
         : '';
+      // Sorbet line: depot manager needs to see this BEFORE assigning a stop
+      // so they bring sorbet to the venue. Pink-on-pink so it pops against
+      // the rest of the popup; placed right after the source/stock line.
+      const sorbetLine = store.order_includes_sorbet
+        ? `<div style="margin-top:5px;padding:4px 8px;background:#fce7f3;border:1px solid #f9a8d4;border-radius:4px;font-size:11px;color:#9d174d;font-weight:700">🍧 SORBET · ${stockMap[store.order_sorbet_stock_level] || store.order_sorbet_stock_level || '—'}</div>`
+        : '';
       popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;min-width:240px;max-width:300px">
         ${store.is_new_install ? '<div style="background:#ff4d9d;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.5px;margin-bottom:6px;text-align:center">🆕 NEW FREEZER INSTALL</div>' : ''}
         <div style="font-weight:700;font-size:13px">${schedEscapeHtml(store.qb_name)}</div>
@@ -7267,6 +7303,7 @@ function schedRenderMarkers() {
           📅 <strong>${submittedDate}</strong>${ageBadge}
         </div>
         ${sourceLabel || qtyOrStockFragment ? `<div style="font-size:11px;color:#444;margin-top:3px">${sourceLabel}${sourceLabel && qtyOrStockFragment ? ' · ' : ''}${qtyOrStockFragment}</div>` : ''}
+        ${sorbetLine}
         ${contactLine}
         ${notesLine}
       </div>`;
