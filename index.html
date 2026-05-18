@@ -1388,6 +1388,7 @@
         <div class="filter-group"><label>Search</label><input type="text" id="orders-filter-search" placeholder="Store name, ST-code, contact..." oninput="renderOrdersFiltered()" style="min-width:220px"/></div>
         <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
           <button class="btn-export" onclick="showNewOrderModal('phone')">📞 New Phone Order</button>
+          <button class="btn-export" style="background:var(--mm-pink)" onclick="showRecurringModal()" data-admin-only>🔄 Recurring Weekly</button>
           <button class="btn-export" style="background:var(--mm-cyan)" onclick="showNewOrderModal('staples_po')">📋 New Staples PO</button>
         </div>
       </div>
@@ -2145,6 +2146,49 @@
       <div style="display:flex;gap:12px;margin-top:20px">
         <button class="btn-modal btn-modal-primary" style="flex:2" onclick="saveOrder()">Save Order</button>
         <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeOrderModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Recurring Weekly Modal ─────────────────────────────────────────────
+     Manage which customers get an auto-generated pending order every Saturday
+     at 08:00 UTC. The Postgres cron job + generate_recurring_weekly_orders()
+     function does the actual insertion; this UI just toggles the flag on
+     stores.recurring_weekly. -->
+<div class="modal-overlay" id="recurring-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">🔄 Recurring Weekly Customers</span>
+      <button class="modal-close" onclick="closeRecurringModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:rgba(232,123,181,0.08);border:1px solid rgba(232,123,181,0.25);border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--text);line-height:1.5">
+        Customers enrolled here get a <strong>pending order auto-generated every Saturday at midnight (Pacific)</strong>, ready for the depot manager to schedule. Stores with an existing pending or scheduled order are skipped that week.
+      </div>
+
+      <div class="field">
+        <label>Add a customer to weekly schedule</label>
+        <div style="position:relative">
+          <input type="text" id="recurring-store-search" placeholder="Type store name or MM-code..." oninput="searchRecurringStore()" autocomplete="off" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
+          <div id="recurring-store-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--bg2);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:240px;overflow-y:auto;z-index:10"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:20px">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+          <label style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Currently enrolled</label>
+          <span id="recurring-count" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+        <div id="recurring-list" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;max-height:300px;overflow-y:auto">
+          <div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Loading...</div>
+        </div>
+      </div>
+
+      <div id="recurring-modal-error" style="display:none;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:6px;padding:10px 14px;color:#f85149;font-size:13px;margin-top:12px"></div>
+
+      <div style="display:flex;gap:12px;margin-top:20px">
+        <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeRecurringModal()">Close</button>
       </div>
     </div>
   </div>
@@ -3899,6 +3943,7 @@ function sourceBadge(src) {
     staples_po:     { label: '📋 Staples PO', bg: 'rgba(226,176,74,0.15)', color: 'var(--gold)',  border: 'rgba(226,176,74,0.3)' },
     staples_vmi:    { label: '🏪 Staples VMI', bg: 'rgba(63,185,80,0.12)', color: 'var(--success)', border: 'rgba(63,185,80,0.3)' },
     driver_walk_in: { label: '🚚 Walk-in', bg: 'rgba(139,148,158,0.15)', color: 'var(--muted)',   border: 'rgba(139,148,158,0.3)' },
+    recurring:      { label: '🔄 Recurring', bg: 'rgba(232,123,181,0.15)', color: 'var(--mm-pink)', border: 'rgba(232,123,181,0.4)' },
   };
   const m = map[src] || { label: src, bg: 'rgba(139,148,158,0.15)', color: 'var(--muted)', border: 'rgba(139,148,158,0.3)' };
   return `<span class="badge" style="background:${m.bg};color:${m.color};border:1px solid ${m.border}">${m.label}</span>`;
@@ -4210,6 +4255,135 @@ window.selectOrderStore = (id, storeJson) => {
   // Prefill contact from the store record if empty
   if (!document.getElementById('order-contact-phone').value && s.phone) document.getElementById('order-contact-phone').value = s.phone;
   if (!document.getElementById('order-contact-email').value && s.email) document.getElementById('order-contact-email').value = s.email;
+};
+
+// ── Recurring Weekly Customers ───────────────────────────────────────────
+// Toggles the `stores.recurring_weekly` flag. The pg_cron job
+// `recurring-weekly-orders` runs every Saturday at 08:00 UTC and calls
+// public.generate_recurring_weekly_orders() which inserts a pending order
+// for each enrolled store (skipping those with an open pending/scheduled order).
+
+window.showRecurringModal = async () => {
+  document.getElementById('recurring-modal-error').style.display = 'none';
+  document.getElementById('recurring-store-search').value = '';
+  document.getElementById('recurring-store-results').style.display = 'none';
+  document.getElementById('recurring-modal').classList.add('open');
+  await loadRecurringList();
+};
+
+window.closeRecurringModal = () => {
+  document.getElementById('recurring-modal').classList.remove('open');
+  document.getElementById('recurring-store-results').style.display = 'none';
+};
+document.getElementById('recurring-modal').addEventListener('click', e => { if (e.target===e.currentTarget) closeRecurringModal(); });
+
+async function loadRecurringList() {
+  const listEl = document.getElementById('recurring-list');
+  const countEl = document.getElementById('recurring-count');
+  listEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Loading...</div>`;
+  try {
+    const data = await sbFetch('stores?recurring_weekly=eq.true&active=eq.true&select=id,public_code,qb_name,ship_city,province&order=qb_name.asc');
+    const stores = Array.isArray(data) ? data : [];
+    countEl.textContent = stores.length === 1 ? '1 customer' : `${stores.length} customers`;
+    if (stores.length === 0) {
+      listEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">No customers enrolled yet. Use the search above to add one.</div>`;
+      return;
+    }
+    listEl.innerHTML = stores.map(s => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);gap:12px">
+        <div style="min-width:0;flex:1">
+          <div style="font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(s.qb_name)}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">
+            <span style="font-family:monospace;color:var(--gold)">${s.public_code||''}</span>
+            ${s.ship_city ? ' · ' + escapeHtml([s.ship_city, s.province].filter(Boolean).join(', ')) : ''}
+          </div>
+        </div>
+        <button onclick="window.removeRecurringStore('${s.id}', '${escapeHtml(s.qb_name).replace(/'/g, '&apos;')}')" style="background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);color:#f85149;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap">Remove</button>
+      </div>`).join('');
+  } catch (e) {
+    listEl.innerHTML = `<div style="padding:20px;text-align:center;color:#f85149;font-size:13px">Failed to load: ${escapeHtml(e.message || String(e))}</div>`;
+  }
+}
+
+let recurringStoreSearchTimer = null;
+window.searchRecurringStore = () => {
+  clearTimeout(recurringStoreSearchTimer);
+  const q = document.getElementById('recurring-store-search').value.trim();
+  const resultsEl = document.getElementById('recurring-store-results');
+  if (q.length < 2) { resultsEl.style.display = 'none'; return; }
+  recurringStoreSearchTimer = setTimeout(async () => {
+    // Exclude already-enrolled stores from results so users don't accidentally
+    // "add" a store that's already in the list. Same fuzzy-search pattern as
+    // searchOrderStore but with recurring_weekly=eq.false filter.
+    const upperQ = q.toUpperCase();
+    let data;
+    if (/^MM-\d+$/i.test(q)) {
+      data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true&recurring_weekly=eq.false&select=id,public_code,qb_name,ship_city,province&limit=10`);
+    } else {
+      const tokens = q.split(/\s+/).filter(Boolean);
+      const tokenClauses = tokens.map(tok => {
+        const enc = encodeURIComponent(`*${tok}*`);
+        return `or(qb_name.ilike.${enc},ship_city.ilike.${enc},public_code.ilike.${enc})`;
+      });
+      const filter = tokenClauses.length > 0 ? `&and=(${tokenClauses.join(',')})` : '';
+      data = await sbFetch(`stores?active=eq.true&recurring_weekly=eq.false${filter}&select=id,public_code,qb_name,ship_city,province&order=qb_name.asc&limit=15`);
+    }
+    const stores = Array.isArray(data) ? data : [];
+    if (!stores.length) {
+      resultsEl.innerHTML = `<div style="padding:10px 12px;color:var(--muted);font-size:13px">No matches (already-enrolled customers are hidden).</div>`;
+      resultsEl.style.display = 'block';
+      return;
+    }
+    resultsEl.innerHTML = stores.map(s => `
+      <div style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background=''" onclick="window.addRecurringStore('${s.id}', '${escapeHtml(s.qb_name).replace(/'/g, '&apos;')}')">
+        <div style="font-weight:600">${escapeHtml(s.qb_name)}</div>
+        <div style="font-size:12px;color:var(--muted)"><span style="font-family:monospace;color:var(--gold)">${s.public_code||''}</span> · ${escapeHtml([s.ship_city, s.province].filter(Boolean).join(', '))}</div>
+      </div>`).join('');
+    resultsEl.style.display = 'block';
+  }, 250);
+};
+
+window.addRecurringStore = async (storeId, qbName) => {
+  const errEl = document.getElementById('recurring-modal-error');
+  errEl.style.display = 'none';
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${storeId}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=representation' },
+      body: JSON.stringify({ recurring_weekly: true })
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Failed to enroll: ${r.status} ${t}`);
+    }
+    document.getElementById('recurring-store-search').value = '';
+    document.getElementById('recurring-store-results').style.display = 'none';
+    await loadRecurringList();
+  } catch (e) {
+    errEl.textContent = e.message || String(e);
+    errEl.style.display = 'block';
+  }
+};
+
+window.removeRecurringStore = async (storeId, qbName) => {
+  if (!confirm(`Stop generating weekly recurring orders for "${qbName}"?\n\nExisting orders will not be affected.`)) return;
+  const errEl = document.getElementById('recurring-modal-error');
+  errEl.style.display = 'none';
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${storeId}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=representation' },
+      body: JSON.stringify({ recurring_weekly: false })
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Failed to remove: ${r.status} ${t}`);
+    }
+    await loadRecurringList();
+  } catch (e) {
+    errEl.textContent = e.message || String(e);
+    errEl.style.display = 'block';
+  }
 };
 
 window.saveOrder = async () => {
