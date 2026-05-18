@@ -1942,7 +1942,9 @@
           <input type="hidden" id="store-edit-id"/>
           <div style="font-size:11px;color:var(--gold);letter-spacing:2px;text-transform:uppercase;margin-bottom:12px">Store Info</div>
           <div class="field"><label>Customer Name (used in QuickBooks and shown to drivers)</label>
-            <input id="store-name" type="text" placeholder="e.g. Safeway Terra Losa - 8880" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px;outline:none" oninput="document.getElementById('store-qbname').value=this.value"/></div>
+            <input id="store-name" type="text" placeholder="e.g. Safeway Terra Losa - 8880" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px;outline:none" oninput="document.getElementById('store-qbname').value=this.value;window.applyChainAutoDetect&&window.applyChainAutoDetect()"/>
+            <div id="store-chain-hint" style="font-size:11px;color:var(--gold);margin-top:4px;min-height:14px"></div>
+          </div>
           <input type="hidden" id="store-qbname"/>
           <div style="font-size:11px;color:var(--gold);letter-spacing:2px;text-transform:uppercase;margin:16px 0 12px">Contact Info</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -3426,9 +3428,78 @@ window.showAddStore = () => {
   document.getElementById('store-fee').value = '20.00';
   document.getElementById('store-edi').value = 'false';
   document.getElementById('store-taxcode').value = 'G';
-  document.getElementById('store-terms').value = 'Net 30';
+  document.getElementById('store-terms').value = 'COD';
   document.getElementById('store-rep').value = 'DM';
+  // Clear any prior auto-detect hint from a previous open
+  const hintEl = document.getElementById('store-chain-hint');
+  if (hintEl) hintEl.textContent = '';
   document.getElementById('store-modal').classList.add('open');
+};
+
+// Infer default settings (terms, EDI flag, delivery fee, unit price) from
+// the customer name. Chain-based rules per Mini Melts policy:
+//   * Staples → Net 60
+//   * Safeway / Sobeys family → Net 30, is_edi=true
+//   * Co-op chain → Net 30, $0 delivery fee
+//   * Everyone else → COD
+// `chainLabel` is shown as a small hint under the name field so the user
+// knows why their defaults changed. Returns null if no chain matches (so
+// the caller can leave fields alone or restore the COD default).
+window.inferStoreDefaults = (qbName) => {
+  const n = String(qbName || '').toLowerCase();
+  if (!n.trim()) return null;
+
+  // Co-op false positives — these names contain 'coop' or 'cooper' but are
+  // independents, not the Co-op chain. They should fall through to COD.
+  const COOP_FALSE_POSITIVES = ["mrs cooper's convenience store", "scoops & things", "what's the scoop"];
+  if (COOP_FALSE_POSITIVES.includes(n)) {
+    return { terms: 'COD', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (COD)' };
+  }
+
+  if (n.includes('staples')) {
+    return { terms: 'Net 60', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Staples → Net 60' };
+  }
+  if (n.includes('safeway')) {
+    return { terms: 'Net 30', isEdi: true, deliveryFee: null, unitPrice: 2.97, chainLabel: 'Safeway → Net 30, EDI, $2.97' };
+  }
+  // Sobeys family — includes Quebec banners owned by Sobeys
+  if (n.includes('sobeys') || n.includes('boni') || n.includes('voisin')
+    || n.includes('tradition') || n.includes('marche') || n.includes('reli')
+    || n.includes('depanneur voisin')) {
+    return { terms: 'Net 30', isEdi: true, deliveryFee: null, unitPrice: 2.97, chainLabel: 'Sobeys family → Net 30, EDI, $2.97' };
+  }
+  // Co-op (after false-positive guard above)
+  if (n.includes('co-op') || n.includes('coop')) {
+    return { terms: 'Net 30', isEdi: false, deliveryFee: 0, unitPrice: 2.97, chainLabel: 'Co-op → Net 30, $0 delivery, $2.97' };
+  }
+  return { terms: 'COD', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (COD)' };
+};
+
+// Apply inferred defaults to the Add Store form. Only runs for new stores
+// (when store-edit-id is empty) so we don't overwrite values the user is
+// editing on an existing customer.
+window.applyChainAutoDetect = () => {
+  const editId = document.getElementById('store-edit-id').value;
+  if (editId) return;  // Editing existing store — don't touch their fields
+
+  const name = document.getElementById('store-name').value;
+  const inferred = window.inferStoreDefaults(name);
+  const hintEl = document.getElementById('store-chain-hint');
+
+  if (!inferred) {
+    if (hintEl) hintEl.textContent = '';
+    return;
+  }
+
+  document.getElementById('store-terms').value = inferred.terms;
+  document.getElementById('store-edi').value = inferred.isEdi ? 'true' : 'false';
+  if (inferred.deliveryFee !== null) {
+    document.getElementById('store-fee').value = inferred.deliveryFee.toFixed(2);
+  }
+  if (inferred.unitPrice !== null) {
+    document.getElementById('store-price').value = inferred.unitPrice.toFixed(2);
+  }
+  if (hintEl) hintEl.textContent = '✓ ' + inferred.chainLabel;
 };
 
 // Derive 2-letter province code from a Canadian postal code's first letter.
