@@ -1128,6 +1128,36 @@
     border-color: #e54848;
     color: #e54848;
   }
+  /* Manual stop reordering — ⬆ / ⬇ buttons sit just left of the remove × */
+  .sched-stop-move {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    width: 22px; height: 22px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: all 0.1s;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .sched-stop-move:hover:not(:disabled) {
+    border-color: var(--gold);
+    color: var(--gold);
+  }
+  .sched-stop-move:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
+  }
+  .sched-stop-controls {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
   .sched-cell-actions {
     padding: 12px 14px;
     display: flex;
@@ -8677,6 +8707,67 @@ async function schedRemoveStopFromCell(tripStopId) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// MOVE one stop UP/DOWN within the same day (manual reorder)
+// ════════════════════════════════════════════════════════════════════
+//
+// Why this exists: the route optimizer picks stop order for shortest drive
+// time, but depot managers sometimes need a different order — typically when
+// a store has early-morning-only or late-afternoon-only operating hours that
+// the optimizer doesn't know about.
+//
+// Approach: swap the `sequence` value between the target stop and its
+// neighbor. trip_stops has a non-unique index on (trip_day_id, sequence),
+// so we don't need a transactional swap-via-temp-value dance.
+//
+// The (trip_day_id, sequence) idx is non-unique, so two sequential PATCHes
+// are safe. Even if they race (extremely unlikely on a 50ms RTT), worst case
+// is a momentary duplicate sequence number for one ms, which renders fine.
+//
+// After swap, fn_trip_stop_schedule_resend (now wired to UPDATE OF sequence)
+// will queue a 5-minute debounced resend for published trips.
+//
+// We DON'T re-optimize the day automatically — that would just undo the
+// manual swap. Optimization is opt-in via the existing per-day optimize button.
+async function schedMoveStopWithinDay(tripStopId, direction /* 'up' | 'down' */) {
+  const cell = schedState.editingCell;
+  if (!cell) return;
+  const stops = (cell.stops || []).slice().sort((a, b) => a.sequence - b.sequence);
+  const idx = stops.findIndex(s => s.id === tripStopId);
+  if (idx === -1) return;
+
+  const neighborIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (neighborIdx < 0 || neighborIdx >= stops.length) return; // boundary
+
+  const moving = stops[idx];
+  const neighbor = stops[neighborIdx];
+  const movingSeq = moving.sequence;
+  const neighborSeq = neighbor.sequence;
+
+  // Optimistic UI: swap in local state first so the row jumps immediately,
+  // then persist. If persist fails, we refresh from server which restores
+  // the truth.
+  moving.sequence = neighborSeq;
+  neighbor.sequence = movingSeq;
+  cell.stops = stops.slice().sort((a, b) => a.sequence - b.sequence);
+  schedRenderSidebar();
+
+  try {
+    // Two sequential PATCHes. Index is non-unique so no constraint violation
+    // when the two rows briefly share the same sequence value.
+    await schedUpdate('trip_stops', `id=eq.${moving.id}`, { sequence: neighborSeq });
+    await schedUpdate('trip_stops', `id=eq.${neighbor.id}`, { sequence: movingSeq });
+    await schedRefreshData();
+    schedReopenEditingCell(cell.trip_day_id);
+  } catch (e) {
+    console.error('[sched] reorder failed:', e);
+    schedToast(`⚠ Failed to reorder: ${e.message}`);
+    // Revert by re-fetching truth from server
+    await schedRefreshData();
+    schedReopenEditingCell(cell.trip_day_id);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
 // MOVE all stops from one trip_day to another (drag-between-cells)
 // ════════════════════════════════════════════════════════════════════
 async function schedMoveStops(fromTripDayId, toCell /* {driver_id, day_iso} */) {
@@ -9007,7 +9098,7 @@ function schedRenderCellEditSidebar(container) {
   const tripDayCount = trip ? Math.round((schedParseDate(trip.end_date) - schedParseDate(trip.start_date)) / 86400000) + 1 : 1;
   const isPublished = trip && trip.status === 'published';
 
-  const stopsHtml = (cell.stops || []).map((stop, idx) => {
+  const stopsHtml = (cell.stops || []).map((stop, idx, arr) => {
     // Look up by 'vm:' prefix for vending stops, raw store_id otherwise
     const lookupKey = stop.linked_machine_id ? `vm:${stop.linked_machine_id}` : stop.store_id;
     const store = schedState.storesIndex.get(lookupKey) || { qb_name: '?', ship_city: '', province: '' };
@@ -9017,6 +9108,11 @@ function schedRenderCellEditSidebar(container) {
     // the manager can tell at a glance that removing it will revert the
     // order to Pending. Cyan to match the "Order pending" map legend.
     const orderTag = stop.linked_order_id ? `<span style="color:var(--mm-cyan);font-weight:600">order</span>` : '';
+    // Manual reorder buttons. Disabled at boundaries (first row can't move up,
+    // last row can't move down). Optimization may overwrite these if the
+    // manager re-optimizes the day, but the manual sequence holds until then.
+    const isFirst = idx === 0;
+    const isLast = idx === arr.length - 1;
     return `<div class="sched-cell-edit-stop" data-trip-stop-id="${schedEscapeHtml(stop.id)}" data-store-id="${schedEscapeHtml(lookupKey || '')}">
       <span class="sched-stop-seq">${idx + 1}</span>
       <div class="sched-stop-info">
@@ -9028,7 +9124,11 @@ function schedRenderCellEditSidebar(container) {
           ${orderTag}
         </div>
       </div>
-      <button class="sched-stop-remove" title="Remove from this day">×</button>
+      <div class="sched-stop-controls">
+        <button class="sched-stop-move sched-stop-move-up" title="Move up"${isFirst ? ' disabled' : ''}>⬆</button>
+        <button class="sched-stop-move sched-stop-move-down" title="Move down"${isLast ? ' disabled' : ''}>⬇</button>
+        <button class="sched-stop-remove" title="Remove from this day">×</button>
+      </div>
     </div>`;
   }).join('');
 
@@ -9114,10 +9214,34 @@ function schedRenderCellEditSidebar(container) {
     });
   });
 
-  // Click stop name → fly map to it
+  // Manual reorder (⬆ / ⬇). Two handlers wired with the same body via
+  // delegation, distinguishing on the class.
+  container.querySelectorAll('.sched-stop-move-up').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (btn.disabled) return;
+      const row = btn.closest('.sched-cell-edit-stop');
+      schedMoveStopWithinDay(row.dataset.tripStopId, 'up');
+    });
+  });
+  container.querySelectorAll('.sched-stop-move-down').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (btn.disabled) return;
+      const row = btn.closest('.sched-cell-edit-stop');
+      schedMoveStopWithinDay(row.dataset.tripStopId, 'down');
+    });
+  });
+
+  // Click stop name → fly map to it.
+  // Ignore clicks on any of the action buttons (remove, move-up, move-down)
+  // so they don't double-trigger flying the map alongside their own action.
   container.querySelectorAll('.sched-cell-edit-stop').forEach(row => {
     row.addEventListener('click', (e) => {
       if (e.target.classList.contains('sched-stop-remove')) return;
+      if (e.target.classList.contains('sched-stop-move')) return;
+      if (e.target.classList.contains('sched-stop-move-up')) return;
+      if (e.target.classList.contains('sched-stop-move-down')) return;
       const storeId = row.dataset.storeId;
       const store = schedState.storesIndex.get(storeId);
       if (store && schedState.map && store.lat != null) {
