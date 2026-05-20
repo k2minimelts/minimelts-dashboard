@@ -1314,16 +1314,16 @@
   <div class="main">
     <div class="tabs">
       <button class="tab active" onclick="switchTab('overview')">Overview</button>
-      <button class="tab" onclick="switchTab('deliveries')">Deliveries</button>
-      <button class="tab" onclick="switchTab('unpaid')">Unpaid</button>
+      <button class="tab" onclick="switchTab('deliveries')" data-hide-from-depot-manager>Deliveries</button>
+      <button class="tab" onclick="switchTab('unpaid')" data-hide-from-depot-manager>Unpaid</button>
       <button class="tab" onclick="switchTab('orders')" id="tab-btn-orders">📦 Orders</button>
-      <button class="tab" onclick="switchTab('corrections')" id="tab-btn-corrections">⚠️ Corrections</button>
+      <button class="tab" onclick="switchTab('corrections')" id="tab-btn-corrections" data-hide-from-depot-manager>⚠️ Corrections</button>
       <button class="tab" onclick="switchTab('stores')">🏪 Stores</button>
       <button class="tab" onclick="switchTab('map')">🗺️ Map</button>
       <button class="tab" onclick="switchTab('routes')" style="display:none">🛣️ Routes</button>
       <button class="tab" onclick="switchTab('refills')">🥤 Vending Refills</button>
       <button class="tab" onclick="switchTab('schedule')" data-scheduler-only style="display:none">📅 Schedule</button>
-      <button class="tab" onclick="switchTab('lot')">🔬 Lot Lookup</button>
+      <button class="tab" onclick="switchTab('lot')" data-hide-from-depot-manager>🔬 Lot Lookup</button>
       <button class="tab" onclick="switchTab('drivers')">👤 Drivers</button>
       <button class="tab" onclick="switchTab('access')" data-super-admin-only style="display:none">🔐 Access</button>
     </div>
@@ -2607,6 +2607,13 @@ function applyRoleUI(roleInfo) {
   document.querySelectorAll('[data-scheduler-only]').forEach(el => {
     const canSchedule = roleInfo.role === 'admin' || roleInfo.role === 'depot_manager';
     el.style.display = canSchedule ? '' : 'none';
+  });
+  // Hide back-office tabs (Deliveries, Unpaid, Corrections, Lot Lookup) from
+  // depot managers to declutter their view — these are admin/office workflows.
+  // Admins keep them. This is UI decluttering, not a security boundary (RLS
+  // governs actual data access).
+  document.querySelectorAll('[data-hide-from-depot-manager]').forEach(el => {
+    el.style.display = isAdmin ? '' : 'none';
   });
   // For depot managers: inject CSS that hides row-level admin actions.
   // We match by button onclick containing these admin-only function names.
