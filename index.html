@@ -2224,6 +2224,42 @@
   </div>
 </div>
 
+<!-- ── Edit Order Modal ──────────────────────────────────────────────────
+     Lets CSRs/managers update notes + PO# on a pending or scheduled order
+     without recreating it. Plain PATCH to orders table; no schema change.
+     For scheduled orders the change propagates to the driver via the same
+     join that already feeds the scheduling map (orders.notes -> trip_stop). -->
+<div class="modal-overlay" id="edit-order-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">✏️ Edit Order</span>
+      <button class="modal-close" onclick="closeEditOrderModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="edit-order-id"/>
+
+      <div id="edit-order-context" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:var(--muted);line-height:1.5"></div>
+
+      <div class="field">
+        <label>PO Number <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(Staples / chain orders)</span></label>
+        <input type="text" id="edit-order-po" placeholder="e.g. 4500123456" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
+      </div>
+
+      <div class="field">
+        <label>Notes <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(visible to driver on scheduling view)</span></label>
+        <textarea id="edit-order-notes" rows="4" placeholder="e.g. Customer wants delivery before noon, out of cotton candy..." style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none;resize:vertical;font-family:inherit"></textarea>
+      </div>
+
+      <div id="edit-order-error" style="display:none;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:6px;padding:10px 14px;color:#f85149;font-size:13px;margin-top:12px"></div>
+
+      <div style="display:flex;gap:12px;margin-top:20px">
+        <button class="btn-modal btn-modal-primary" style="flex:2" onclick="saveOrderEdits()">Save Changes</button>
+        <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeEditOrderModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script type="module">
 const SUPABASE_URL = 'https://jheqxfkyxewofpnkbayc.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_J86NoAfqHqRatJwieVR7-g_DUwoJnh2';
@@ -4286,7 +4322,7 @@ function renderOrdersTable(orders) {
     // for active orders; completed/cancelled rows are audit log (no actions).
     let actionsHtml = '';
     if (o.status === 'pending' || o.status === 'scheduled') {
-      actionsHtml = `<button class="btn-sm" style="border-color:rgba(248,81,73,0.3);color:#f85149" onclick="window.cancelOrder('${o.id}')">✕ Cancel</button>`;
+      actionsHtml = `<button class="btn-sm" style="margin-right:6px" onclick="window.showEditOrderModal('${o.id}')">✏️ Edit</button><button class="btn-sm" style="border-color:rgba(248,81,73,0.3);color:#f85149" onclick="window.cancelOrder('${o.id}')">✕ Cancel</button>`;
     } else {
       actionsHtml = `<span style="color:var(--muted);font-size:11px">—</span>`;
     }
@@ -4354,6 +4390,78 @@ async function patchOrder(id, patch) {
 window.cancelOrder = async (id) => {
   if (!confirm('Cancel this order?\n\nIf it is currently scheduled on a trip, the trip stop will be removed automatically.')) return;
   if (await patchOrder(id, { status: 'cancelled' })) { await loadOrders(); updateOrdersBadge(); }
+};
+
+// ── Edit Order (notes + PO#) ─────────────────────────────────────────────
+// Pull the order from the in-memory allOrders array (already loaded by
+// loadOrders() from orders_with_schedule). PATCH via existing patchOrder()
+// helper. Re-renders by calling loadOrders() to pick up the updated row.
+
+window.showEditOrderModal = (id) => {
+  const o = (typeof allOrders !== 'undefined' ? allOrders : []).find(x => x.id === id);
+  if (!o) {
+    alert('Could not find that order. Refresh the orders list and try again.');
+    return;
+  }
+  // Only pending/scheduled orders can be edited. Defensive: the Edit button
+  // is only rendered for those statuses, but a stale click could fire after
+  // a status change.
+  if (o.status !== 'pending' && o.status !== 'scheduled') {
+    alert(`This order is ${o.status} and cannot be edited.`);
+    return;
+  }
+
+  document.getElementById('edit-order-id').value = o.id;
+  document.getElementById('edit-order-po').value = o.po_number || '';
+  document.getElementById('edit-order-notes').value = o.notes || '';
+  document.getElementById('edit-order-error').style.display = 'none';
+
+  const s = o.store || {};
+  const storeName = escapeHtml(s.qb_name || 'Unknown store');
+  const storeCode = s.public_code ? `<span style="font-family:monospace;color:var(--gold)">${escapeHtml(s.public_code)}</span> · ` : '';
+  const statusLabel = o.status === 'scheduled' && o.scheduled_driver_name
+    ? `Scheduled · ${escapeHtml(o.scheduled_driver_name)}`
+    : (o.status.charAt(0).toUpperCase() + o.status.slice(1));
+  document.getElementById('edit-order-context').innerHTML =
+    `<div style="font-weight:600;color:var(--text)">${storeName}</div>` +
+    `<div style="margin-top:2px">${storeCode}${statusLabel}</div>`;
+
+  document.getElementById('edit-order-modal').classList.add('open');
+};
+
+window.closeEditOrderModal = () => {
+  document.getElementById('edit-order-modal').classList.remove('open');
+};
+document.getElementById('edit-order-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeEditOrderModal();
+});
+
+window.saveOrderEdits = async () => {
+  const errEl = document.getElementById('edit-order-error');
+  errEl.style.display = 'none';
+
+  const id = document.getElementById('edit-order-id').value;
+  if (!id) {
+    errEl.textContent = 'Missing order id.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const po = document.getElementById('edit-order-po').value.trim() || null;
+  const notes = document.getElementById('edit-order-notes').value.trim() || null;
+
+  // patchOrder() already exists and alerts on failure. We still set an inline
+  // error here so the user sees something next to the form if the alert is
+  // missed (e.g. multi-tab focus).
+  const ok = await patchOrder(id, { po_number: po, notes: notes });
+  if (!ok) {
+    errEl.textContent = 'Failed to save. See alert for details.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  closeEditOrderModal();
+  await loadOrders();
 };
 
 // ── New Order Modal ──
