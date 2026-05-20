@@ -1395,9 +1395,10 @@
       <div class="filters">
         <div class="filter-group"><label>Status</label>
           <select id="orders-filter-status" onchange="loadOrders()">
-            <option value="active" selected>Active (Pending + Scheduled)</option>
+            <option value="active" selected>Active (Pending + Scheduled + Shipped)</option>
             <option value="pending">Pending only</option>
             <option value="scheduled">Scheduled only</option>
+            <option value="shipped">Shipped (awaiting invoice/payment)</option>
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
             <option value="">All</option>
@@ -1411,6 +1412,13 @@
             <option value="staples_po">Staples PO</option>
             <option value="staples_vmi">Staples VMI</option>
             <option value="driver_walk_in">Driver walk-in</option>
+          </select>
+        </div>
+        <div class="filter-group"><label>Delivery</label>
+          <select id="orders-filter-delivery" onchange="loadOrders()">
+            <option value="">All</option>
+            <option value="driven">🚚 Driven</option>
+            <option value="shipped">📦 Shipped</option>
           </select>
         </div>
         <div class="filter-group"><label>Province</label>
@@ -4213,6 +4221,11 @@ async function loadOrders() {
   const status = document.getElementById('orders-filter-status').value;
   const source = document.getElementById('orders-filter-source').value;
   const province = document.getElementById('orders-filter-province').value;
+  // Delivery filter: 'driven' / 'shipped' / '' (all). Applied client-side
+  // because route.delivery_method lives on a nested embed (store→route),
+  // same pattern as the province filter.
+  const deliveryEl = document.getElementById('orders-filter-delivery');
+  const delivery = deliveryEl ? deliveryEl.value : '';
 
   const bodyEl = document.getElementById('orders-body');
   bodyEl.innerHTML = '<div class="loading">Loading orders...</div>';
@@ -4228,9 +4241,12 @@ async function loadOrders() {
   );
   params.set('order', 'submitted_at.desc');
 
-  // "Active" means pending OR scheduled — the manager's working queue.
+  // "Active" means the manager's working queue: pending OR scheduled (driven
+  // workflow) OR shipped (shipping workflow not yet paid). Without 'shipped'
+  // in this list, mid-workflow shipping orders would disappear from the
+  // default view between Mark Shipped and Mark Paid.
   if (status === 'active') {
-    params.append('status', 'in.(pending,scheduled)');
+    params.append('status', 'in.(pending,scheduled,shipped)');
   } else if (status) {
     params.append('status', `eq.${status}`);
   }
@@ -4239,8 +4255,14 @@ async function loadOrders() {
   const data = await sbFetch(`orders_with_schedule?${params.toString()}`);
   let orders = Array.isArray(data) ? data : [];
 
-  // Client-side province filter (since it's on the joined store)
+  // Client-side filters (these live on the joined embed, not directly on orders)
   if (province) orders = orders.filter(o => o.store && o.store.province === province);
+  if (delivery === 'shipped') {
+    orders = orders.filter(o => o.store && o.store.route && o.store.route.delivery_method === 'shipped');
+  } else if (delivery === 'driven') {
+    // 'driven' filter excludes shipping orders AND stores with no route assigned
+    orders = orders.filter(o => o.store && o.store.route && o.store.route.delivery_method === 'driven');
+  }
 
   allOrders = orders;
   renderOrdersFiltered();
