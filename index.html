@@ -1376,17 +1376,30 @@
 
     <!-- Unpaid Tab -->
     <div id="tab-unpaid" style="display:none">
-      <div class="table-wrap">
-        <div class="table-header"><span class="table-title">⚠️ Awaiting Payment (Terms &amp; E-Transfer)</span><span class="table-count" id="unpaid-count">Loading...</span></div>
-        <div id="unpaid-body"><div class="loading">Loading...</div></div>
+      <div class="filters" style="margin-bottom:16px">
+        <div class="filter-group"><label>Type</label>
+          <select id="unpaid-filter-type" onchange="renderUnpaid()">
+            <option value="">All types</option>
+            <option value="Terms">Terms</option>
+            <option value="E-Transfer">E-Transfer</option>
+            <option value="Shipped">📦 Shipped</option>
+          </select>
+        </div>
+        <div class="filter-group"><label>Sort by date</label>
+          <select id="unpaid-filter-sort" onchange="renderUnpaid()">
+            <option value="oldest" selected>Oldest first (chase these)</option>
+            <option value="newest">Newest first</option>
+          </select>
+        </div>
       </div>
-      <!-- Shipping orders awaiting payment. Separate sub-table because the
-           schemas are genuinely different: shipping orders have no driver,
-           no e-transfer, no receipt number, no dollar total in the dashboard
-           (invoice amount lives in QuickBooks). Same Mark-as-Paid pattern. -->
-      <div class="table-wrap" style="margin-top:24px">
-        <div class="table-header"><span class="table-title">📦 Shipping Orders Awaiting Payment</span><span class="table-count" id="shipping-unpaid-count">Loading...</span></div>
-        <div id="shipping-unpaid-body"><div class="loading">Loading...</div></div>
+      <!-- Unified unpaid table: DSD deliveries (Terms / E-Transfer / No Payment /
+           Invoice) and shipping orders (📦 Shipped) merged into one sortable list.
+           Each source is normalized to a common row shape in renderUnpaid().
+           Shipping rows have no dollar total (invoice amount lives in QB) and
+           age from shipped_at; DSD rows age from delivered_at. -->
+      <div class="table-wrap">
+        <div class="table-header"><span class="table-title">⚠️ Awaiting Payment</span><span class="table-count" id="unpaid-count">Loading...</span></div>
+        <div id="unpaid-body"><div class="loading">Loading...</div></div>
       </div>
     </div>
 
@@ -3011,113 +3024,142 @@ function renderTable(deliveries, bodyId, countId) {
 
 window.toggleAll = (cb) => { document.querySelectorAll('.delivery-cb:not(:disabled)').forEach(c => c.checked = cb.checked); };
 
+// ── Unified Unpaid (DSD deliveries + shipping orders) ─────────────────────
+// Both data sources are normalized into one row shape, then filtered by type,
+// sorted by date, and rendered as a single table. This replaces the previous
+// two-stacked-tables layout so a depot manager can chase the oldest unpaid
+// invoices across both channels in one place.
+//
+// Normalized row shape:
+//   { kind: 'dsd'|'shipping', id, dateISO, dateLabel, store, storeSub,
+//     typeLabel, typeRaw, reference, etDisplay, totalDisplay, action }
+// - dateISO drives sorting; dsd uses delivered_at, shipping uses shipped_at
+// - typeRaw is what the Type filter matches against ('Terms','E-Transfer','Shipped')
+
+function _normalizeDsdUnpaid(d) {
+  const isEt = d.payment_type === 'E-Transfer';
+  const etDisplay = isEt
+    ? (d.e_transfer_date
+        ? `<span style="color:#58a6ff;font-weight:600">${escapeHtml(d.e_transfer_date)}</span>`
+        : `<span style="color:var(--warning)">— not set —</span>`)
+    : `<span style="color:var(--muted)">—</span>`;
+  return {
+    kind: 'dsd',
+    id: d.id,
+    dateISO: d.delivered_at,
+    store: escapeHtml(d.store_name || '—'),
+    storeSub: d.driver_name ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${escapeHtml(d.driver_name)}</div>` : '',
+    typeBadge: payBadge(d.payment_type),
+    typeRaw: d.payment_type,
+    reference: `<span style="font-family:monospace;color:var(--muted)">${escapeHtml(d.receipt_number || '—')}</span>`,
+    etDisplay,
+    totalDisplay: `<span style="color:var(--gold);font-weight:700">$${parseFloat(d.total || 0).toFixed(2)}</span>`,
+    action: `<button onclick="markAsPaid('${d.id}')" style="background:var(--success);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">✓ Mark as Paid</button>`,
+  };
+}
+
+function _normalizeShippingUnpaid(o) {
+  const s = o.store || {};
+  const storeSub = s.public_code
+    ? `<div style="font-size:11px;color:var(--muted);margin-top:2px"><span style="font-family:monospace;color:var(--gold)">${escapeHtml(s.public_code)}</span> · ${escapeHtml([s.ship_city, s.province].filter(Boolean).join(', '))}</div>`
+    : '';
+  const ref = o.po_number
+    ? `<span style="color:var(--gold);font-family:monospace;font-weight:600">${escapeHtml(o.po_number)}</span>`
+    : '<span style="color:var(--muted)">—</span>';
+  return {
+    kind: 'shipping',
+    id: o.id,
+    // Shipping rows age from shipped_at (when Mark Shipped was clicked).
+    dateISO: o.shipped_at || o.invoiced_at || o.submitted_at,
+    store: escapeHtml(s.qb_name || '—'),
+    storeSub,
+    typeBadge: '<span style="background:rgba(71,85,105,0.15);color:#94a3b8;border:1px solid rgba(71,85,105,0.4);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">📦 Shipped</span>',
+    typeRaw: 'Shipped',
+    reference: ref,
+    etDisplay: `<span style="color:var(--muted)">—</span>`,
+    totalDisplay: `<span style="color:var(--muted);font-size:12px;font-style:italic">— (see QB)</span>`,
+    action: `<button onclick="window.markShippingOrderPaidFromUnpaid('${o.id}')" style="background:var(--success);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">✅ Mark Paid</button>`,
+  };
+}
+
 function renderUnpaid() {
-  const unpaid = allDeliveries.filter(d =>
+  // 1. Gather DSD unpaid (same filter as before — unchanged business logic)
+  const dsdUnpaid = allDeliveries.filter(d =>
     (d.payment_type === 'No Payment' || d.payment_type === 'Invoice' || d.payment_type === 'Terms' || d.payment_type === 'E-Transfer') && !d.paid
   );
-  document.getElementById('unpaid-count').textContent = `${unpaid.length} outstanding`;
+
+  // 2. Normalize both sources into the common row shape
+  let rows = [
+    ...dsdUnpaid.map(_normalizeDsdUnpaid),
+    ..._shippingUnpaid.map(_normalizeShippingUnpaid),
+  ];
+
+  // 3. Apply the Type filter (Terms / E-Transfer / Shipped). 'All' = no filter.
+  const typeEl = document.getElementById('unpaid-filter-type');
+  const typeFilter = typeEl ? typeEl.value : '';
+  if (typeFilter) rows = rows.filter(r => r.typeRaw === typeFilter);
+
+  // 4. Sort by date. Rows with no date sink to the bottom regardless of order.
+  const sortEl = document.getElementById('unpaid-filter-sort');
+  const sortDir = sortEl ? sortEl.value : 'oldest';
+  rows.sort((a, b) => {
+    const ta = a.dateISO ? new Date(a.dateISO).getTime() : (sortDir === 'oldest' ? Infinity : -Infinity);
+    const tb = b.dateISO ? new Date(b.dateISO).getTime() : (sortDir === 'oldest' ? Infinity : -Infinity);
+    return sortDir === 'oldest' ? ta - tb : tb - ta;
+  });
+
+  // 5. Count reflects the filtered view
+  document.getElementById('unpaid-count').textContent =
+    rows.length === 0 ? 'None' : (rows.length === 1 ? '1 outstanding' : `${rows.length} outstanding`);
+
   const body = document.getElementById('unpaid-body');
-  if (!unpaid.length) { body.innerHTML = '<div class="empty">No unpaid deliveries. 🎉</div>'; return; }
+  if (!rows.length) {
+    body.innerHTML = '<div class="empty" style="padding:30px;text-align:center;color:var(--muted)">No unpaid invoices' + (typeFilter ? ' of this type' : '') + '. 🎉</div>';
+    return;
+  }
+
+  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-CA', { month:'short', day:'numeric', year:'numeric' }) : '—';
   body.innerHTML = `<table style="width:100%;border-collapse:collapse">
     <thead><tr style="background:rgba(255,255,255,0.04);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">
-      <th style="padding:10px 12px;text-align:left">Invoice #</th>
       <th style="padding:10px 12px;text-align:left">Date</th>
       <th style="padding:10px 12px;text-align:left">Store</th>
-      <th style="padding:10px 12px;text-align:left">Driver</th>
       <th style="padding:10px 12px;text-align:left">Type</th>
+      <th style="padding:10px 12px;text-align:left">Reference</th>
       <th style="padding:10px 12px;text-align:left">Expected E-Transfer</th>
       <th style="padding:10px 12px;text-align:right">Total</th>
       <th style="padding:10px 12px;text-align:left">Action</th>
     </tr></thead>
-    <tbody>${unpaid.map(d => {
-      const isEt = d.payment_type === 'E-Transfer';
-      const etDisplay = isEt
-        ? (d.e_transfer_date
-            ? `<span style="color:#58a6ff;font-weight:600">${escapeHtml(d.e_transfer_date)}</span>`
-            : `<span style="color:var(--warning)">— not set —</span>`)
-        : `<span style="color:var(--muted)">—</span>`;
-      return `<tr style="border-top:1px solid var(--border)">
-      <td style="padding:10px 12px;font-size:12px;color:var(--muted);font-family:monospace">${d.receipt_number}</td>
-      <td style="padding:10px 12px;font-size:13px;color:var(--muted)">${new Date(d.delivered_at).toLocaleDateString('en-CA')}</td>
-      <td style="padding:10px 12px;font-size:13px;font-weight:600">${d.store_name}</td>
-      <td style="padding:10px 12px;font-size:13px;color:var(--muted)">${d.driver_name}</td>
-      <td style="padding:10px 12px">${payBadge(d.payment_type)}</td>
-      <td style="padding:10px 12px;font-size:13px">${etDisplay}</td>
-      <td style="padding:10px 12px;font-size:14px;font-weight:700;color:var(--gold);text-align:right">$${parseFloat(d.total).toFixed(2)}</td>
-      <td style="padding:8px 12px">
-        <button onclick="markAsPaid('${d.id}')" style="background:var(--success);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer">✓ Mark as Paid</button>
-      </td>
-    </tr>`;
-    }).join('')}
+    <tbody>${rows.map(r => `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:10px 12px;font-size:13px;color:var(--muted);white-space:nowrap">${fmtDate(r.dateISO)}</td>
+      <td style="padding:10px 12px;font-size:13px"><div style="font-weight:600">${r.store}</div>${r.storeSub}</td>
+      <td style="padding:10px 12px">${r.typeBadge}</td>
+      <td style="padding:10px 12px;font-size:12px">${r.reference}</td>
+      <td style="padding:10px 12px;font-size:13px">${r.etDisplay}</td>
+      <td style="padding:10px 12px;font-size:14px;text-align:right">${r.totalDisplay}</td>
+      <td style="padding:8px 12px">${r.action}</td>
+    </tr>`).join('')}
     </tbody></table>`;
 }
 
-// ── Shipping Orders Awaiting Payment ──────────────────────────────────────
-// Separate from the DSD-based renderUnpaid because the data model is genuinely
-// different: shipping orders have no driver, no e-transfer date, no receipt
-// number, no total in the dashboard (invoice amount lives in QuickBooks).
-// Shown as a sub-table beneath the existing "Awaiting Payment" table on the
-// Unpaid tab. Mark-Paid here flips status=completed + paid_at=now() and
-// triggers a reload so the Orders tab stays consistent.
+// ── Shipping unpaid loader ────────────────────────────────────────────────
+// Loads invoiced-but-unpaid shipping orders into _shippingUnpaid, then triggers
+// a unified re-render. (Render logic now lives in renderUnpaid above.)
 
 let _shippingUnpaid = [];
 
 async function loadShippingUnpaid() {
-  // Pull shipping-status orders that have been invoiced but not yet paid.
-  // The shipping flag is determined via the store→route relationship; we
-  // post-filter client-side after the embed comes back.
   const data = await sbFetch(
     `orders_with_schedule?select=id,store_id,submitted_at,shipped_at,invoiced_at,po_number,notes,` +
     `store:stores!store_id(id,public_code,qb_name,ship_city,province,route:routes(delivery_method))` +
-    `&status=eq.shipped&invoiced_at=not.is.null&paid_at=is.null&order=invoiced_at.asc`
+    `&status=eq.shipped&invoiced_at=not.is.null&paid_at=is.null&order=shipped_at.asc`
   );
   const rows = Array.isArray(data) ? data : [];
-  // Defensive: ensure store really is on a shipping route (status='shipped'
-  // shouldn't be set on a driven order, but we don't want to surprise a
-  // depot manager if the data is somehow off).
+  // Defensive: ensure store really is on a shipping route.
   _shippingUnpaid = rows.filter(o => o.store && o.store.route && o.store.route.delivery_method === 'shipped');
-  renderShippingUnpaid();
+  renderUnpaid();
 }
 window.loadShippingUnpaid = loadShippingUnpaid;
-
-function renderShippingUnpaid() {
-  const list = _shippingUnpaid;
-  document.getElementById('shipping-unpaid-count').textContent =
-    list.length === 0 ? 'None' : (list.length === 1 ? '1 outstanding' : `${list.length} outstanding`);
-  const body = document.getElementById('shipping-unpaid-body');
-  if (!list.length) {
-    body.innerHTML = '<div class="empty" style="padding:30px;text-align:center;color:var(--muted)">No shipping orders awaiting payment. 🎉</div>';
-    return;
-  }
-  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-CA', { month:'short', day:'numeric', year:'numeric' }) : '—';
-  body.innerHTML = `<table style="width:100%;border-collapse:collapse">
-    <thead><tr style="background:rgba(255,255,255,0.04);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">
-      <th style="padding:10px 12px;text-align:left">Store</th>
-      <th style="padding:10px 12px;text-align:left">PO</th>
-      <th style="padding:10px 12px;text-align:left">Ordered</th>
-      <th style="padding:10px 12px;text-align:left">Shipped</th>
-      <th style="padding:10px 12px;text-align:left">Invoiced</th>
-      <th style="padding:10px 12px;text-align:left">Notes</th>
-      <th style="padding:10px 12px;text-align:left">Action</th>
-    </tr></thead>
-    <tbody>${list.map(o => {
-      const s = o.store || {};
-      const storeName = escapeHtml(s.qb_name || '—');
-      const storeCode = s.public_code ? `<div style="font-size:11px;color:var(--muted);margin-top:2px"><span style="font-family:monospace;color:var(--gold)">${escapeHtml(s.public_code)}</span> · ${escapeHtml([s.ship_city, s.province].filter(Boolean).join(', '))}</div>` : '';
-      const poText = o.po_number ? `<span style="color:var(--gold);font-family:monospace;font-weight:600">${escapeHtml(o.po_number)}</span>` : '<span style="color:var(--muted)">—</span>';
-      const notesText = o.notes ? escapeHtml(o.notes.slice(0, 80)) + (o.notes.length > 80 ? '…' : '') : '<span style="color:var(--muted)">—</span>';
-      return `<tr style="border-top:1px solid var(--border)">
-        <td style="padding:10px 12px"><div style="font-weight:600">${storeName}</div>${storeCode}</td>
-        <td style="padding:10px 12px;font-size:13px">${poText}</td>
-        <td style="padding:10px 12px;font-size:13px;color:var(--muted)">${fmtDate(o.submitted_at)}</td>
-        <td style="padding:10px 12px;font-size:13px"><span style="color:#94a3b8">📦 ${fmtDate(o.shipped_at)}</span></td>
-        <td style="padding:10px 12px;font-size:13px"><span style="color:var(--gold)">💵 ${fmtDate(o.invoiced_at)}</span></td>
-        <td style="padding:10px 12px;font-size:12px;max-width:220px">${notesText}</td>
-        <td style="padding:8px 12px"><button onclick="window.markShippingOrderPaidFromUnpaid('${o.id}')" style="background:var(--success);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">✅ Mark Paid</button></td>
-      </tr>`;
-    }).join('')}
-    </tbody></table>`;
-}
+window.renderUnpaid = renderUnpaid;
 
 window.markShippingOrderPaidFromUnpaid = async (id) => {
   const o = _shippingUnpaid.find(x => x.id === id);
@@ -3126,8 +3168,6 @@ window.markShippingOrderPaidFromUnpaid = async (id) => {
   if (!confirm(`Mark order for "${storeName}" as PAID?\n\nConfirm payment has been received in QuickBooks before clicking OK. The order will move to 'completed'.`)) return;
   const ok = await patchOrder(id, { status: 'completed', paid_at: new Date().toISOString() });
   if (ok) {
-    // Refresh the shipping sub-table here. If the user later visits the
-    // Orders tab, loadOrders() will pick up the change naturally.
     await loadShippingUnpaid();
     if (typeof updateOrdersBadge === 'function') updateOrdersBadge();
   }
