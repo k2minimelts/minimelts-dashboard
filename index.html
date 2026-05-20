@@ -3054,7 +3054,16 @@ function _normalizeDsdUnpaid(d) {
     reference: `<span style="font-family:monospace;color:var(--muted)">${escapeHtml(d.receipt_number || '—')}</span>`,
     etDisplay,
     totalDisplay: `<span style="color:var(--gold);font-weight:700">$${parseFloat(d.total || 0).toFixed(2)}</span>`,
-    action: `<button onclick="markAsPaid('${d.id}')" style="background:var(--success);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">✓ Mark as Paid</button>`,
+    action:
+      `<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">` +
+        `<div style="display:flex;gap:6px">` +
+          `<button onclick="markAsPaid('${d.id}')" style="background:var(--success);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">✓ Mark as Paid</button>` +
+          `<button onclick="window.sendPaymentReminder('${d.id}')" style="background:transparent;color:var(--mm-cyan);border:1px solid var(--mm-cyan);border-radius:6px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">✉️ Send Reminder</button>` +
+        `</div>` +
+        (d.reminder_sent_at
+          ? `<span style="font-size:10px;color:var(--muted)">Reminded ${new Date(d.reminder_sent_at).toLocaleDateString('en-CA', { month:'short', day:'numeric' })}</span>`
+          : '') +
+      `</div>`,
   };
 }
 
@@ -3219,6 +3228,73 @@ window.markAsPaid = async (id) => {
     }
   } catch(err) {
     alert('Error updating payment: ' + err.message);
+  }
+};
+
+// ── Send Payment Reminder (DSD unpaid only) ───────────────────────────────
+// Calls the send-payment-reminder edge function, which re-sends the existing
+// receipt PDF to the customer with reminder framing (QuickBooks stays the
+// invoicing system of record — this does not generate a new invoice). On a
+// confirmed send, stamps deliveries.reminder_sent_at so the office can see
+// who's been chased and when.
+window.sendPaymentReminder = async (id) => {
+  const d = allDeliveries.find(x => x.id === id);
+  if (!d) { alert('Could not find that delivery. Refresh and try again.'); return; }
+
+  const lastSent = d.reminder_sent_at
+    ? `\n\nA reminder was already sent on ${new Date(d.reminder_sent_at).toLocaleDateString('en-CA', { month:'long', day:'numeric', year:'numeric' })}.`
+    : '';
+  if (!confirm(`Email a payment reminder to "${d.store_name}"?\n\nThis re-sends receipt ${d.receipt_number} ($${parseFloat(d.total || 0).toFixed(2)}) with a reminder note. The invoice itself is unchanged in QuickBooks.${lastSent}`)) return;
+
+  const session = window._session;
+  if (!session?.access_token) { alert('Your session has expired. Please refresh and sign in again.'); return; }
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/send-payment-reminder`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ delivery_id: id }),
+    });
+    const data = await res.json();
+
+    if (!data?.ok) {
+      // Friendly handling of the known guard codes from the edge function
+      if (data?.code === 'no_email') {
+        alert(`Can't send a reminder: no email on file for ${d.store_name}.\n\nAdd their email in the Stores tab first.`);
+      } else if (data?.code === 'no_receipt') {
+        alert(`Can't send a reminder: no receipt PDF is stored for ${d.receipt_number}.`);
+      } else if (data?.code === 'already_paid') {
+        alert('This delivery is already marked paid. Refreshing the list.');
+        await loadAll();
+      } else {
+        alert('Reminder failed to send: ' + (data?.error || 'unknown error'));
+      }
+      return;
+    }
+
+    // Success — stamp reminder_sent_at so the office sees it was chased.
+    const nowIso = new Date().toISOString();
+    const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=eq.${id}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ reminder_sent_at: nowIso }),
+    });
+    if (patchRes.ok) {
+      d.reminder_sent_at = nowIso;  // update local cache so re-render shows it
+    } else {
+      // Email already went out; only the timestamp stamp failed. Don't alarm
+      // the user — log it and still reflect the send.
+      console.warn('Reminder email sent but failed to stamp reminder_sent_at:', await patchRes.text());
+      d.reminder_sent_at = nowIso;
+    }
+    renderUnpaid();
+    alert(`Reminder sent to ${data.sent_to}.`);
+  } catch (err) {
+    alert('Reminder failed to send: ' + err.message);
   }
 };
 
