@@ -1380,6 +1380,14 @@
         <div class="table-header"><span class="table-title">⚠️ Awaiting Payment (Terms &amp; E-Transfer)</span><span class="table-count" id="unpaid-count">Loading...</span></div>
         <div id="unpaid-body"><div class="loading">Loading...</div></div>
       </div>
+      <!-- Shipping orders awaiting payment. Separate sub-table because the
+           schemas are genuinely different: shipping orders have no driver,
+           no e-transfer, no receipt number, no dollar total in the dashboard
+           (invoice amount lives in QuickBooks). Same Mark-as-Paid pattern. -->
+      <div class="table-wrap" style="margin-top:24px">
+        <div class="table-header"><span class="table-title">📦 Shipping Orders Awaiting Payment</span><span class="table-count" id="shipping-unpaid-count">Loading...</span></div>
+        <div id="shipping-unpaid-body"><div class="loading">Loading...</div></div>
+      </div>
     </div>
 
     <!-- Orders Tab -->
@@ -2859,6 +2867,7 @@ async function loadAll() {
   populateDriverFilter(); renderStats(); renderCharts();
   renderTable(filteredDeliveries, 'table-body', 'delivery-count');
   renderUnpaid();
+  loadShippingUnpaid();
   updateCorrectionsBadge();
   updateOrdersBadge();
 }
@@ -3034,6 +3043,87 @@ function renderUnpaid() {
     }).join('')}
     </tbody></table>`;
 }
+
+// ── Shipping Orders Awaiting Payment ──────────────────────────────────────
+// Separate from the DSD-based renderUnpaid because the data model is genuinely
+// different: shipping orders have no driver, no e-transfer date, no receipt
+// number, no total in the dashboard (invoice amount lives in QuickBooks).
+// Shown as a sub-table beneath the existing "Awaiting Payment" table on the
+// Unpaid tab. Mark-Paid here flips status=completed + paid_at=now() and
+// triggers a reload so the Orders tab stays consistent.
+
+let _shippingUnpaid = [];
+
+async function loadShippingUnpaid() {
+  // Pull shipping-status orders that have been invoiced but not yet paid.
+  // The shipping flag is determined via the store→route relationship; we
+  // post-filter client-side after the embed comes back.
+  const data = await sbFetch(
+    `orders_with_schedule?select=id,store_id,submitted_at,shipped_at,invoiced_at,po_number,notes,` +
+    `store:stores!store_id(id,public_code,qb_name,ship_city,province,route:routes(delivery_method))` +
+    `&status=eq.shipped&invoiced_at=not.is.null&paid_at=is.null&order=invoiced_at.asc`
+  );
+  const rows = Array.isArray(data) ? data : [];
+  // Defensive: ensure store really is on a shipping route (status='shipped'
+  // shouldn't be set on a driven order, but we don't want to surprise a
+  // depot manager if the data is somehow off).
+  _shippingUnpaid = rows.filter(o => o.store && o.store.route && o.store.route.delivery_method === 'shipped');
+  renderShippingUnpaid();
+}
+window.loadShippingUnpaid = loadShippingUnpaid;
+
+function renderShippingUnpaid() {
+  const list = _shippingUnpaid;
+  document.getElementById('shipping-unpaid-count').textContent =
+    list.length === 0 ? 'None' : (list.length === 1 ? '1 outstanding' : `${list.length} outstanding`);
+  const body = document.getElementById('shipping-unpaid-body');
+  if (!list.length) {
+    body.innerHTML = '<div class="empty" style="padding:30px;text-align:center;color:var(--muted)">No shipping orders awaiting payment. 🎉</div>';
+    return;
+  }
+  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-CA', { month:'short', day:'numeric', year:'numeric' }) : '—';
+  body.innerHTML = `<table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:rgba(255,255,255,0.04);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">
+      <th style="padding:10px 12px;text-align:left">Store</th>
+      <th style="padding:10px 12px;text-align:left">PO</th>
+      <th style="padding:10px 12px;text-align:left">Ordered</th>
+      <th style="padding:10px 12px;text-align:left">Shipped</th>
+      <th style="padding:10px 12px;text-align:left">Invoiced</th>
+      <th style="padding:10px 12px;text-align:left">Notes</th>
+      <th style="padding:10px 12px;text-align:left">Action</th>
+    </tr></thead>
+    <tbody>${list.map(o => {
+      const s = o.store || {};
+      const storeName = escapeHtml(s.qb_name || '—');
+      const storeCode = s.public_code ? `<div style="font-size:11px;color:var(--muted);margin-top:2px"><span style="font-family:monospace;color:var(--gold)">${escapeHtml(s.public_code)}</span> · ${escapeHtml([s.ship_city, s.province].filter(Boolean).join(', '))}</div>` : '';
+      const poText = o.po_number ? `<span style="color:var(--gold);font-family:monospace;font-weight:600">${escapeHtml(o.po_number)}</span>` : '<span style="color:var(--muted)">—</span>';
+      const notesText = o.notes ? escapeHtml(o.notes.slice(0, 80)) + (o.notes.length > 80 ? '…' : '') : '<span style="color:var(--muted)">—</span>';
+      return `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:10px 12px"><div style="font-weight:600">${storeName}</div>${storeCode}</td>
+        <td style="padding:10px 12px;font-size:13px">${poText}</td>
+        <td style="padding:10px 12px;font-size:13px;color:var(--muted)">${fmtDate(o.submitted_at)}</td>
+        <td style="padding:10px 12px;font-size:13px"><span style="color:#94a3b8">📦 ${fmtDate(o.shipped_at)}</span></td>
+        <td style="padding:10px 12px;font-size:13px"><span style="color:var(--gold)">💵 ${fmtDate(o.invoiced_at)}</span></td>
+        <td style="padding:10px 12px;font-size:12px;max-width:220px">${notesText}</td>
+        <td style="padding:8px 12px"><button onclick="window.markShippingOrderPaidFromUnpaid('${o.id}')" style="background:var(--success);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">✅ Mark Paid</button></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`;
+}
+
+window.markShippingOrderPaidFromUnpaid = async (id) => {
+  const o = _shippingUnpaid.find(x => x.id === id);
+  if (!o) { alert('Could not find that order. Refresh and try again.'); return; }
+  const storeName = (o.store && o.store.qb_name) || 'this customer';
+  if (!confirm(`Mark order for "${storeName}" as PAID?\n\nConfirm payment has been received in QuickBooks before clicking OK. The order will move to 'completed'.`)) return;
+  const ok = await patchOrder(id, { status: 'completed', paid_at: new Date().toISOString() });
+  if (ok) {
+    // Refresh the shipping sub-table here. If the user later visits the
+    // Orders tab, loadOrders() will pick up the change naturally.
+    await loadShippingUnpaid();
+    if (typeof updateOrdersBadge === 'function') updateOrdersBadge();
+  }
+};
 
 window.markAsPaid = async (id) => {
   const d = allDeliveries.find(x => x.id === id);
@@ -4132,9 +4222,9 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,includes_sorbet,sorbet_stock_level,' +
+    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,includes_sorbet,sorbet_stock_level,shipped_at,invoiced_at,paid_at,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
-    'store:stores!store_id(id,public_code,qb_name,ship_city,province,phone,email)'
+    'store:stores!store_id(id,public_code,qb_name,ship_city,province,phone,email,route:routes(delivery_method))'
   );
   params.set('order', 'submitted_at.desc');
 
@@ -4232,6 +4322,7 @@ function statusBadge(st) {
   const map = {
     pending:   { label: 'Pending',   bg: 'rgba(210,153,34,0.15)', color: 'var(--warning)',  border: 'rgba(210,153,34,0.3)' },
     scheduled: { label: 'Scheduled', bg: 'rgba(79,195,212,0.15)', color: 'var(--mm-cyan)',  border: 'rgba(79,195,212,0.3)' },
+    shipped:   { label: '📦 Shipped',  bg: 'rgba(71,85,105,0.15)',   color: '#94a3b8',         border: 'rgba(71,85,105,0.4)' },
     completed: { label: 'Completed', bg: 'rgba(63,185,80,0.15)',  color: 'var(--success)',  border: 'rgba(63,185,80,0.3)' },
     cancelled: { label: 'Cancelled', bg: 'rgba(139,148,158,0.15)', color: 'var(--muted)',   border: 'rgba(139,148,158,0.3)' },
     recurring:      { label: '🔄 Recurring', bg: 'rgba(232,123,181,0.15)', color: 'var(--mm-pink)', border: 'rgba(232,123,181,0.4)' },
@@ -4312,6 +4403,10 @@ function renderOrdersTable(orders) {
     const storeName = s.qb_name || '—';
     const storeCode = s.public_code || '';
     const cityProv = [s.ship_city, s.province].filter(Boolean).join(', ');
+    // Shipping flag: route.delivery_method = 'shipped' means this customer's
+    // orders go to a carrier, NOT onto a driver's trip. Surfaced as a badge
+    // and a row tint so depot managers don't accidentally schedule them.
+    const isShipping = s.route && s.route.delivery_method === 'shipped';
     const contact = [o.submitted_by_name, o.submitted_by_phone || o.submitted_by_email].filter(Boolean).join(' · ');
     const notesPieces = [];
     if (o.po_number) notesPieces.push(`<span style="color:var(--gold);font-weight:600">PO ${escapeHtml(o.po_number)}</span>`);
@@ -4320,16 +4415,50 @@ function renderOrdersTable(orders) {
 
     // Actions: scheduling happens on the map. The orders tab only owns Cancel
     // for active orders; completed/cancelled rows are audit log (no actions).
+    // Shipping orders have their own pending → shipped → invoiced → paid
+    // workflow tracked via timestamps on the orders table (no deliveries row).
     let actionsHtml = '';
-    if (o.status === 'pending' || o.status === 'scheduled') {
+    if (isShipping) {
+      // Shipping workflow: status drives which milestone button to surface.
+      if (o.status === 'pending') {
+        // Pending shipping order: edit details, mark shipped, or cancel.
+        actionsHtml =
+          `<button class="btn-sm" style="margin-right:6px" onclick="window.showEditOrderModal('${o.id}')">✏️ Edit</button>` +
+          `<button class="btn-sm" style="margin-right:6px;background:#475569;color:#fff;border-color:#475569" onclick="window.markOrderShipped('${o.id}')">📦 Mark Shipped</button>` +
+          `<button class="btn-sm" style="border-color:rgba(248,81,73,0.3);color:#f85149" onclick="window.cancelOrder('${o.id}')">✕ Cancel</button>`;
+      } else if (o.status === 'shipped' && !o.invoiced_at) {
+        actionsHtml = `<button class="btn-sm" style="background:var(--gold);color:#000;border-color:var(--gold)" onclick="window.markOrderInvoiced('${o.id}')">💵 Mark Invoiced</button>`;
+      } else if (o.status === 'shipped' && o.invoiced_at && !o.paid_at) {
+        actionsHtml = `<button class="btn-sm" style="background:var(--success);color:#fff;border-color:var(--success)" onclick="window.markOrderPaid('${o.id}')">✅ Mark Paid</button>`;
+      } else {
+        // Completed (paid) or cancelled: audit-only row
+        actionsHtml = `<span style="color:var(--muted);font-size:11px">—</span>`;
+      }
+    } else if (o.status === 'pending' || o.status === 'scheduled') {
+      // Non-shipping (driven) order: existing Edit + Cancel pattern unchanged
       actionsHtml = `<button class="btn-sm" style="margin-right:6px" onclick="window.showEditOrderModal('${o.id}')">✏️ Edit</button><button class="btn-sm" style="border-color:rgba(248,81,73,0.3);color:#f85149" onclick="window.cancelOrder('${o.id}')">✕ Cancel</button>`;
     } else {
       actionsHtml = `<span style="color:var(--muted);font-size:11px">—</span>`;
     }
 
-    // Status cell: for scheduled orders show driver + day inline; otherwise the plain badge.
+    // Status cell: for scheduled (driven) orders show driver + day inline;
+    // for shipping orders show whichever milestones have been reached so the
+    // manager sees the full timeline at a glance; otherwise the plain badge.
     let statusCell;
-    if (o.status === 'scheduled' && o.scheduled_driver_name && o.scheduled_day_date) {
+    if (isShipping && (o.shipped_at || o.invoiced_at || o.paid_at)) {
+      const fmtShort = (iso) => iso ? new Date(iso).toLocaleDateString('en-CA', { month:'short', day:'numeric' }) : '';
+      const milestones = [];
+      if (o.shipped_at)  milestones.push(`<span style="color:#94a3b8">📦 ${fmtShort(o.shipped_at)}</span>`);
+      if (o.invoiced_at) milestones.push(`<span style="color:var(--gold)">💵 ${fmtShort(o.invoiced_at)}</span>`);
+      if (o.paid_at)     milestones.push(`<span style="color:var(--success)">✅ ${fmtShort(o.paid_at)}</span>`);
+      statusCell = `
+        <div style="display:flex;flex-direction:column;gap:3px">
+          ${statusBadge(o.status)}
+          <div style="font-size:11px;line-height:1.3;display:flex;gap:8px;flex-wrap:wrap">
+            ${milestones.join('')}
+          </div>
+        </div>`;
+    } else if (o.status === 'scheduled' && o.scheduled_driver_name && o.scheduled_day_date) {
       const dayStr = new Date(o.scheduled_day_date + 'T12:00:00').toLocaleDateString('en-CA',
         { weekday: 'short', month: 'short', day: 'numeric' });
       statusCell = `
@@ -4343,7 +4472,17 @@ function renderOrdersTable(orders) {
       statusCell = statusBadge(o.status);
     }
 
-    html += `<tr>
+    // Row tint: faint amber band for SHIPPING-ONLY customers whose order is
+    // still in the active workflow (pending, or shipped/invoicing/paying).
+    // Once completed (paid) or cancelled, the row stays for audit but loses
+    // the tint so it doesn't keep shouting at the manager.
+    const rowStyle = (isShipping && o.status !== 'completed' && o.status !== 'cancelled')
+      ? ' style="background:rgba(210,153,34,0.07);box-shadow:inset 3px 0 0 rgba(210,153,34,0.6)"'
+      : '';
+    const shippingBadge = isShipping
+      ? ' <span style="background:rgba(139,148,158,0.15);color:#8b949e;border:1px solid rgba(139,148,158,0.4);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px" title="Shipping-only customer — handed to carrier, not on driver trip">📦 SHIPPED</span>'
+      : '';
+    html += `<tr${rowStyle}>
       <td style="white-space:nowrap">
         <div style="font-weight:600">${timeAgo(o.submitted_at)}</div>
         <div style="font-size:11px;color:var(--muted)">${new Date(o.submitted_at).toLocaleString('en-CA', {hour:'2-digit',minute:'2-digit',month:'short',day:'numeric'})}</div>
@@ -4352,7 +4491,7 @@ function renderOrdersTable(orders) {
         <span style="font-family:monospace;font-weight:600;color:var(--gold);font-size:13px">#${o.id.replace(/-/g,'').slice(-8).toUpperCase()}</span>
       </td>
       <td>
-        <div style="font-weight:600">${escapeHtml(storeName)}${o.is_new_install ? ' <span style="background:rgba(232,123,181,0.18);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px">🆕 NEW INSTALL</span>' : ''}</div>
+        <div style="font-weight:600">${escapeHtml(storeName)}${o.is_new_install ? ' <span style="background:rgba(232,123,181,0.18);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px">🆕 NEW INSTALL</span>' : ''}${shippingBadge}</div>
         <div style="font-size:12px;color:var(--muted)">${storeCode ? `<span style="font-family:monospace;color:var(--gold)">${storeCode}</span> · ` : ''}${escapeHtml(cityProv)}</div>
       </td>
       <td>${sourceBadge(o.source)}</td>
@@ -4462,6 +4601,64 @@ window.saveOrderEdits = async () => {
 
   closeEditOrderModal();
   await loadOrders();
+};
+
+// ── Shipping Order Workflow (Mark Shipped / Invoiced / Paid) ─────────────
+// Three lightweight milestone PATCHes. Each sets a single timestamp and,
+// for the bookend transitions, also moves the status enum:
+//   pending  → mark shipped   → status='shipped',   shipped_at=now()
+//   shipped  → mark invoiced  → invoiced_at=now()   (status stays 'shipped')
+//   invoiced → mark paid      → status='completed', paid_at=now()
+// Dashboard does NOT generate invoices. QuickBooks remains the source of
+// truth for accounting. These flags just track the operational workflow so
+// depot managers can see at a glance what's outstanding.
+
+window.markOrderShipped = async (id) => {
+  const o = (typeof allOrders !== 'undefined' ? allOrders : []).find(x => x.id === id);
+  if (!o) { alert('Could not find that order. Refresh and try again.'); return; }
+  if (o.status !== 'pending') {
+    alert(`This order is already ${o.status} and cannot be re-shipped.`);
+    return;
+  }
+  const storeName = (o.store && o.store.qb_name) || 'this customer';
+  if (!confirm(`Mark order for "${storeName}" as SHIPPED?\n\nThis records that the package has been handed to the carrier. Invoicing happens separately in QuickBooks.`)) return;
+  const ok = await patchOrder(id, { status: 'shipped', shipped_at: new Date().toISOString() });
+  if (ok) { await loadOrders(); updateOrdersBadge(); }
+};
+
+window.markOrderInvoiced = async (id) => {
+  const o = (typeof allOrders !== 'undefined' ? allOrders : []).find(x => x.id === id);
+  if (!o) { alert('Could not find that order. Refresh and try again.'); return; }
+  if (o.status !== 'shipped') {
+    alert(`This order must be in 'shipped' state before it can be marked invoiced. Current status: ${o.status}.`);
+    return;
+  }
+  if (o.invoiced_at) {
+    alert('This order is already marked invoiced.');
+    return;
+  }
+  const storeName = (o.store && o.store.qb_name) || 'this customer';
+  if (!confirm(`Mark order for "${storeName}" as INVOICED?\n\nConfirm that the invoice has been created in QuickBooks (or sent via EDI) before clicking OK.`)) return;
+  const ok = await patchOrder(id, { invoiced_at: new Date().toISOString() });
+  if (ok) { await loadOrders(); }
+};
+
+window.markOrderPaid = async (id) => {
+  const o = (typeof allOrders !== 'undefined' ? allOrders : []).find(x => x.id === id);
+  if (!o) { alert('Could not find that order. Refresh and try again.'); return; }
+  if (o.status !== 'shipped' || !o.invoiced_at) {
+    alert(`This order must be invoiced before it can be marked paid. Current status: ${o.status}.`);
+    return;
+  }
+  if (o.paid_at) {
+    alert('This order is already marked paid.');
+    return;
+  }
+  const storeName = (o.store && o.store.qb_name) || 'this customer';
+  if (!confirm(`Mark order for "${storeName}" as PAID?\n\nConfirm payment has been received in QuickBooks before clicking OK. The order will move to 'completed'.`)) return;
+  const now = new Date().toISOString();
+  const ok = await patchOrder(id, { status: 'completed', paid_at: now });
+  if (ok) { await loadOrders(); updateOrdersBadge(); }
 };
 
 // ── New Order Modal ──
@@ -7293,7 +7490,7 @@ async function schedLoadOrdersAndOverdue() {
 
   // Overdue stores via stores_with_predicted_visit view
   const overduePromise = sbFetch(
-    `stores_with_predicted_visit?select=store_id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,depot,days_until_due,predicted_next_visit_at` +
+    `stores_with_predicted_visit?select=store_id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,depot,route_id,days_until_due,predicted_next_visit_at` +
     `&depot_id=in.(${depotIdList})` +
     `&days_until_due=lte.0` +
     `&lat=not.is.null&lng=not.is.null` +
@@ -7304,7 +7501,7 @@ async function schedLoadOrdersAndOverdue() {
   // source, stock level, total units, contact, install flag) so the order
   // pin's hover popup can show the depot manager useful context for scheduling.
   const ordersPromise = sbFetch(
-    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,includes_sorbet,sorbet_stock_level,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id)` +
+    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,includes_sorbet,sorbet_stock_level,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,route_id)` +
     `&status=eq.pending&trip_stop_id=is.null` +
     `&limit=500`
   );
@@ -7317,16 +7514,29 @@ async function schedLoadOrdersAndOverdue() {
     `vending_machines_map?select=id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_visit_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit,mqtt_online`
   );
 
-  let overdueRows = [], orderRows = [], vendingRows = [];
+  // Routes-lite: id -> delivery_method, used to flag SHIPPING-ONLY customers
+  // in the pin popups so depot managers don't accidentally schedule them on a
+  // driver trip. Tiny payload (~50 rows × 2 cols); cheaper than embedding the
+  // route on every overdue/order row.
+  const routesLitePromise = sbFetch(`routes?select=id,delivery_method`);
+
+  let overdueRows = [], orderRows = [], vendingRows = [], routesLite = [];
   try {
-    [overdueRows, orderRows, vendingRows] = await Promise.all([overduePromise, ordersPromise, vendingPromise]);
+    [overdueRows, orderRows, vendingRows, routesLite] = await Promise.all([overduePromise, ordersPromise, vendingPromise, routesLitePromise]);
     if (!Array.isArray(overdueRows)) overdueRows = [];
     if (!Array.isArray(orderRows)) orderRows = [];
     if (!Array.isArray(vendingRows)) vendingRows = [];
+    if (!Array.isArray(routesLite)) routesLite = [];
   } catch (e) {
     console.error('[sched] failed to load orders/overdue/vending', e);
     schedState.storesIndex = new Map();
     return;
+  }
+
+  // Build route_id -> delivery_method lookup once
+  const _routeMethodById = {};
+  for (const r of routesLite) {
+    if (r && r.id) _routeMethodById[r.id] = r.delivery_method || null;
   }
 
   const idx = new Map();
@@ -7348,6 +7558,7 @@ async function schedLoadOrdersAndOverdue() {
       type: 'overdue',
       days_overdue: Math.max(0, days),
       assigned: false,
+      route_delivery_method: r.route_id ? (_routeMethodById[r.route_id] || null) : null,
     });
   }
 
@@ -7381,6 +7592,7 @@ async function schedLoadOrdersAndOverdue() {
       order_submitted_by_phone: o.submitted_by_phone || null,
       order_includes_sorbet: !!o.includes_sorbet,
       order_sorbet_stock_level: o.sorbet_stock_level || null,
+      route_delivery_method: s.route_id ? (_routeMethodById[s.route_id] || null) : null,
       is_new_install: !!o.is_new_install,
     });
   }
@@ -7904,7 +8116,14 @@ function schedRenderMarkers() {
       const sorbetLine = store.order_includes_sorbet
         ? `<div style="margin-top:5px;padding:4px 8px;background:#fce7f3;border:1px solid #f9a8d4;border-radius:4px;font-size:11px;color:#9d174d;font-weight:700">🍧 SORBET · ${stockMap[store.order_sorbet_stock_level] || store.order_sorbet_stock_level || '—'}</div>`
         : '';
+      // Shipping-only banner. Distinct slate-grey to match the SHIPPED badge
+      // pattern used elsewhere. Pre-NEW-INSTALL since shipping is a harder
+      // constraint (NEW INSTALL is informational, SHIPPING means "wrong tool").
+      const shippingBanner = store.route_delivery_method === 'shipped'
+        ? '<div style="background:#475569;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.5px;margin-bottom:6px;text-align:center">📦 SHIPPING-ONLY · DO NOT SCHEDULE ON A TRIP</div>'
+        : '';
       popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;min-width:240px;max-width:300px">
+        ${shippingBanner}
         ${store.is_new_install ? '<div style="background:#ff4d9d;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.5px;margin-bottom:6px;text-align:center">🆕 NEW FREEZER INSTALL</div>' : ''}
         <div style="font-weight:700;font-size:13px">${schedEscapeHtml(store.qb_name)}</div>
         <div style="opacity:0.8;font-size:11px;margin-top:1px">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</div>
@@ -7928,7 +8147,10 @@ function schedRenderMarkers() {
         else             { badgeBg = '#fee2e2'; badgeColor = '#991b1b'; } // red
         overdueBadge = `<div style="margin-top:6px"><span style="background:${badgeBg};color:${badgeColor};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏱ ${d} day${d === 1 ? '' : 's'} overdue</span></div>`;
       }
-      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500"><strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8;font-weight:400">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>${overdueBadge}</div>`;
+      const overdueShippingBanner = store.route_delivery_method === 'shipped'
+        ? '<div style="background:#475569;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:800;letter-spacing:0.5px;margin-bottom:4px;text-align:center">📦 SHIPPING-ONLY</div>'
+        : '';
+      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500">${overdueShippingBanner}<strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8;font-weight:400">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>${overdueBadge}</div>`;
     }
     const marker = new mapboxgl.Marker({ element: el })
       .setLngLat([store.lng, store.lat])
