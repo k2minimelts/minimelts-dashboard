@@ -1419,6 +1419,7 @@
         <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
           <button class="btn-export" onclick="showNewOrderModal('phone')">📞 New Phone Order</button>
           <button class="btn-export" style="background:var(--mm-cyan)" onclick="showNewOrderModal('staples_po')">📋 New Staples PO</button>
+          <button class="btn-export" style="background:var(--mm-pink)" onclick="showRecurringModal()" data-admin-only>🔄 Recurring Weekly</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -2034,17 +2035,6 @@
                 <option value="DM">DM</option><option value="KP">KP</option><option value="WK">WK</option>
               </select></div>
           </div>
-          <!-- Recurring weekly orders — when enabled, a cron job (Saturdays 08:00 UTC)
-               auto-generates a pending order for this store every week. Used for
-               high-frequency accounts that always need a refill (e.g., busy gas
-               stations, Co-op stores with steady weekly sell-through). -->
-          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-top:10px;display:flex;align-items:center;gap:12px">
-            <input type="checkbox" id="store-recurring-weekly" style="width:18px;height:18px;cursor:pointer;accent-color:var(--gold)"/>
-            <label for="store-recurring-weekly" style="cursor:pointer;flex:1;display:block">
-              <div style="font-weight:600;color:var(--text);font-size:14px">🔁 Recurring weekly order</div>
-              <div style="font-size:12px;color:var(--muted);margin-top:2px">Auto-generate a pending order every Saturday for this store. Manager schedules delivery as usual; no customer email is sent.</div>
-            </label>
-          </div>
           <div style="display:flex;gap:10px;margin-top:20px">
             <button class="btn-modal btn-modal-primary" onclick="saveStore()" style="flex:2">Save Store</button>
             <button class="btn-modal btn-modal-outline" onclick="closeStoreModal()" style="flex:1">Cancel</button>
@@ -2191,6 +2181,49 @@
   </div>
 </div>
 
+<!-- ── Recurring Weekly Modal ─────────────────────────────────────────────
+     Manage which customers get an auto-generated pending order every Saturday
+     at 08:00 UTC. The Postgres cron job + generate_recurring_weekly_orders()
+     function does the actual insertion; this UI just toggles the flag on
+     stores.recurring_weekly. -->
+<div class="modal-overlay" id="recurring-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">🔄 Recurring Weekly Customers</span>
+      <button class="modal-close" onclick="closeRecurringModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:rgba(232,123,181,0.08);border:1px solid rgba(232,123,181,0.25);border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--text);line-height:1.5">
+        Customers enrolled here get a <strong>pending order auto-generated every Saturday at midnight (Pacific)</strong>, ready for the depot manager to schedule. Stores with an existing pending or scheduled order are skipped that week.
+      </div>
+
+      <div class="field">
+        <label>Add a customer to weekly schedule</label>
+        <div style="position:relative">
+          <input type="text" id="recurring-store-search" placeholder="Type store name or MM-code..." oninput="searchRecurringStore()" autocomplete="off" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
+          <div id="recurring-store-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--bg2);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:240px;overflow-y:auto;z-index:10"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:20px">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+          <label style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Currently enrolled</label>
+          <span id="recurring-count" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+        <div id="recurring-list" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;max-height:300px;overflow-y:auto">
+          <div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Loading...</div>
+        </div>
+      </div>
+
+      <div id="recurring-modal-error" style="display:none;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:6px;padding:10px 14px;color:#f85149;font-size:13px;margin-top:12px"></div>
+
+      <div style="display:flex;gap:12px;margin-top:20px">
+        <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeRecurringModal()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script type="module">
 const SUPABASE_URL = 'https://jheqxfkyxewofpnkbayc.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_J86NoAfqHqRatJwieVR7-g_DUwoJnh2';
@@ -2211,21 +2244,31 @@ const SUPABASE_ANON_KEY = 'sb_publishable_J86NoAfqHqRatJwieVR7-g_DUwoJnh2';
 //      scroll, focus all count as activity).
 //   3. The refresh token itself is rejected (revoked, expired, or password
 //      changed elsewhere).
+//
+// Activity is tracked via lightweight event listeners that update
+// localStorage. This survives a tab refresh / reopen within the inactivity
+// window — useful for users who close the tab and come back at lunch.
 const SESSION_STORAGE_KEY = 'mm_dashboard_session';
 const LAST_ACTIVITY_KEY = 'mm_dashboard_last_activity';
 
 // Inactivity threshold: 8h. Refresh attempts will refuse to keep the session
-// alive past this point and force re-login instead.
+// alive past this point and force re-login instead. Bump this constant if
+// the team wants longer (12h / 24h / 48h are reasonable, see Q&A in Claude
+// session log 2026-05-19).
 const INACTIVITY_TIMEOUT_MS = 8 * 60 * 60 * 1000;
 
 // Schedule a proactive refresh this many ms before access_token expiry.
+// 5 minutes leaves plenty of room for clock skew + slow networks.
 const REFRESH_LEAD_MS = 5 * 60 * 1000;
 
-// Safety-net interval — fires every 30 min regardless of the per-token timer.
+// Safety-net interval. Even if the proactive scheduler glitches, this fires
+// every 30 min and refreshes anything that needs it. Cheap insurance.
 const REFRESH_SAFETY_INTERVAL_MS = 30 * 60 * 1000;
 
-// In-flight refresh promise — dedupe concurrent calls.
+// In-flight refresh promise. If two requests both hit 401 simultaneously,
+// they share the same refresh fetch instead of racing.
 let _refreshInflight = null;
+// Handle for the next proactive refresh timer so we can cancel/reschedule.
 let _refreshTimer = null;
 
 function markActivity() {
@@ -2241,7 +2284,7 @@ function getLastActivity() {
 
 function isInactiveTooLong() {
   const last = getLastActivity();
-  if (!last) return false;
+  if (!last) return false; // never been set — give them benefit of doubt this session
   return (Date.now() - last) > INACTIVITY_TIMEOUT_MS;
 }
 
@@ -2267,10 +2310,18 @@ function saveSession(s) {
 
 // Hit /auth/v1/token?grant_type=refresh_token to swap our refresh_token for
 // a fresh access_token (and a new refresh_token — Supabase rotates them).
+//
+// De-dupes concurrent calls: if a refresh is already in flight, return the
+// same promise so we don't race the auth server.
+//
+// Refuses to refresh if the user has been inactive past INACTIVITY_TIMEOUT_MS
+// — in that case clears the session and resolves to null, which makes
+// sbFetch fall through to "please sign in again."
 async function refreshSession() {
   if (_refreshInflight) return _refreshInflight;
 
   if (isInactiveTooLong()) {
+    // Don't keep refreshing a tab that's been idle all weekend.
     saveSession(null);
     return null;
   }
@@ -2285,9 +2336,17 @@ async function refreshSession() {
         headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
         body: JSON.stringify({ refresh_token: current.refresh_token }),
       });
-      if (!r.ok) { saveSession(null); return null; }
+      if (!r.ok) {
+        // Refresh token rejected (revoked, expired, or user signed out elsewhere).
+        // Clear the session — caller will redirect to login.
+        saveSession(null);
+        return null;
+      }
       const data = await r.json();
-      if (!data?.access_token || !data?.refresh_token) { saveSession(null); return null; }
+      if (!data?.access_token || !data?.refresh_token) {
+        saveSession(null);
+        return null;
+      }
       const newSession = {
         access_token: data.access_token,
         refresh_token: data.refresh_token,
@@ -2297,6 +2356,8 @@ async function refreshSession() {
       saveSession(newSession);
       return newSession;
     } catch (e) {
+      // Network blip — leave the session in place so a retry can try again.
+      // Don't kick the user to login on a transient error.
       console.warn('[session] refresh failed:', e);
       return null;
     } finally {
@@ -2307,15 +2368,21 @@ async function refreshSession() {
   return _refreshInflight;
 }
 
+// Schedule a proactive refresh REFRESH_LEAD_MS before token expiry.
+// Cheaper than waiting for a 401, smoother UX (no failed request in between).
 function scheduleProactiveRefresh(s) {
   if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
   if (!s?.expires_at) return;
   const msUntilRefresh = (s.expires_at * 1000) - Date.now() - REFRESH_LEAD_MS;
+  // If already past the refresh window, fire ASAP. Cap at safety interval to
+  // avoid stacking thousands of timers if the clock jumps.
   const delay = Math.max(1000, Math.min(msUntilRefresh, REFRESH_SAFETY_INTERVAL_MS));
   _refreshTimer = setTimeout(() => { refreshSession(); }, delay);
 }
 
-// Safety-net interval — fires every 30 min, catches edge cases.
+// Safety-net interval — fires every 30 min regardless of the per-token timer.
+// Catches edge cases where the scheduled timer didn't fire (tab was
+// throttled, machine was asleep, etc.) and refreshes anything stale.
 setInterval(() => {
   const s = window._session;
   if (!s?.expires_at) return;
@@ -2323,7 +2390,8 @@ setInterval(() => {
   if (msUntilExpiry < REFRESH_LEAD_MS) refreshSession();
 }, REFRESH_SAFETY_INTERVAL_MS);
 
-// Activity tracking — bump LAST_ACTIVITY_KEY on user interaction, throttled.
+// Activity tracking — bump LAST_ACTIVITY_KEY on user interaction. Cheap; we
+// throttle so we're not pounding localStorage on every mousemove pixel.
 (function wireActivityTracking() {
   let throttle = null;
   const handler = () => {
@@ -2333,6 +2401,7 @@ setInterval(() => {
   ['mousedown','keydown','touchstart','scroll','focus'].forEach(ev =>
     window.addEventListener(ev, handler, { passive: true, capture: true })
   );
+  // Seed it now so a fresh tab counts as "active"
   markActivity();
 })();
 
@@ -2346,9 +2415,10 @@ async function sbFetch(path, opts={}) {
   // First attempt — normal call.
   let r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: headers(), ...opts });
 
-  // On 401, try to silently refresh the token and retry once. The user
-  // doesn't see a spinner or logout — the request just succeeds on retry
-  // with the new token.
+  // On 401, try to silently refresh the token and retry the request once.
+  // This is what makes long-running sessions seamless: the user doesn't see
+  // a spinner, a logout, or any UI change — the request just succeeds on
+  // the second try with the new token.
   if (r.status === 401) {
     const newSession = await refreshSession();
     if (newSession) {
@@ -2356,7 +2426,8 @@ async function sbFetch(path, opts={}) {
     }
   }
 
-  // Still 401 after refresh → session really is dead. Kick to login.
+  // If we're STILL 401 after a refresh attempt, the session really is dead
+  // (refresh token rejected, or user inactive too long). Kick to login.
   if (r.status === 401) {
     saveSession(null);
     document.getElementById('app').style.display = 'none';
@@ -2691,9 +2762,12 @@ window.doSignOut = async () => {
 
   // Hard inactivity gate: if the user hasn't touched this app in
   // INACTIVITY_TIMEOUT_MS, force them to sign in even though the refresh
-  // token might still work.
+  // token might technically still work. This is the "signed out for
+  // inactivity" guarantee the team asked for.
   if (isInactiveTooLong()) {
     saveSession(null);
+    // Reset the activity timestamp so the next successful login doesn't
+    // immediately re-trip the inactivity gate on the very next page load.
     try { localStorage.removeItem(LAST_ACTIVITY_KEY); } catch {}
     const errEl = document.getElementById('login-error');
     if (errEl) {
@@ -2706,15 +2780,23 @@ window.doSignOut = async () => {
   window._session = s;
   window._token = s.access_token;
 
-  // Eager refresh: if the access token is already expired or close to it,
-  // refresh BEFORE the first API request to skip the 401-then-retry dance.
+  // Eager refresh: if the access token is already expired or about to be
+  // (within REFRESH_LEAD_MS), refresh BEFORE the first API request to skip
+  // the 401-then-retry dance. Smoother first load.
   if (s.expires_at) {
     const msUntilExpiry = (s.expires_at * 1000) - Date.now();
     if (msUntilExpiry < REFRESH_LEAD_MS) {
       const refreshed = await refreshSession();
-      if (!refreshed) return;
+      if (!refreshed) {
+        // Refresh token rejected — clear and stay on login screen.
+        // saveSession(null) already happened inside refreshSession.
+        return;
+      }
       s = refreshed;
     } else {
+      // Token has time on it — just make sure the proactive refresh is armed.
+      // (saveSession re-arms whenever a session is written, but on page load
+      // we restored via loadSession which doesn't.)
       scheduleProactiveRefresh(s);
     }
   }
@@ -3673,8 +3755,6 @@ window.showAddStore = () => {
   document.getElementById('store-taxcode').value = 'G';
   document.getElementById('store-terms').value = 'COD';
   document.getElementById('store-rep').value = 'DM';
-  // New stores default to non-recurring — managers opt-in via checkbox.
-  document.getElementById('store-recurring-weekly').checked = false;
   // Clear any prior auto-detect hint from a previous open
   const hintEl = document.getElementById('store-chain-hint');
   if (hintEl) hintEl.textContent = '';
@@ -3782,8 +3862,6 @@ window.editStore = (id) => {
   document.getElementById('store-ship-addr1').value = s.ship_addr1 || s.addr1 || '';
   document.getElementById('store-ship-city').value = s.ship_city || s.city || '';
   document.getElementById('store-ship-postal').value = s.ship_postal || s.postal || '';
-  // Recurring weekly auto-order toggle (boolean column, NOT NULL DEFAULT false).
-  document.getElementById('store-recurring-weekly').checked = !!s.recurring_weekly;
   document.getElementById('store-save-msg').textContent = '';
   document.getElementById('store-modal').classList.add('open');
 };
@@ -3791,7 +3869,7 @@ window.editStore = (id) => {
 window.saveStore = async () => {
   const id = document.getElementById('store-edit-id').value;
   const isNew = !id;
-  const payload = { name: document.getElementById('store-name').value.trim(), qb_name: document.getElementById('store-qbname').value.trim(), province: document.getElementById('store-province').value, unit_price: parseFloat(document.getElementById('store-price').value), delivery_fee: parseFloat(document.getElementById('store-fee').value), is_edi: document.getElementById('store-edi').value==='true', tax_code: document.getElementById('store-taxcode').value, terms: document.getElementById('store-terms').value, rep: document.getElementById('store-rep').value, first_name: document.getElementById('store-firstname').value.trim(), last_name: document.getElementById('store-lastname').value.trim(), phone: document.getElementById('store-phone').value.trim(), email: document.getElementById('store-email').value.trim(), addr1: document.getElementById('store-addr1').value.trim(), city: document.getElementById('store-city').value.trim(), postal: document.getElementById('store-postal').value.trim(), ship_addr1: document.getElementById('store-ship-addr1').value.trim(), ship_city: document.getElementById('store-ship-city').value.trim(), ship_postal: document.getElementById('store-ship-postal').value.trim(), recurring_weekly: document.getElementById('store-recurring-weekly').checked, active: true };
+  const payload = { name: document.getElementById('store-name').value.trim(), qb_name: document.getElementById('store-qbname').value.trim(), province: document.getElementById('store-province').value, unit_price: parseFloat(document.getElementById('store-price').value), delivery_fee: parseFloat(document.getElementById('store-fee').value), is_edi: document.getElementById('store-edi').value==='true', tax_code: document.getElementById('store-taxcode').value, terms: document.getElementById('store-terms').value, rep: document.getElementById('store-rep').value, first_name: document.getElementById('store-firstname').value.trim(), last_name: document.getElementById('store-lastname').value.trim(), phone: document.getElementById('store-phone').value.trim(), email: document.getElementById('store-email').value.trim(), addr1: document.getElementById('store-addr1').value.trim(), city: document.getElementById('store-city').value.trim(), postal: document.getElementById('store-postal').value.trim(), ship_addr1: document.getElementById('store-ship-addr1').value.trim(), ship_city: document.getElementById('store-ship-city').value.trim(), ship_postal: document.getElementById('store-ship-postal').value.trim(), active: true };
   if (isNew) payload.qb_sync_status = 'pending';
   if (!payload.name || !payload.qb_name) { document.getElementById('store-save-msg').textContent = '⚠️ Store name and QB name are required.'; return; }
   const msg = document.getElementById('store-save-msg');
@@ -4106,10 +4184,6 @@ function sourceBadge(src) {
   const map = {
     online:         { label: '📱 Online',  bg: 'rgba(79,195,212,0.15)',  color: 'var(--mm-cyan)',  border: 'rgba(79,195,212,0.3)' },
     phone:          { label: '📞 Phone',   bg: 'rgba(232,123,181,0.12)', color: 'var(--mm-pink)',  border: 'rgba(232,123,181,0.3)' },
-    // Recurring: auto-generated by the Saturday-morning pg_cron job for stores
-    // with stores.recurring_weekly=true. No customer email goes out for these
-    // (the customer is enrolled and knows their cadence).
-    recurring:      { label: '🔁 Recurring', bg: 'rgba(226,176,74,0.12)', color: 'var(--gold)',    border: 'rgba(226,176,74,0.3)' },
     staples_po:     { label: '📋 Staples PO', bg: 'rgba(226,176,74,0.15)', color: 'var(--gold)',  border: 'rgba(226,176,74,0.3)' },
     staples_vmi:    { label: '🏪 Staples VMI', bg: 'rgba(63,185,80,0.12)', color: 'var(--success)', border: 'rgba(63,185,80,0.3)' },
     driver_walk_in: { label: '🚚 Walk-in', bg: 'rgba(139,148,158,0.15)', color: 'var(--muted)',   border: 'rgba(139,148,158,0.3)' },
@@ -4124,6 +4198,7 @@ function statusBadge(st) {
     scheduled: { label: 'Scheduled', bg: 'rgba(79,195,212,0.15)', color: 'var(--mm-cyan)',  border: 'rgba(79,195,212,0.3)' },
     completed: { label: 'Completed', bg: 'rgba(63,185,80,0.15)',  color: 'var(--success)',  border: 'rgba(63,185,80,0.3)' },
     cancelled: { label: 'Cancelled', bg: 'rgba(139,148,158,0.15)', color: 'var(--muted)',   border: 'rgba(139,148,158,0.3)' },
+    recurring:      { label: '🔄 Recurring', bg: 'rgba(232,123,181,0.15)', color: 'var(--mm-pink)', border: 'rgba(232,123,181,0.4)' },
   };
   const m = map[st] || { label: st, bg: 'rgba(139,148,158,0.15)', color: 'var(--muted)', border: 'rgba(139,148,158,0.3)' };
   return `<span class="badge" style="background:${m.bg};color:${m.color};border:1px solid ${m.border}">${m.label}</span>`;
@@ -4424,6 +4499,135 @@ window.selectOrderStore = (id, storeJson) => {
   // Prefill contact from the store record if empty
   if (!document.getElementById('order-contact-phone').value && s.phone) document.getElementById('order-contact-phone').value = s.phone;
   if (!document.getElementById('order-contact-email').value && s.email) document.getElementById('order-contact-email').value = s.email;
+};
+
+// ── Recurring Weekly Customers ───────────────────────────────────────────
+// Toggles the `stores.recurring_weekly` flag. The pg_cron job
+// `recurring-weekly-orders` runs every Saturday at 08:00 UTC and calls
+// public.generate_recurring_weekly_orders() which inserts a pending order
+// for each enrolled store (skipping those with an open pending/scheduled order).
+
+window.showRecurringModal = async () => {
+  document.getElementById('recurring-modal-error').style.display = 'none';
+  document.getElementById('recurring-store-search').value = '';
+  document.getElementById('recurring-store-results').style.display = 'none';
+  document.getElementById('recurring-modal').classList.add('open');
+  await loadRecurringList();
+};
+
+window.closeRecurringModal = () => {
+  document.getElementById('recurring-modal').classList.remove('open');
+  document.getElementById('recurring-store-results').style.display = 'none';
+};
+document.getElementById('recurring-modal').addEventListener('click', e => { if (e.target===e.currentTarget) closeRecurringModal(); });
+
+async function loadRecurringList() {
+  const listEl = document.getElementById('recurring-list');
+  const countEl = document.getElementById('recurring-count');
+  listEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Loading...</div>`;
+  try {
+    const data = await sbFetch('stores?recurring_weekly=eq.true&active=eq.true&select=id,public_code,qb_name,ship_city,province&order=qb_name.asc');
+    const stores = Array.isArray(data) ? data : [];
+    countEl.textContent = stores.length === 1 ? '1 customer' : `${stores.length} customers`;
+    if (stores.length === 0) {
+      listEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">No customers enrolled yet. Use the search above to add one.</div>`;
+      return;
+    }
+    listEl.innerHTML = stores.map(s => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);gap:12px">
+        <div style="min-width:0;flex:1">
+          <div style="font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(s.qb_name)}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">
+            <span style="font-family:monospace;color:var(--gold)">${s.public_code||''}</span>
+            ${s.ship_city ? ' · ' + escapeHtml([s.ship_city, s.province].filter(Boolean).join(', ')) : ''}
+          </div>
+        </div>
+        <button onclick="window.removeRecurringStore('${s.id}', '${escapeHtml(s.qb_name).replace(/'/g, '&apos;')}')" style="background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);color:#f85149;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap">Remove</button>
+      </div>`).join('');
+  } catch (e) {
+    listEl.innerHTML = `<div style="padding:20px;text-align:center;color:#f85149;font-size:13px">Failed to load: ${escapeHtml(e.message || String(e))}</div>`;
+  }
+}
+
+let recurringStoreSearchTimer = null;
+window.searchRecurringStore = () => {
+  clearTimeout(recurringStoreSearchTimer);
+  const q = document.getElementById('recurring-store-search').value.trim();
+  const resultsEl = document.getElementById('recurring-store-results');
+  if (q.length < 2) { resultsEl.style.display = 'none'; return; }
+  recurringStoreSearchTimer = setTimeout(async () => {
+    // Exclude already-enrolled stores from results so users don't accidentally
+    // "add" a store that's already in the list. Same fuzzy-search pattern as
+    // searchOrderStore but with recurring_weekly=eq.false filter.
+    const upperQ = q.toUpperCase();
+    let data;
+    if (/^MM-\d+$/i.test(q)) {
+      data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true&recurring_weekly=eq.false&select=id,public_code,qb_name,ship_city,province&limit=10`);
+    } else {
+      const tokens = q.split(/\s+/).filter(Boolean);
+      const tokenClauses = tokens.map(tok => {
+        const enc = encodeURIComponent(`*${tok}*`);
+        return `or(qb_name.ilike.${enc},ship_city.ilike.${enc},public_code.ilike.${enc})`;
+      });
+      const filter = tokenClauses.length > 0 ? `&and=(${tokenClauses.join(',')})` : '';
+      data = await sbFetch(`stores?active=eq.true&recurring_weekly=eq.false${filter}&select=id,public_code,qb_name,ship_city,province&order=qb_name.asc&limit=15`);
+    }
+    const stores = Array.isArray(data) ? data : [];
+    if (!stores.length) {
+      resultsEl.innerHTML = `<div style="padding:10px 12px;color:var(--muted);font-size:13px">No matches (already-enrolled customers are hidden).</div>`;
+      resultsEl.style.display = 'block';
+      return;
+    }
+    resultsEl.innerHTML = stores.map(s => `
+      <div style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background=''" onclick="window.addRecurringStore('${s.id}', '${escapeHtml(s.qb_name).replace(/'/g, '&apos;')}')">
+        <div style="font-weight:600">${escapeHtml(s.qb_name)}</div>
+        <div style="font-size:12px;color:var(--muted)"><span style="font-family:monospace;color:var(--gold)">${s.public_code||''}</span> · ${escapeHtml([s.ship_city, s.province].filter(Boolean).join(', '))}</div>
+      </div>`).join('');
+    resultsEl.style.display = 'block';
+  }, 250);
+};
+
+window.addRecurringStore = async (storeId, qbName) => {
+  const errEl = document.getElementById('recurring-modal-error');
+  errEl.style.display = 'none';
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${storeId}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=representation' },
+      body: JSON.stringify({ recurring_weekly: true })
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Failed to enroll: ${r.status} ${t}`);
+    }
+    document.getElementById('recurring-store-search').value = '';
+    document.getElementById('recurring-store-results').style.display = 'none';
+    await loadRecurringList();
+  } catch (e) {
+    errEl.textContent = e.message || String(e);
+    errEl.style.display = 'block';
+  }
+};
+
+window.removeRecurringStore = async (storeId, qbName) => {
+  if (!confirm(`Stop generating weekly recurring orders for "${qbName}"?\n\nExisting orders will not be affected.`)) return;
+  const errEl = document.getElementById('recurring-modal-error');
+  errEl.style.display = 'none';
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${storeId}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=representation' },
+      body: JSON.stringify({ recurring_weekly: false })
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Failed to remove: ${r.status} ${t}`);
+    }
+    await loadRecurringList();
+  } catch (e) {
+    errEl.textContent = e.message || String(e);
+    errEl.style.display = 'block';
+  }
 };
 
 window.saveOrder = async () => {
@@ -8681,10 +8885,24 @@ async function schedRemoveStopFromCell(tripStopId) {
 // MOVE one stop UP/DOWN within the same day (manual reorder)
 // ════════════════════════════════════════════════════════════════════
 //
-// Swap the `sequence` value between the target stop and its neighbor. The
-// (trip_day_id, sequence) index is non-unique so two sequential PATCHes are
-// safe. After swap, fn_trip_stop_schedule_resend (wired to UPDATE OF sequence)
-// queues a 5-minute debounced resend for published trips.
+// Why this exists: the route optimizer picks stop order for shortest drive
+// time, but depot managers sometimes need a different order — typically when
+// a store has early-morning-only or late-afternoon-only operating hours that
+// the optimizer doesn't know about.
+//
+// Approach: swap the `sequence` value between the target stop and its
+// neighbor. trip_stops has a non-unique index on (trip_day_id, sequence),
+// so we don't need a transactional swap-via-temp-value dance.
+//
+// The (trip_day_id, sequence) idx is non-unique, so two sequential PATCHes
+// are safe. Even if they race (extremely unlikely on a 50ms RTT), worst case
+// is a momentary duplicate sequence number for one ms, which renders fine.
+//
+// After swap, fn_trip_stop_schedule_resend (now wired to UPDATE OF sequence)
+// will queue a 5-minute debounced resend for published trips.
+//
+// We DON'T re-optimize the day automatically — that would just undo the
+// manual swap. Optimization is opt-in via the existing per-day optimize button.
 async function schedMoveStopWithinDay(tripStopId, direction /* 'up' | 'down' */) {
   const cell = schedState.editingCell;
   if (!cell) return;
@@ -8693,20 +8911,24 @@ async function schedMoveStopWithinDay(tripStopId, direction /* 'up' | 'down' */)
   if (idx === -1) return;
 
   const neighborIdx = direction === 'up' ? idx - 1 : idx + 1;
-  if (neighborIdx < 0 || neighborIdx >= stops.length) return;
+  if (neighborIdx < 0 || neighborIdx >= stops.length) return; // boundary
 
   const moving = stops[idx];
   const neighbor = stops[neighborIdx];
   const movingSeq = moving.sequence;
   const neighborSeq = neighbor.sequence;
 
-  // Optimistic UI swap; revert on failure.
+  // Optimistic UI: swap in local state first so the row jumps immediately,
+  // then persist. If persist fails, we refresh from server which restores
+  // the truth.
   moving.sequence = neighborSeq;
   neighbor.sequence = movingSeq;
   cell.stops = stops.slice().sort((a, b) => a.sequence - b.sequence);
   schedRenderSidebar();
 
   try {
+    // Two sequential PATCHes. Index is non-unique so no constraint violation
+    // when the two rows briefly share the same sequence value.
     await schedUpdate('trip_stops', `id=eq.${moving.id}`, { sequence: neighborSeq });
     await schedUpdate('trip_stops', `id=eq.${neighbor.id}`, { sequence: movingSeq });
     await schedRefreshData();
@@ -8714,6 +8936,7 @@ async function schedMoveStopWithinDay(tripStopId, direction /* 'up' | 'down' */)
   } catch (e) {
     console.error('[sched] reorder failed:', e);
     schedToast(`⚠ Failed to reorder: ${e.message}`);
+    // Revert by re-fetching truth from server
     await schedRefreshData();
     schedReopenEditingCell(cell.trip_day_id);
   }
@@ -9061,7 +9284,8 @@ function schedRenderCellEditSidebar(container) {
     // order to Pending. Cyan to match the "Order pending" map legend.
     const orderTag = stop.linked_order_id ? `<span style="color:var(--mm-cyan);font-weight:600">order</span>` : '';
     // Manual reorder buttons. Disabled at boundaries (first row can't move up,
-    // last row can't move down).
+    // last row can't move down). Optimization may overwrite these if the
+    // manager re-optimizes the day, but the manual sequence holds until then.
     const isFirst = idx === 0;
     const isLast = idx === arr.length - 1;
     return `<div class="sched-cell-edit-stop" data-trip-stop-id="${schedEscapeHtml(stop.id)}" data-store-id="${schedEscapeHtml(lookupKey || '')}">
@@ -9165,7 +9389,8 @@ function schedRenderCellEditSidebar(container) {
     });
   });
 
-  // Manual reorder (⬆ / ⬇).
+  // Manual reorder (⬆ / ⬇). Two handlers wired with the same body via
+  // delegation, distinguishing on the class.
   container.querySelectorAll('.sched-stop-move-up').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -9183,7 +9408,9 @@ function schedRenderCellEditSidebar(container) {
     });
   });
 
-  // Click stop name → fly map to it. Ignore the action buttons.
+  // Click stop name → fly map to it.
+  // Ignore clicks on any of the action buttons (remove, move-up, move-down)
+  // so they don't double-trigger flying the map alongside their own action.
   container.querySelectorAll('.sched-cell-edit-stop').forEach(row => {
     row.addEventListener('click', (e) => {
       if (e.target.classList.contains('sched-stop-remove')) return;
