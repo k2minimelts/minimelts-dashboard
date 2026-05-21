@@ -2037,8 +2037,9 @@
             <div class="field"><label>Postal Code</label><input id="store-ship-postal" type="text" placeholder="T2P 1J9" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px;outline:none"/></div>
           </div>
           <div style="font-size:11px;color:var(--gold);letter-spacing:2px;text-transform:uppercase;margin:16px 0 12px">Pricing & Settings</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
             <div class="field"><label>Unit Price ($)</label><input id="store-price" type="number" step="0.01" value="2.89" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px;outline:none"/></div>
+            <div class="field"><label>BIG Price ($)</label><input id="store-big-price" type="number" step="0.01" value="68.88" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px;outline:none"/></div>
             <div class="field"><label>Delivery Fee ($)</label><input id="store-fee" type="number" step="0.01" value="20.00" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px;outline:none"/></div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
@@ -3978,6 +3979,7 @@ function renderStoresTable(stores) {
     <td>${s.depot ? `<span class="badge" style="background:rgba(79,195,212,0.12);color:var(--mm-cyan);border:1px solid rgba(79,195,212,0.3);font-family:monospace">${s.depot.code}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
     <td>${s.province}</td>
     <td>$${parseFloat(s.unit_price).toFixed(2)}</td>
+    <td>${s.big_unit_price != null ? '$'+parseFloat(s.big_unit_price).toFixed(2) : '<span style="color:var(--muted)">—</span>'}</td>
     <td>$${parseFloat(s.delivery_fee).toFixed(2)}</td>
     <td>${s.is_edi ? '<span class="badge badge-etransfer">EDI</span>' : ''}</td>
     <td>${s.active ? '<span class="badge badge-paid">Active</span>' : '<span class="badge badge-unpaid">Inactive</span>'}</td>
@@ -3988,7 +3990,7 @@ function renderStoresTable(stores) {
       ${s.qb_sync_status==='error'?`<button class="btn-sm" onclick="window.retrySync('${s.id}')">Retry</button>`:''}
     </td>
   </tr>`).join('');
-  document.getElementById('stores-body').innerHTML = `<table><thead><tr><th>Store Name</th><th>QB Customer</th><th>Store Number</th><th>Depot</th><th>Province</th><th>Unit Price</th><th>Del. Fee</th><th>EDI</th><th>Status</th><th>QB Sync</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
+  document.getElementById('stores-body').innerHTML = `<table><thead><tr><th>Store Name</th><th>QB Customer</th><th>Store Number</th><th>Depot</th><th>Province</th><th>Unit Price</th><th>BIG Price</th><th>Del. Fee</th><th>EDI</th><th>Status</th><th>QB Sync</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 window.searchStores = async () => {
@@ -4007,6 +4009,7 @@ window.showAddStore = () => {
   document.getElementById('store-modal-title').textContent = 'Add New Store';
   document.getElementById('store-province').value = 'AB';
   document.getElementById('store-price').value = '2.89';
+  document.getElementById('store-big-price').value = '68.88';
   document.getElementById('store-fee').value = '20.00';
   document.getElementById('store-edi').value = 'false';
   document.getElementById('store-taxcode').value = 'G';
@@ -4104,6 +4107,7 @@ window.editStore = (id) => {
   // Populate Province from DB; if blank, derive from ship_postal then bill postal.
   document.getElementById('store-province').value = s.province || window.provinceFromPostal(s.ship_postal) || window.provinceFromPostal(s.postal) || '';
   document.getElementById('store-price').value = s.unit_price;
+  document.getElementById('store-big-price').value = (s.big_unit_price != null ? s.big_unit_price : '');
   document.getElementById('store-fee').value = s.delivery_fee;
   document.getElementById('store-edi').value = s.is_edi ? 'true' : 'false';
   document.getElementById('store-taxcode').value = s.tax_code || 'G';
@@ -4126,7 +4130,9 @@ window.editStore = (id) => {
 window.saveStore = async () => {
   const id = document.getElementById('store-edit-id').value;
   const isNew = !id;
-  const payload = { name: document.getElementById('store-name').value.trim(), qb_name: document.getElementById('store-qbname').value.trim(), province: document.getElementById('store-province').value, unit_price: parseFloat(document.getElementById('store-price').value), delivery_fee: parseFloat(document.getElementById('store-fee').value), is_edi: document.getElementById('store-edi').value==='true', tax_code: document.getElementById('store-taxcode').value, terms: document.getElementById('store-terms').value, rep: document.getElementById('store-rep').value, first_name: document.getElementById('store-firstname').value.trim(), last_name: document.getElementById('store-lastname').value.trim(), phone: document.getElementById('store-phone').value.trim(), email: document.getElementById('store-email').value.trim(), addr1: document.getElementById('store-addr1').value.trim(), city: document.getElementById('store-city').value.trim(), postal: document.getElementById('store-postal').value.trim(), ship_addr1: document.getElementById('store-ship-addr1').value.trim(), ship_city: document.getElementById('store-ship-city').value.trim(), ship_postal: document.getElementById('store-ship-postal').value.trim(), active: true };
+  const bigPriceRaw = document.getElementById('store-big-price').value.trim();
+  const bigPriceVal = bigPriceRaw === '' ? null : parseFloat(bigPriceRaw);
+  const payload = { name: document.getElementById('store-name').value.trim(), qb_name: document.getElementById('store-qbname').value.trim(), province: document.getElementById('store-province').value, unit_price: parseFloat(document.getElementById('store-price').value), big_unit_price: bigPriceVal, delivery_fee: parseFloat(document.getElementById('store-fee').value), is_edi: document.getElementById('store-edi').value==='true', tax_code: document.getElementById('store-taxcode').value, terms: document.getElementById('store-terms').value, rep: document.getElementById('store-rep').value, first_name: document.getElementById('store-firstname').value.trim(), last_name: document.getElementById('store-lastname').value.trim(), phone: document.getElementById('store-phone').value.trim(), email: document.getElementById('store-email').value.trim(), addr1: document.getElementById('store-addr1').value.trim(), city: document.getElementById('store-city').value.trim(), postal: document.getElementById('store-postal').value.trim(), ship_addr1: document.getElementById('store-ship-addr1').value.trim(), ship_city: document.getElementById('store-ship-city').value.trim(), ship_postal: document.getElementById('store-ship-postal').value.trim(), active: true };
   if (isNew) payload.qb_sync_status = 'pending';
   if (!payload.name || !payload.qb_name) { document.getElementById('store-save-msg').textContent = '⚠️ Store name and QB name are required.'; return; }
   const msg = document.getElementById('store-save-msg');
