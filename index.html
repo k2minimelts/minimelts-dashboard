@@ -1380,7 +1380,6 @@
         <div class="filter-group"><label>Type</label>
           <select id="unpaid-filter-type" onchange="renderUnpaid()">
             <option value="">All types</option>
-            <option value="Terms">Terms</option>
             <option value="E-Transfer">E-Transfer</option>
             <option value="Shipped">📦 Shipped</option>
           </select>
@@ -2962,7 +2961,7 @@ function renderStats() {
   const today = allDeliveries.filter(d => d.delivered_at?.startsWith(todayStr));
   const week = allDeliveries.filter(d => d.delivered_at >= weekAgo);
   const month = allDeliveries.filter(d => d.delivered_at >= monthStart);
-  const unpaid = allDeliveries.filter(d => (d.payment_type === 'Terms' || d.payment_type === 'E-Transfer') && !d.paid);
+  const unpaid = allDeliveries.filter(d => d.payment_type === 'E-Transfer' && !d.paid);
   const sum = arr => arr.reduce((s,d) => s + parseFloat(d.total||0), 0);
   const fmt = n => `$${n.toFixed(2)}`;
   document.getElementById('stat-today').textContent = fmt(sum(today));
@@ -3042,7 +3041,7 @@ window.toggleAll = (cb) => { document.querySelectorAll('.delivery-cb:not(:disabl
 //   { kind: 'dsd'|'shipping', id, dateISO, dateLabel, store, storeSub,
 //     typeLabel, typeRaw, reference, etDisplay, totalDisplay, action }
 // - dateISO drives sorting; dsd uses delivered_at, shipping uses shipped_at
-// - typeRaw is what the Type filter matches against ('Terms','E-Transfer','Shipped')
+// - typeRaw is what the Type filter matches against ('E-Transfer','Shipped')
 
 function _normalizeDsdUnpaid(d) {
   const isEt = d.payment_type === 'E-Transfer';
@@ -3101,8 +3100,11 @@ function _normalizeShippingUnpaid(o) {
 
 function renderUnpaid() {
   // 1. Gather DSD unpaid (same filter as before — unchanged business logic)
+  // DSD unpaid: E-Transfer only. Terms are no longer tracked here (business
+  // decision — Terms customers dropped from the unpaid workflow). Shipping
+  // orders remain a separate stream, merged in below.
   const dsdUnpaid = allDeliveries.filter(d =>
-    (d.payment_type === 'Terms' || d.payment_type === 'E-Transfer') && !d.paid
+    d.payment_type === 'E-Transfer' && !d.paid
   );
 
   // 2. Normalize both sources into the common row shape
