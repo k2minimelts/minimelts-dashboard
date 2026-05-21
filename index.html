@@ -3484,12 +3484,15 @@ window.showDetail = (id) => {
       </div>
       <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">NOTES</label><input id="edit-notes" type="text" value="${d.notes||''}" placeholder="Optional notes..." style="width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-size:14px"/></div>
     </div>`;
+  const resendBtn = `<button class="btn-modal btn-modal-outline" style="border-color:var(--mm-cyan);color:var(--mm-cyan)" onclick="window.resendDeliveryReceipt('${d.id}')">✉️ Resend Receipt</button>`;
   const actions = isLocked
     ? `<div class="modal-actions">
+        ${resendBtn}
         <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeModal()">Close</button>
       </div>`
     : `<div class="modal-actions">
         <button class="btn-modal btn-modal-primary" style="background:var(--mm-cyan);flex:2" onclick="window.saveCorrection('${d.id}')">💾 Save Corrections</button>
+        ${resendBtn}
         <button class="btn-modal" style="background:rgba(248,81,73,0.15);border:1px solid rgba(248,81,73,0.4);color:#f85149;cursor:pointer;border-radius:8px;padding:12px;font-size:14px;font-weight:700" onclick="window.deleteDelivery('${d.id}')">🗑 Delete</button>
         <button class="btn-modal btn-modal-outline" onclick="closeModal()">Close</button>
       </div>`;
@@ -3521,6 +3524,45 @@ window.showDetail = (id) => {
 };
 window.closeModal = () => document.getElementById('detail-modal').classList.remove('open');
 document.getElementById('detail-modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+
+// Resend a delivery receipt to the customer via the resend-delivery-email edge
+// function (re-fetches server-side, customer-facing wording, attaches PDF/photos,
+// handles multi-address store emails). Works on any delivery, locked or not.
+window.resendDeliveryReceipt = async (id) => {
+  const d = allDeliveries.find(x => x.id === id);
+  if (!d) { alert('Could not find that delivery. Refresh and try again.'); return; }
+  if (!confirm(`Resend the delivery receipt for ${d.receipt_number} — ${d.store_name} to the customer?\n\nThis emails the stored receipt PDF with the original delivery details.`)) return;
+
+  const session = window._session;
+  if (!session?.access_token) { alert('Your session has expired. Please refresh and sign in again.'); return; }
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/resend-delivery-email`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ delivery_id: id }),
+    });
+    const data = await res.json();
+    if (!data?.ok) {
+      if (data?.code === 'no_email') {
+        alert(`Can't resend: no email on file for ${d.store_name}.\n\nAdd their email in the Stores tab first.`);
+      } else if (data?.code === 'not_found') {
+        alert('That delivery could not be found on the server. Refresh and try again.');
+      } else {
+        alert('Resend failed: ' + (data?.error || 'unknown error'));
+      }
+      return;
+    }
+    const sentTo = Array.isArray(data.sent_to) ? data.sent_to.join(', ') : data.sent_to;
+    alert(`✓ Receipt for ${d.receipt_number} resent to ${sentTo}.`);
+  } catch (err) {
+    alert('Resend failed: ' + err.message);
+  }
+};
 
 window.deleteDelivery = async (id) => {
   const d = allDeliveries.find(x => x.id === id);
