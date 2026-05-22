@@ -1313,7 +1313,7 @@
 
   <div class="main">
     <div class="tabs">
-      <button class="tab active" onclick="switchTab('overview')">Overview</button>
+      <button class="tab active" onclick="switchTab('overview')" data-hide-from-depot-manager>Overview</button>
       <button class="tab" onclick="switchTab('deliveries')" data-hide-from-depot-manager>Deliveries</button>
       <button class="tab" onclick="switchTab('unpaid')" data-hide-from-depot-manager>Unpaid</button>
       <button class="tab" onclick="switchTab('orders')" id="tab-btn-orders">📦 Orders</button>
@@ -1443,7 +1443,7 @@
             <option value="NL">Newfoundland</option><option value="PE">Prince Edward Island</option>
           </select>
         </div>
-        <div class="filter-group"><label>Search</label><input type="text" id="orders-filter-search" placeholder="Store name, ST-code, contact..." oninput="renderOrdersFiltered()" style="min-width:220px"/></div>
+        <div class="filter-group"><label>Search</label><input type="text" id="orders-filter-search" placeholder="Store name, ST-code, contact..." oninput="_orderPage=0; renderOrdersFiltered()" style="min-width:220px"/></div>
         <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
           <button class="btn-export" onclick="showNewOrderModal('phone')">📞 New Phone Order</button>
           <button class="btn-export" style="background:var(--mm-cyan)" onclick="showNewOrderModal('staples_po')">📋 New Staples PO</button>
@@ -1456,6 +1456,11 @@
           <span class="table-count" id="orders-count">Loading...</span>
         </div>
         <div id="orders-body"><div class="loading">Loading orders...</div></div>
+        <div style="padding:10px 16px;display:flex;align-items:center;justify-content:flex-end;gap:8px">
+          <button id="orders-prev-btn" onclick="window.ordersPrevPage()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer">← Prev</button>
+          <span id="orders-page-label" style="color:var(--muted);font-size:12px;min-width:90px;text-align:center">Page 1</span>
+          <button id="orders-next-btn" onclick="window.ordersNextPage()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer">Next →</button>
+        </div>
       </div>
     </div>
 
@@ -2622,6 +2627,16 @@ function applyRoleUI(roleInfo) {
   document.querySelectorAll('[data-hide-from-depot-manager]').forEach(el => {
     el.style.display = isAdmin ? '' : 'none';
   });
+  // Overview is hidden from depot managers and is the default landing tab, so
+  // redirect them to Schedule (their main workspace) if they'd otherwise land
+  // on the now-hidden Overview. Only fires when Overview is the active tab, so
+  // it never interferes with normal navigation or with admins.
+  if (!isAdmin) {
+    const overviewTab = document.getElementById('tab-overview');
+    if (overviewTab && overviewTab.style.display !== 'none' && typeof switchTab === 'function') {
+      switchTab('schedule');
+    }
+  }
   // For depot managers: inject CSS that hides row-level admin actions.
   // We match by button onclick containing these admin-only function names.
   let styleEl = document.getElementById('role-gate-style');
@@ -2895,8 +2910,15 @@ window.doSignOut = async () => {
 })();
 
 // ── Load Data ──
+// Bulk deliveries fetch for the list/stats/unpaid views. Deliberately EXCLUDES
+// the heavy base64 fields (receipt PDF, freezer/payment/stamp photos, signature)
+// — those can be 100KB+ each and would blow up browser memory at thousands of
+// rows. The delivery detail modal fetches those on-demand for the single row
+// being viewed (see showDetail). iif_content is kept because bulk QB export
+// needs it across many rows at once. limit guards against silent truncation.
+const DELIVERY_LIST_COLS = 'id,receipt_number,store_id,store_name,driver_id,driver_name,items,unit_price,delivery_fee,subtotal,tax,total,payment_type,notes,iif_content,delivered_at,created_at,qb_status,qb_export_error,qb_exported_at,signer_name,needs_correction,correction_note,big_unit_price,e_transfer_date,credits,store_email,paid,trip_stop_id,lot_cotton_candy,lot_cookies_cream,lot_banana_split,lot_cookie_dough,lot_orange,lot_mint_choc,lot_rainbow,lot_big_cherry,lot_big_mango,lot_big_kiwi,reminder_sent_at';
 async function loadAll() {
-  const data = await sbFetch('deliveries?select=*&order=delivered_at.desc');
+  const data = await sbFetch(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc&limit=10000`);
   allDeliveries = Array.isArray(data) ? data : [];
   filteredDeliveries = [...allDeliveries];
   populateDriverFilter(); renderStats(); renderCharts();
@@ -2923,7 +2945,7 @@ async function updateCorrectionsBadge() {
 
 async function loadCorrections() {
   document.getElementById('corrections-body').innerHTML = '<div class="loading">Loading...</div>';
-  const data = await sbFetch('deliveries?needs_correction=eq.true&order=delivered_at.desc&select=*');
+  const data = await sbFetch(`deliveries?needs_correction=eq.true&order=delivered_at.desc&select=${DELIVERY_LIST_COLS}`);
   const corrections = Array.isArray(data) ? data : [];
   document.getElementById('corrections-count').textContent = corrections.length ? `${corrections.length} pending` : 'None';
   if (!corrections.length) { document.getElementById('corrections-body').innerHTML = '<div class="empty" style="padding:32px;text-align:center;color:var(--success)">✓ No correction requests</div>'; return; }
@@ -3456,9 +3478,25 @@ window.exportBulkIIF = () => {
 };
 
 // ── Detail Modal ──
-window.showDetail = (id) => {
+window.showDetail = async (id) => {
   const d = allDeliveries.find(x => x.id === id);
   if (!d) return;
+  // The bulk list fetch excludes heavy base64 fields (PDF/photos/signature) to
+  // keep memory low. Fetch them on-demand for just this one delivery and merge
+  // into the in-memory row so the rest of the modal renders them as before.
+  // Cache on the row so re-opening the same delivery doesn't re-fetch.
+  if (d._heavyLoaded !== true) {
+    try {
+      const heavy = await sbFetch(`deliveries?id=eq.${id}&select=receipt_pdf_base64,freezer_photo_base64,freezer_photo_2_base64,payment_photo_base64,stamp_photo_base64,signature_data&limit=1`);
+      if (Array.isArray(heavy) && heavy[0]) {
+        Object.assign(d, heavy[0]);
+        d._heavyLoaded = true;
+      }
+    } catch (err) {
+      console.warn('Could not load delivery attachments for', id, err);
+      // Proceed without attachments rather than blocking the modal.
+    }
+  }
   const items = Array.isArray(d.items) ? d.items.filter(i => parseInt(i.qtyDelivered)>0) : [];
   const itemRows = items.map(i => `<tr><td>${i.product}</td><td style="text-align:center">${i.lotBatch||'—'}</td><td style="text-align:center">${i.currentStock||0}</td><td style="text-align:center">${i.qtyDelivered}</td><td style="text-align:right">$${(parseInt(i.qtyDelivered)*parseFloat(d.unit_price)).toFixed(2)}</td></tr>`).join('');
   const sigHtml = d.signature_data ? `<div class="section-title">Manager Signature${d.signer_name ? ` — <span style="color:var(--gold)">${d.signer_name}</span>` : ''}</div><div class="modal-sig" style="padding:8px;overflow:hidden">${d.signature_data}</div>` : '';
@@ -4424,6 +4462,8 @@ document.getElementById('driver-modal').addEventListener('click', e => { if (e.t
 // ORDERS
 // ══════════════════════════════════════════════════════════════
 let allOrders = [];
+let _orderPage = 0;                  // 0-indexed current page (orders pagination)
+const ORDER_PAGE_SIZE = 100;
 
 async function updateOrdersBadge() {
   const data = await sbFetch('orders?status=eq.pending&select=id');
@@ -4438,6 +4478,7 @@ async function updateOrdersBadge() {
 }
 
 async function loadOrders() {
+  _orderPage = 0;  // any filter change / reload returns to the first page
   const status = document.getElementById('orders-filter-status').value;
   const source = document.getElementById('orders-filter-source').value;
   const province = document.getElementById('orders-filter-province').value;
@@ -4510,9 +4551,36 @@ function renderOrdersFiltered() {
           || shortId.includes(cleanSearch);
     });
   }
-  renderOrdersTable(orders);
+  // Sort the FULL filtered list before paginating, so page boundaries reflect
+  // the global sort order (not just a per-page sort). renderOrdersTable is told
+  // not to re-sort the slice.
+  sortOrdersInPlace(orders);
+  // Client-side pagination over the fully-filtered list (all orders are already
+  // in memory). Clamp the page in case the filtered set shrank below the
+  // current page (e.g. after a search narrows results).
+  const totalPages = Math.max(1, Math.ceil(orders.length / ORDER_PAGE_SIZE));
+  if (_orderPage > totalPages - 1) _orderPage = totalPages - 1;
+  if (_orderPage < 0) _orderPage = 0;
+  const startIdx = _orderPage * ORDER_PAGE_SIZE;
+  const pageOrders = orders.slice(startIdx, startIdx + ORDER_PAGE_SIZE);
+
+  // Update prev/next button states + page label
+  const prevBtn = document.getElementById('orders-prev-btn');
+  const nextBtn = document.getElementById('orders-next-btn');
+  const pageLabel = document.getElementById('orders-page-label');
+  const hasPrev = _orderPage > 0;
+  const hasNext = _orderPage < totalPages - 1;
+  if (prevBtn) { prevBtn.disabled = !hasPrev; prevBtn.style.opacity = hasPrev ? '1' : '0.4'; prevBtn.style.cursor = hasPrev ? 'pointer' : 'not-allowed'; }
+  if (nextBtn) { nextBtn.disabled = !hasNext; nextBtn.style.opacity = hasNext ? '1' : '0.4'; nextBtn.style.cursor = hasNext ? 'pointer' : 'not-allowed'; }
+  if (pageLabel) pageLabel.textContent = orders.length === 0 ? 'Page 0 of 0' : `Page ${_orderPage + 1} of ${totalPages}`;
+
+  renderOrdersTable(pageOrders, orders.length, true);
 }
 window.renderOrdersFiltered = renderOrdersFiltered;
+
+// Pagination handlers (client-side — data already in memory)
+window.ordersNextPage = () => { _orderPage += 1; renderOrdersFiltered(); };
+window.ordersPrevPage = () => { if (_orderPage > 0) { _orderPage -= 1; renderOrdersFiltered(); } };
 
 function stockLevelBadge(sl) {
   if (!sl) return '<span class="badge" style="background:rgba(139,148,158,0.15);color:var(--muted);border:1px solid rgba(139,148,158,0.3)">—</span>';
@@ -4599,6 +4667,7 @@ window.toggleOrdersSort = (key) => {
     _ordersSort.key = key;
     _ordersSort.dir = 'desc'; // first click on a new column = descending (newest/largest first)
   }
+  _orderPage = 0;  // re-sorting returns to the first page
   renderOrdersFiltered();
 };
 
@@ -4620,15 +4689,19 @@ function sortOrdersInPlace(orders) {
   });
 }
 
-function renderOrdersTable(orders) {
-  document.getElementById('orders-count').textContent = orders.length ? `${orders.length} order${orders.length===1?'':'s'}` : 'None';
+function renderOrdersTable(orders, totalCount, alreadySorted) {
+  // totalCount = full filtered count across all pages (orders = just this page).
+  // Falls back to orders.length when called without the total (back-compat).
+  const total = (typeof totalCount === 'number') ? totalCount : orders.length;
+  document.getElementById('orders-count').textContent = total ? `${total} order${total===1?'':'s'}` : 'None';
   if (!orders.length) {
     document.getElementById('orders-body').innerHTML = '<div class="empty" style="padding:40px;text-align:center;color:var(--muted)">No orders match these filters.</div>';
     return;
   }
 
-  // Sort by current sort key before render
-  sortOrdersInPlace(orders);
+  // Sort by current sort key before render (skip if caller already sorted the
+  // full list before paginating, to avoid sorting only the page slice).
+  if (!alreadySorted) sortOrdersInPlace(orders);
 
   // Render When header with sort indicator. Other columns remain static for now.
   const whenArrow = _ordersSort.key === 'submitted_at'
