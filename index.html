@@ -6871,11 +6871,11 @@ window.openResetPasswordModal = (targetUserId, targetName, targetEmail) => {
   // Reset button highlight states
   document.getElementById('rpwd-mode-email').style.background = '';
   document.getElementById('rpwd-mode-direct').style.background = '';
-  document.getElementById('reset-password-modal').classList.add('active');
+  document.getElementById('reset-password-modal').classList.add('open');
 };
 
 window.closeResetPasswordModal = () => {
-  document.getElementById('reset-password-modal').classList.remove('active');
+  document.getElementById('reset-password-modal').classList.remove('open');
 };
 
 window.selectResetMode = (mode) => {
