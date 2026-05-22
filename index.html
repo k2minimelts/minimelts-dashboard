@@ -7707,7 +7707,8 @@ async function schedLoadOrdersAndOverdue() {
   // overdue stores, so depot managers no longer see vending from depots they don't manage.
   const vendingPromise = sbFetch(
     `vending_machines_map?select=id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_visit_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit,mqtt_online,depot_id,depot_code` +
-    `&depot_id=in.(${depotIdList})`
+    `&depot_id=in.(${depotIdList})` +
+    `&limit=5000`  // explicit high cap so growth never silently truncates the vending set (PostgREST default ~1000)
   );
 
   // Routes-lite: id -> delivery_method, used to flag SHIPPING-ONLY customers
