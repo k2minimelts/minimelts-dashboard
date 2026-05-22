@@ -3738,7 +3738,7 @@ window.searchLot = async () => {
   let refills = [];
   try {
     refills = await sbFetch(
-      'vending_refills?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
+      'vending_refills_list?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
     );
     if (!Array.isArray(refills)) refills = [];
   } catch (e) {
@@ -3895,7 +3895,7 @@ window.exportLotCSV = async (rawInput) => {
   let refills = [];
   try {
     refills = await sbFetch(
-      'vending_refills?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
+      'vending_refills_list?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
     );
     if (!Array.isArray(refills)) refills = [];
   } catch (e) { /* ignore */ }
@@ -5363,7 +5363,7 @@ async function loadRefills() {
   document.getElementById('refills-body').innerHTML = '<div class="loading">Loading...</div>';
   // Embed machine -> venue + sister tables in one Supabase query (PostgREST resource embedding)
   const data = await sbFetch(
-    'vending_refills?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
+    'vending_refills_list?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc&limit=10000'
   );
   _allRefills = Array.isArray(data) ? data : [];
   _filteredRefills = [..._allRefills];
@@ -5432,9 +5432,9 @@ function renderRefillsTable() {
     const lcd = `$${parseFloat(r.coin_mech_reading || 0).toFixed(2)}`;
     const lotCount = VENDING_FLAVORS_DASH.filter(f => r[f.key]).length;
     const photoIcons = [
-      r.freezer_photo_base64 ? '📸' : '',
-      r.coinmech_photo_base64 ? '🪙' : '',
-      r.receipt_pdf_base64 ? '🧾' : '',
+      r.has_freezer_photo ? '📸' : '',
+      r.has_coinmech_photo ? '🪙' : '',
+      r.has_receipt_pdf ? '🧾' : '',
     ].filter(Boolean).join(' ');
     const expanded = _expandedRefillId === r.id;
 
@@ -5528,8 +5528,26 @@ function renderRefillDetail(r) {
   `;
 }
 
-window.toggleRefillRow = (id) => {
-  _expandedRefillId = (_expandedRefillId === id) ? null : id;
+window.toggleRefillRow = async (id) => {
+  // Collapsing: just toggle off and re-render.
+  if (_expandedRefillId === id) { _expandedRefillId = null; renderRefillsTable(); return; }
+  _expandedRefillId = id;
+  // The list view excludes heavy base64 (photos/PDF) to keep memory low. Fetch
+  // them on-demand for just the row being expanded, merge into the cached row,
+  // then render. Cache via _heavyLoaded so re-expanding doesn't re-fetch.
+  const row = _allRefills.find(r => r.id === id);
+  if (row && row._heavyLoaded !== true) {
+    renderRefillsTable(); // show the expanded shell immediately (photos load in)
+    try {
+      const heavy = await sbFetch(`vending_refills?id=eq.${id}&select=freezer_photo_base64,coinmech_photo_base64,receipt_pdf_base64&limit=1`);
+      if (Array.isArray(heavy) && heavy[0]) {
+        Object.assign(row, heavy[0]);
+        row._heavyLoaded = true;
+      }
+    } catch (err) {
+      console.warn('Could not load refill photos for', id, err);
+    }
+  }
   renderRefillsTable();
 };
 
