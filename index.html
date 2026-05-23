@@ -1381,6 +1381,7 @@
           <select id="unpaid-filter-type" onchange="renderUnpaid()">
             <option value="">All types</option>
             <option value="E-Transfer">E-Transfer</option>
+            <option value="Unpaid">🔓 Unpaid (authorized)</option>
             <option value="Shipped">📦 Shipped</option>
           </select>
         </div>
@@ -2916,7 +2917,7 @@ window.doSignOut = async () => {
 // rows. The delivery detail modal fetches those on-demand for the single row
 // being viewed (see showDetail). iif_content is kept because bulk QB export
 // needs it across many rows at once. limit guards against silent truncation.
-const DELIVERY_LIST_COLS = 'id,receipt_number,store_id,store_name,driver_id,driver_name,items,unit_price,delivery_fee,subtotal,tax,total,payment_type,notes,po_number,iif_content,delivered_at,created_at,qb_status,qb_export_error,qb_exported_at,signer_name,needs_correction,correction_note,big_unit_price,e_transfer_date,credits,store_email,paid,trip_stop_id,lot_cotton_candy,lot_cookies_cream,lot_banana_split,lot_cookie_dough,lot_orange,lot_mint_choc,lot_rainbow,lot_big_cherry,lot_big_mango,lot_big_kiwi,reminder_sent_at';
+const DELIVERY_LIST_COLS = 'id,receipt_number,store_id,store_name,driver_id,driver_name,items,unit_price,delivery_fee,subtotal,tax,total,payment_type,notes,po_number,unpaid_authorized_by,unpaid_auth_note,iif_content,delivered_at,created_at,qb_status,qb_export_error,qb_exported_at,signer_name,needs_correction,correction_note,big_unit_price,e_transfer_date,credits,store_email,paid,trip_stop_id,lot_cotton_candy,lot_cookies_cream,lot_banana_split,lot_cookie_dough,lot_orange,lot_mint_choc,lot_rainbow,lot_big_cherry,lot_big_mango,lot_big_kiwi,reminder_sent_at';
 async function loadAll() {
   const data = await sbFetch(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc&limit=10000`);
   allDeliveries = Array.isArray(data) ? data : [];
@@ -2990,7 +2991,7 @@ function renderStats() {
   const today = allDeliveries.filter(d => d.delivered_at?.startsWith(todayStr));
   const week = allDeliveries.filter(d => d.delivered_at >= weekAgo);
   const month = allDeliveries.filter(d => d.delivered_at >= monthStart);
-  const unpaid = allDeliveries.filter(d => d.payment_type === 'E-Transfer' && !d.paid);
+  const unpaid = allDeliveries.filter(d => (d.payment_type === 'E-Transfer' || d.payment_type === 'Unpaid') && !d.paid);
   const sum = arr => arr.reduce((s,d) => s + parseFloat(d.total||0), 0);
   const fmt = n => `$${n.toFixed(2)}`;
   document.getElementById('stat-today').textContent = fmt(sum(today));
@@ -3025,6 +3026,7 @@ function payBadge(pt) {
   if (pt === 'Cash') return `<span class="badge badge-cash">Cash</span>`;
   if (pt === 'Cheque') return `<span class="badge badge-cheque">Cheque</span>`;
   if (pt === 'E-Transfer') return `<span class="badge badge-etransfer">E-Transfer</span>`;
+  if (pt === 'Unpaid') return `<span class="badge" style="background:rgba(248,81,73,0.15);color:#f85149;border:1px solid rgba(248,81,73,0.4)">🔓 Unpaid</span>`;
   return `<span class="badge">${pt}</span>`;
 }
 function qbBadge(s) {
@@ -3075,10 +3077,15 @@ window.toggleAll = (cb) => { document.querySelectorAll('.delivery-cb:not(:disabl
 
 function _normalizeDsdUnpaid(d) {
   const isEt = d.payment_type === 'E-Transfer';
+  const isUnpaidAuth = d.payment_type === 'Unpaid';
   const etDisplay = isEt
     ? (d.e_transfer_date
         ? `<span style="color:#58a6ff;font-weight:600">${escapeHtml(d.e_transfer_date)}</span>`
         : `<span style="color:var(--warning)">— not set —</span>`)
+    : isUnpaidAuth
+    ? (d.unpaid_authorized_by
+        ? `<span style="color:var(--warning)" title="${escapeHtml(d.unpaid_auth_note || '')}">🔓 Auth: ${escapeHtml(d.unpaid_authorized_by)}</span>`
+        : `<span style="color:var(--danger)">⚠️ no auth</span>`)
     : `<span style="color:var(--muted)">—</span>`;
   return {
     kind: 'dsd',
@@ -3129,12 +3136,14 @@ function _normalizeShippingUnpaid(o) {
 }
 
 function renderUnpaid() {
-  // 1. Gather DSD unpaid (same filter as before — unchanged business logic)
-  // DSD unpaid: E-Transfer only. Terms are no longer tracked here (business
-  // decision — Terms customers dropped from the unpaid workflow). Shipping
-  // orders remain a separate stream, merged in below.
+  // 1. Gather DSD unpaid.
+  // E-Transfer: awaiting the customer's e-transfer. Terms are NOT tracked here
+  // (business decision). 'Unpaid': manager-not-present deliveries left with
+  // head-office authorization — these must be chased for payment, so they
+  // belong in this workflow alongside E-Transfers. Shipping orders are a
+  // separate stream merged in below.
   const dsdUnpaid = allDeliveries.filter(d =>
-    d.payment_type === 'E-Transfer' && !d.paid
+    (d.payment_type === 'E-Transfer' || d.payment_type === 'Unpaid') && !d.paid
   );
 
   // 2. Normalize both sources into the common row shape
@@ -3550,6 +3559,7 @@ window.showDetail = async (id) => {
     ${d.po_number ? `<div class="detail-row"><span class="detail-label">PO #</span><span class="detail-value" style="font-weight:700;color:var(--mm-cyan)">${d.po_number}</span></div>` : ''}
     <div class="detail-row"><span class="detail-label">Driver</span><span class="detail-value">${d.driver_name}</span></div>
     <div class="detail-row"><span class="detail-label">Payment</span><span class="detail-value">${payBadge(d.payment_type)}</span></div>
+    ${d.payment_type === 'Unpaid' ? `<div class="detail-row"><span class="detail-label">Authorized By</span><span class="detail-value" style="color:#f85149;font-weight:700">🔓 ${d.unpaid_authorized_by ? escapeHtml(d.unpaid_authorized_by) : '⚠️ not recorded'}</span></div>${d.unpaid_auth_note ? `<div class="detail-row"><span class="detail-label">Auth Note</span><span class="detail-value">${escapeHtml(d.unpaid_auth_note)}</span></div>` : ''}` : ''}
     <div class="detail-row"><span class="detail-label">QB Status</span><span class="detail-value">${qbBadge(d.qb_status||'pending')}</span></div>
     <div class="detail-row"><span class="detail-label">Unit Price</span><span class="detail-value">$${parseFloat(d.unit_price).toFixed(2)}</span></div>
     ${d.notes ? `<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-value">${d.notes}</span></div>` : ''}
