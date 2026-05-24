@@ -2794,8 +2794,8 @@ window.doPasswordUpdate = async () => {
   const errEl = document.getElementById('new-password-error');
   errEl.style.display = 'none';
 
-  if (!newPassword || newPassword.length < 8) {
-    errEl.textContent = 'Password must be at least 8 characters.';
+  if (!newPassword || newPassword.length < 6) {
+    errEl.textContent = 'Password must be at least 6 characters.';
     errEl.style.display = 'block';
     return;
   }
@@ -4429,7 +4429,7 @@ window.saveDriver = async () => {
 
   if (!id) {
     // Create new driver via Edge Function (needs service role)
-    if (!password || password.length < 8) { msg.style.color='var(--danger)'; msg.textContent = '⚠️ Password must be at least 8 characters.'; return; }
+    if (!password || password.length < 6) { msg.style.color='var(--danger)'; msg.textContent = '⚠️ Password must be at least 6 characters.'; return; }
     try {
       const res = await fetch(EDGE_URL, {
         method: 'POST',
@@ -7055,7 +7055,7 @@ window.updateResetSubmitButton = () => {
   if (_rpwdState.mode === 'email_link') {
     enabled = true;
   } else if (_rpwdState.mode === 'direct_set') {
-    enabled = password.length >= 8;
+    enabled = password.length >= 6;
   }
   btn.disabled = !enabled;
   btn.style.opacity = enabled ? '1' : '0.5';
