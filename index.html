@@ -7479,6 +7479,29 @@ const schedState = {
 };
 window.schedState = schedState; // expose for debugging
 
+// ── Depot overlap groups ──────────────────────────────────────────────
+// Some depots share territory completely: a store served by one can be
+// delivered by drivers from the other, so scheduling for either depot must
+// surface BOTH depots' stores/orders/trips. ANJ and Mississauga (MIS) fully
+// overlap. Defined by depot UUID so it works regardless of whether a given
+// depot is in the current user's userDepots scope.
+const DEPOT_OVERLAP_GROUPS = [
+  // Anjou + Mississauga share territory
+  ['ea96ba57-95f1-440d-a2df-96d3a387d1a6', '4c240d28-3a84-4dd7-9e44-31c40a92b191'],
+];
+// Expand a list of depot IDs to include every overlap partner. Returns a
+// de-duplicated array. If no depot in the input belongs to an overlap group,
+// the list is returned unchanged.
+function schedExpandDepotIds(depotIds) {
+  const out = new Set(depotIds);
+  for (const group of DEPOT_OVERLAP_GROUPS) {
+    if (group.some(id => out.has(id))) {
+      group.forEach(id => out.add(id));
+    }
+  }
+  return Array.from(out);
+}
+
 // ── Date helpers ──
 const SCHED_WEEKDAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const SCHED_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -7825,13 +7848,16 @@ async function schedLoadOrdersAndOverdue() {
     schedState.storesIndex = new Map();
     return;
   }
-  const depotIds = schedState.userDepots
+  let depotIds = schedState.userDepots
     .filter(d => depotCodes.includes(d.code))
     .map(d => d.id);
   if (depotIds.length === 0) {
     schedState.storesIndex = new Map();
     return;
   }
+  // Include overlap-partner depots (e.g. ANJ⇄MIS share territory) so either
+  // depot's schedule surfaces both depots' stores.
+  depotIds = schedExpandDepotIds(depotIds);
   const depotIdList = depotIds.map(id => `"${id}"`).join(',');
 
   // Overdue stores via stores_with_predicted_visit view
@@ -8059,10 +8085,12 @@ async function schedLoadDrivers() {
 async function schedLoadTripsForWeek() {
   const depotCodes = Array.from(schedState.activeDepots);
   if (depotCodes.length === 0) { schedState.trips = []; return; }
-  const depotIds = schedState.userDepots
+  let depotIds = schedState.userDepots
     .filter(d => depotCodes.includes(d.code))
     .map(d => d.id);
   if (depotIds.length === 0) { schedState.trips = []; return; }
+  // Include overlap-partner depots (ANJ⇄MIS) so both depots' trips show.
+  depotIds = schedExpandDepotIds(depotIds);
   const depotIdList = depotIds.map(id => `"${id}"`).join(',');
 
   const ws = schedState.weekStart;
