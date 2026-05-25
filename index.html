@@ -1301,6 +1301,68 @@
     background: var(--mm-cyan);
     color: var(--bg);
   }
+  /* ===== LEADS TAB ===== */
+  .leads-badge { display:inline-block; min-width:18px; padding:1px 6px; border-radius:999px; background:var(--mm-pink); color:#0d1117; font-size:11px; font-weight:700; line-height:16px; text-align:center; margin-left:4px; }
+  .leads-layout { display:flex; gap:18px; align-items:flex-start; }
+  .leads-list-col { width:340px; flex:0 0 340px; }
+  .leads-toolbar { display:flex; gap:8px; margin-bottom:10px; }
+  .leads-toolbar select { flex:1; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:8px 10px; font-size:13px; }
+  .leads-refresh { border:1px solid var(--border); background:var(--bg3); color:var(--text); border-radius:6px; padding:0 12px; cursor:pointer; font-size:15px; }
+  .leads-refresh:hover { background:var(--bg2); }
+  .leads-list { border:1px solid var(--border); border-radius:8px; overflow:hidden; max-height:70vh; overflow-y:auto; background:var(--bg2); }
+  .leads-empty, .leads-detail-empty { padding:24px; color:var(--muted); font-size:14px; text-align:center; }
+  .lead-row { padding:12px 14px; border-bottom:1px solid var(--border); cursor:pointer; transition:background .1s; }
+  .lead-row:last-child { border-bottom:none; }
+  .lead-row:hover { background:var(--bg3); }
+  .lead-row.active { background:rgba(79,195,212,0.1); border-left:3px solid var(--mm-cyan); padding-left:11px; }
+  .lead-row-top { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .lead-row-name { font-weight:600; color:var(--text); font-size:14px; }
+  .lead-row-when { font-size:11px; color:var(--muted); white-space:nowrap; }
+  .lead-row-email { font-size:12px; color:var(--muted); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lead-pill { display:inline-block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; padding:2px 7px; border-radius:999px; margin-top:6px; }
+  .lead-pill.new       { background:rgba(232,123,181,0.18); color:var(--mm-pink); }
+  .lead-pill.contacted { background:rgba(79,195,212,0.18); color:var(--mm-cyan); }
+  .lead-pill.qualified { background:rgba(210,153,34,0.2); color:var(--gold2); }
+  .lead-pill.converted { background:rgba(63,185,80,0.18); color:var(--success); }
+  .lead-pill.dead      { background:rgba(139,148,158,0.18); color:var(--muted); }
+  .lead-pill.spam      { background:rgba(248,81,73,0.16); color:var(--danger); }
+  .leads-detail { flex:1; border:1px solid var(--border); border-radius:8px; padding:20px 22px; min-height:300px; background:var(--bg2); }
+  .ld-name { font-size:20px; font-weight:700; color:var(--text); margin:0 0 2px; }
+  .ld-contact { font-size:13px; color:var(--muted); margin:0 0 14px; }
+  .ld-contact a { color:var(--mm-cyan); text-decoration:none; }
+  .ld-section-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin:18px 0 8px; }
+  .ld-message { background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:12px 14px; font-size:14px; white-space:pre-wrap; color:var(--text); }
+  .ld-status-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0 0; }
+  .ld-status-row select { background:var(--bg3); color:var(--text); padding:7px 10px; border:1px solid var(--border); border-radius:6px; font-size:13px; }
+  .ld-btn { border:none; border-radius:6px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; }
+  .ld-btn.primary { background:linear-gradient(135deg, var(--mm-cyan), var(--gold)); color:#0d1117; }
+  .ld-btn.primary:hover { filter:brightness(1.08); }
+  .ld-btn.danger  { background:transparent; color:var(--danger); border:1px solid rgba(248,81,73,0.4); }
+  .ld-btn.danger:hover { background:rgba(248,81,73,0.1); }
+  .ld-btn.ghost   { background:var(--bg3); color:var(--text); border:1px solid var(--border); }
+  .ld-btn.ghost:hover { background:var(--bg); }
+  .ld-btn:disabled { opacity:.55; cursor:default; }
+  .ld-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+  .ld-timeline { margin-top:6px; }
+  .ld-event { display:flex; gap:10px; padding:9px 0; border-bottom:1px solid var(--border); font-size:13px; }
+  .ld-event:last-child { border-bottom:none; }
+  .ld-event-dot { flex:0 0 8px; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-top:5px; }
+  .ld-event-dot.email_sent { background:var(--mm-cyan); }
+  .ld-event-dot.status_change { background:var(--gold); }
+  .ld-event-dot.note { background:var(--muted); }
+  .ld-event-dot.created { background:var(--success); }
+  .ld-event-body { flex:1; }
+  .ld-event-when { color:var(--muted); font-size:11px; }
+  .ld-event-text { color:var(--text); }
+  .ld-event-text .ld-email-subj { font-weight:600; }
+  .ld-event-quote { color:var(--muted); white-space:pre-wrap; margin-top:3px; padding-left:10px; border-left:2px solid var(--border); }
+  .ld-compose { margin-top:10px; border:1px solid var(--border); border-radius:8px; padding:14px; background:var(--bg3); }
+  .ld-compose input, .ld-compose textarea { width:100%; box-sizing:border-box; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:9px 11px; font-size:13px; margin-bottom:8px; font-family:inherit; }
+  .ld-compose textarea { min-height:120px; resize:vertical; }
+  .ld-compose-hint { font-size:11px; color:var(--muted); margin:0 0 10px; }
+  .ld-inline-msg { font-size:13px; padding:8px 11px; border-radius:6px; margin-bottom:8px; }
+  .ld-inline-msg.ok  { background:rgba(63,185,80,0.12); color:var(--success); }
+  .ld-inline-msg.err { background:rgba(248,81,73,0.12); color:var(--danger); }
 </style>
 </head>
 <body>
@@ -1382,6 +1444,7 @@
       <button class="tab" onclick="switchTab('schedule')" data-scheduler-only style="display:none">📅 Schedule</button>
       <button class="tab" onclick="switchTab('lot')" data-hide-from-depot-manager>🔬 Lot Lookup</button>
       <button class="tab" onclick="switchTab('drivers')">👤 Drivers</button>
+      <button class="tab" onclick="switchTab('leads')" id="tab-btn-leads" data-admin-only style="display:none">📥 Leads <span id="leads-new-badge" class="leads-badge" style="display:none">0</span></button>
       <button class="tab" onclick="switchTab('access')" data-super-admin-only style="display:none">🔐 Access</button>
     </div>
 
@@ -1896,6 +1959,31 @@
           <span class="table-count" id="access-audit-count">Recent 50 changes</span>
         </div>
         <div id="access-audit-body" style="padding:14px"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+
+    <!-- ===== LEADS TAB PANEL ===== -->
+    <div id="tab-leads" style="display:none">
+      <div class="leads-layout">
+        <div class="leads-list-col">
+          <div class="leads-toolbar">
+            <select id="leads-status-filter" onchange="window.loadLeads()">
+              <option value="active">Active (new + contacted + qualified)</option>
+              <option value="new">New</option>
+              <option value="contacted">Contacted</option>
+              <option value="qualified">Qualified</option>
+              <option value="converted">Converted</option>
+              <option value="dead">Dead</option>
+              <option value="spam">Spam</option>
+              <option value="all">All</option>
+            </select>
+            <button class="leads-refresh" onclick="window.loadLeads()" title="Refresh">↻</button>
+          </div>
+          <div id="leads-list" class="leads-list"><div class="leads-empty">Loading…</div></div>
+        </div>
+        <div id="leads-detail" class="leads-detail">
+          <div class="leads-detail-empty">Select a lead to view details.</div>
+        </div>
       </div>
     </div>
 
@@ -4361,7 +4449,7 @@ document.getElementById('store-modal').addEventListener('click', e => { if (e.ta
 window.switchTab = (tab) => {
   // The schedule tab uses a flex column layout; setting display:block
   // breaks it. Every other tab is fine with block, so we special-case here.
-  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','refills','schedule','lot','drivers','access'].forEach(t => {
+  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','access'].forEach(t => {
     const el = document.getElementById(`tab-${t}`);
     if (!el) return;
     if (t !== tab) {
@@ -4383,7 +4471,232 @@ window.switchTab = (tab) => {
   if (tab==='refills') loadRefills();
   if (tab==='schedule') initScheduleTab();
   if (tab==='access') loadAccess();
+  if (tab==='leads') window.loadLeads();
 };
+
+// ===== LEADS TAB =====
+(function () {
+  let LEADS_CACHE = [];
+  let SELECTED_LEAD_ID = null;
+
+  function timeAgo(iso) {
+    if (!iso) return "";
+    const d = new Date(iso), now = new Date();
+    const s = Math.floor((now - d) / 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    if (s < 604800) return Math.floor(s / 86400) + "d ago";
+    return d.toLocaleDateString('en-CA');
+  }
+  function fmtDateTime(iso) {
+    if (!iso) return "";
+    return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  // PostgREST writes use the dashboard's headers() + SUPABASE_URL.
+  async function leadsWrite(path, method, bodyObj, prefer) {
+    return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      method,
+      headers: { ...headers(), 'Prefer': prefer || 'return=minimal' },
+      body: bodyObj ? JSON.stringify(bodyObj) : undefined,
+    });
+  }
+  function currentUserId() {
+    // Matches the dashboard convention: the auth.users.id lives at window._session.user_id.
+    return (window._session && window._session.user_id) || null;
+  }
+
+  window.loadLeads = async function () {
+    const listEl = document.getElementById("leads-list");
+    if (!listEl) return;
+    const filter = (document.getElementById("leads-status-filter") || {}).value || "active";
+    listEl.innerHTML = '<div class="leads-empty">Loading…</div>';
+
+    let q = "leads?select=id,name,first_name,last_name,email,phone,message,status,created_at,last_touched_at&order=created_at.desc";
+    if (filter === "active") q += "&status=in.(new,contacted,qualified)";
+    else if (filter !== "all") q += `&status=eq.${filter}`;
+
+    let data;
+    try { data = await sbFetch(q); }
+    catch (e) { listEl.innerHTML = '<div class="leads-empty">Error loading leads.</div>'; return; }
+    LEADS_CACHE = Array.isArray(data) ? data : [];
+    renderLeadsList();
+    updateNewBadge();
+  };
+
+  async function updateNewBadge() {
+    let rows;
+    try { rows = await sbFetch("leads?select=id&status=eq.new"); } catch (e) { return; }
+    const n = Array.isArray(rows) ? rows.length : 0;
+    const badge = document.getElementById("leads-new-badge");
+    if (!badge) return;
+    if (n > 0) { badge.textContent = n; badge.style.display = "inline-block"; }
+    else badge.style.display = "none";
+  }
+
+  function renderLeadsList() {
+    const listEl = document.getElementById("leads-list");
+    if (!listEl) return;
+    if (!LEADS_CACHE.length) { listEl.innerHTML = '<div class="leads-empty">No leads in this view.</div>'; return; }
+    listEl.innerHTML = LEADS_CACHE.map(function (l) {
+      const active = l.id === SELECTED_LEAD_ID ? " active" : "";
+      const nm = l.name || ((l.first_name||"") + " " + (l.last_name||"")).trim();
+      return '<div class="lead-row' + active + '" onclick="window.selectLead(\'' + l.id + '\')">' +
+        '<div class="lead-row-top"><span class="lead-row-name">' + esc(nm) + '</span>' +
+        '<span class="lead-row-when">' + timeAgo(l.created_at) + '</span></div>' +
+        '<div class="lead-row-email">' + esc(l.email) + '</div>' +
+        '<span class="lead-pill ' + esc(l.status) + '">' + esc(l.status) + '</span></div>';
+    }).join("");
+  }
+
+  window.selectLead = async function (id) {
+    SELECTED_LEAD_ID = id;
+    renderLeadsList();
+    const detail = document.getElementById("leads-detail");
+    detail.innerHTML = '<div class="leads-detail-empty">Loading…</div>';
+    let leadArr, activity;
+    try {
+      leadArr = await sbFetch(`leads?select=*&id=eq.${id}&limit=1`);
+      activity = await sbFetch(`lead_activity?select=*&lead_id=eq.${id}&order=created_at.desc`);
+    } catch (e) { detail.innerHTML = '<div class="leads-detail-empty">Could not load lead.</div>'; return; }
+    const lead = Array.isArray(leadArr) ? leadArr[0] : null;
+    if (!lead) { detail.innerHTML = '<div class="leads-detail-empty">Could not load lead.</div>'; return; }
+    renderDetail(lead, Array.isArray(activity) ? activity : []);
+  };
+
+  function statusOptions(current) {
+    return ["new","contacted","qualified","converted","dead","spam"].map(function (s) {
+      return '<option value="' + s + '"' + (s === current ? " selected" : "") + ">" + s.charAt(0).toUpperCase() + s.slice(1) + "</option>";
+    }).join("");
+  }
+
+  function renderEvent(e) {
+    let text = "";
+    if (e.activity_type === "created") text = "Lead created — " + esc(e.note || "web form");
+    else if (e.activity_type === "status_change") text = "Status: " + esc(e.old_status || "?") + " → " + esc(e.new_status || "?");
+    else if (e.activity_type === "note") text = esc(e.note || "");
+    else if (e.activity_type === "email_sent") text = '<span class="ld-email-subj">Email sent: ' + esc(e.email_subject || "") + '</span><div class="ld-event-quote">' + esc(e.email_body || "") + '</div>';
+    else if (e.activity_type === "converted") text = "Marked converted";
+    return '<div class="ld-event"><div class="ld-event-dot ' + esc(e.activity_type) + '"></div>' +
+      '<div class="ld-event-body"><div class="ld-event-text">' + text + '</div>' +
+      '<div class="ld-event-when">' + fmtDateTime(e.created_at) + '</div></div></div>';
+  }
+
+  function renderDetail(lead, activity) {
+    const detail = document.getElementById("leads-detail");
+    const displayName = esc(lead.name || ((lead.first_name||"") + " " + (lead.last_name||"")).trim());
+    const replySubject = "Re: Mini Melts partnership inquiry";
+    detail.innerHTML =
+      '<h2 class="ld-name">' + displayName + '</h2>' +
+      '<p class="ld-contact"><a href="mailto:' + esc(lead.email) + '">' + esc(lead.email) + '</a>' +
+        (lead.phone ? " · " + esc(lead.phone) : "") + " · received " + fmtDateTime(lead.created_at) + '</p>' +
+      '<div class="ld-section-label">Their message</div>' +
+      '<div class="ld-message">' + esc(lead.message || "(no message)") + '</div>' +
+      '<div class="ld-section-label">Status</div>' +
+      '<div class="ld-status-row"><select id="ld-status-select">' + statusOptions(lead.status) + '</select>' +
+        '<button class="ld-btn ghost" onclick="window.leadUpdateStatus(\'' + lead.id + '\')">Update status</button></div>' +
+      '<div class="ld-actions">' +
+        '<button class="ld-btn primary" onclick="window.leadToggleCompose(true)">✉ Reply</button>' +
+        '<button class="ld-btn ghost" onclick="window.leadToggleNote(true)">+ Add note</button>' +
+        '<button class="ld-btn danger" onclick="window.leadDelete(\'' + lead.id + '\')">Delete</button></div>' +
+      '<div id="ld-compose-box" class="ld-compose" style="display:none">' +
+        '<div id="ld-compose-msg"></div>' +
+        '<input id="ld-reply-subject" type="text" value="' + esc(replySubject) + '">' +
+        '<textarea id="ld-reply-body" placeholder="Write your reply to ' + esc(lead.email) + '…"></textarea>' +
+        '<p class="ld-compose-hint">Sends from sales@minimelts.ca · replies go to dave@minimelts.ca</p>' +
+        '<button class="ld-btn primary" id="ld-send-btn" onclick="window.leadSendReply(\'' + lead.id + '\')">Send reply</button> ' +
+        '<button class="ld-btn ghost" onclick="window.leadToggleCompose(false)">Cancel</button></div>' +
+      '<div id="ld-note-box" class="ld-compose" style="display:none">' +
+        '<div id="ld-note-msg"></div>' +
+        '<textarea id="ld-note-body" placeholder="Internal note (not emailed)…"></textarea>' +
+        '<button class="ld-btn ghost" onclick="window.leadSaveNote(\'' + lead.id + '\')">Save note</button> ' +
+        '<button class="ld-btn ghost" onclick="window.leadToggleNote(false)">Cancel</button></div>' +
+      '<div class="ld-section-label">Activity</div>' +
+      '<div class="ld-timeline">' + (activity.length ? activity.map(renderEvent).join("") : '<div class="leads-empty">No activity yet.</div>') + '</div>';
+  }
+
+  window.leadToggleCompose = function (show) {
+    const box = document.getElementById("ld-compose-box");
+    if (box) box.style.display = show ? "block" : "none";
+    if (show) { const n = document.getElementById("ld-note-box"); if (n) n.style.display = "none"; }
+  };
+  window.leadToggleNote = function (show) {
+    const box = document.getElementById("ld-note-box");
+    if (box) box.style.display = show ? "block" : "none";
+    if (show) { const c = document.getElementById("ld-compose-box"); if (c) c.style.display = "none"; }
+  };
+
+  window.leadUpdateStatus = async function (id) {
+    const sel = document.getElementById("ld-status-select");
+    const newStatus = sel.value;
+    let beforeArr;
+    try { beforeArr = await sbFetch(`leads?select=status&id=eq.${id}&limit=1`); } catch (e) { return; }
+    const oldStatus = (Array.isArray(beforeArr) && beforeArr[0]) ? beforeArr[0].status : null;
+    if (oldStatus === newStatus) return;
+    const uid = currentUserId();
+    const r = await leadsWrite(`leads?id=eq.${id}`, 'PATCH', { status: newStatus, last_touched_by: uid, last_touched_at: new Date().toISOString() });
+    if (!r.ok) { alert("Status update failed."); return; }
+    await leadsWrite('lead_activity', 'POST', { lead_id: id, actor: uid, activity_type: 'status_change', old_status: oldStatus, new_status: newStatus });
+    await window.selectLead(id);
+    await window.loadLeads();
+  };
+
+  window.leadSaveNote = async function (id) {
+    const ta = document.getElementById("ld-note-body");
+    const msgEl = document.getElementById("ld-note-msg");
+    const note = (ta.value || "").trim();
+    if (!note) { msgEl.innerHTML = '<div class="ld-inline-msg err">Note is empty.</div>'; return; }
+    const uid = currentUserId();
+    const r = await leadsWrite('lead_activity', 'POST', { lead_id: id, actor: uid, activity_type: 'note', note: note });
+    if (!r.ok) { msgEl.innerHTML = '<div class="ld-inline-msg err">Save failed.</div>'; return; }
+    await leadsWrite(`leads?id=eq.${id}`, 'PATCH', { last_touched_by: uid, last_touched_at: new Date().toISOString() });
+    await window.selectLead(id);
+  };
+
+  window.leadSendReply = async function (id) {
+    const subjEl = document.getElementById("ld-reply-subject");
+    const bodyEl = document.getElementById("ld-reply-body");
+    const msgEl = document.getElementById("ld-compose-msg");
+    const btn = document.getElementById("ld-send-btn");
+    const subject = (subjEl.value || "").trim();
+    const message = (bodyEl.value || "").trim();
+    if (!subject) { msgEl.innerHTML = '<div class="ld-inline-msg err">Subject is required.</div>'; return; }
+    if (!message) { msgEl.innerHTML = '<div class="ld-inline-msg err">Message is required.</div>'; return; }
+    btn.disabled = true; btn.textContent = "Sending…";
+    try {
+      const token = (window._session && window._session.access_token) || window._token;
+      const r = await fetch(`${SUPABASE_URL}/functions/v1/send-lead-reply`, {
+        method: "POST",
+        headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead_id: id, subject: subject, message: message }),
+      });
+      const data = await r.json().catch(function () { return {}; });
+      if (!r.ok || !data.ok) {
+        msgEl.innerHTML = '<div class="ld-inline-msg err">Send failed: ' + esc(data.error || r.status) + '</div>';
+        btn.disabled = false; btn.textContent = "Send reply"; return;
+      }
+      msgEl.innerHTML = '<div class="ld-inline-msg ok">Reply sent.</div>';
+      bodyEl.value = "";
+      setTimeout(function () { window.selectLead(id); window.loadLeads(); }, 700);
+    } catch (e) {
+      msgEl.innerHTML = '<div class="ld-inline-msg err">Network error.</div>';
+      btn.disabled = false; btn.textContent = "Send reply";
+    }
+  };
+
+  window.leadDelete = async function (id) {
+    if (!confirm("Delete this lead permanently? This also removes its activity history.")) return;
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/leads?id=eq.${id}`, { method: 'DELETE', headers: headers() });
+    if (!r.ok) { alert("Delete failed."); return; }
+    SELECTED_LEAD_ID = null;
+    document.getElementById("leads-detail").innerHTML = '<div class="leads-detail-empty">Lead deleted. Select another lead.</div>';
+    await window.loadLeads();
+  };
+})();
 
 // ── Drivers ──
 let allDriversData = [];
