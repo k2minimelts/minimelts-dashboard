@@ -767,6 +767,23 @@
   .sched-cell.sched-driver-label .total {
     color: var(--muted); font-size: 10px;
   }
+  .sched-resend-week {
+    margin-left: 6px;
+    font-size: 9px;
+    line-height: 1;
+    padding: 3px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+    border: 1px solid rgba(79,195,212,0.3);
+    background: var(--bg3);
+    color: var(--mm-cyan);
+    white-space: nowrap;
+    opacity: 0.65;
+    transition: opacity 0.1s;
+  }
+  .sched-cell.sched-driver-label:hover .sched-resend-week { opacity: 1; }
+  .sched-resend-week:hover:not(:disabled) { filter: brightness(1.25); }
+  .sched-resend-week:disabled { opacity: 0.5; cursor: default; }
   .sched-cell.sched-day-header {
     background: var(--bg2);
     color: var(--muted);
@@ -8980,9 +8997,17 @@ function schedRenderGrid() {
     const driverTrips = schedState.trips.filter(t => t.driver_id === driver.id);
     let totalStops = 0;
     for (const t of driverTrips) for (const d of t.days || []) totalStops += (d.stops || []).length;
+    // Resend the weekly schedule email — only meaningful when the driver has at
+    // least one PUBLISHED trip this week (the email only includes published trips).
+    const hasPublished = driverTrips.some(t => t.status === 'published');
+    const resendBtn = hasPublished
+      ? `<button class="sched-resend-week" title="Resend this week's schedule email to ${schedEscapeHtml(driver.name)}"
+           onclick="event.stopPropagation(); window.schedResendWeekEmail('${driver.id}', this)">✉ resend</button>`
+      : '';
     const cells = [`<div class="sched-cell sched-driver-label ${isHighlight ? 'active' : ''}" data-driver-id="${driver.id}">
       <span title="${schedEscapeHtml(driver.email)}">${schedEscapeHtml(driver.name)}</span>
       <span class="total">${totalStops}</span>
+      ${resendBtn}
     </div>`];
 
     for (const iso of days) {
@@ -10477,6 +10502,37 @@ window.schedCalcDayDriveTime = async function(tripDayId, btnEl) {
   } catch (e) {
     schedToast(`⚠ Calculate failed: ${e.message}`);
     console.warn('[sched] calc drive failed:', e.message);
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = original; }
+  }
+};
+
+// Resend the weekly schedule email to a single driver for the currently-displayed
+// week. Uses the SAME edge function and params the publish flow uses, so auth,
+// manager-From, and CC (depot manager + observers) all behave identically — this
+// is just a manual re-trigger (e.g. after the email template changed, or a driver
+// says they didn't get it). Only offered when the driver has a published trip
+// this week; the email itself only includes published trips.
+window.schedResendWeekEmail = async function(driverId, btnEl) {
+  if (!driverId) return;
+  const driverName = schedState.drivers.find(d => d.id === driverId)?.name || 'driver';
+  if (!confirm(`Resend this week's schedule email to ${driverName}?\n\nThey'll get a fresh copy of the published schedule for the week shown.`)) return;
+  const original = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '✉ sending…'; }
+  schedToast(`Resending schedule to ${driverName}…`);
+  try {
+    const result = await schedCallEdgeFunction('send-driver-week-email', {
+      driver_id: driverId,
+      week_start: schedState.weekStart,
+    });
+    if (result && result.skipped === 'empty_week') {
+      schedToast(`No published trips this week for ${driverName} — nothing sent`);
+    } else {
+      schedToast(`✓ Schedule resent to ${driverName}`);
+    }
+  } catch (e) {
+    schedToast(`⚠ Resend failed for ${driverName}: ${e.message}`);
+    console.warn('[sched] resend week email failed:', e.message);
+  } finally {
     if (btnEl) { btnEl.disabled = false; btnEl.textContent = original; }
   }
 };
