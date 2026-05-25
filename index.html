@@ -7579,12 +7579,15 @@ function schedTodayIso() {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 function schedNextWeekMonday() {
-  const today = new Date();
-  const day = today.getDay();
-  const daysToNextMon = (8 - day) % 7 || 7;
-  const monday = new Date(today);
-  monday.setDate(today.getDate() + daysToNextMon);
-  return monday.toISOString().slice(0, 10);
+  // Compute entirely in UTC-noon space (like schedParseDate/schedAddDays) to
+  // avoid the timezone off-by-one: previously this mixed local getDay()/setDate()
+  // with toISOString() (which is UTC), so in Mountain time the serialized date
+  // could land one day off — producing a Tue-start week instead of Monday.
+  const todayIso = schedTodayIso();           // local calendar date, YYYY-MM-DD
+  const d = schedParseDate(todayIso);          // UTC noon of that local date
+  const dow = d.getUTCDay();                    // 0=Sun..6=Sat, stable at UTC noon
+  const daysToNextMon = (8 - dow) % 7 || 7;     // always the upcoming Monday
+  return schedAddDays(todayIso, daysToNextMon);
 }
 // Workload formula
 function schedEstimateDriveHours(stops) {
