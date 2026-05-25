@@ -1530,7 +1530,7 @@
           <button class="btn-export" onclick="showAddStore()" data-admin-only>+ Add New Store</button>
         </div>
         <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <input id="store-search" type="text" placeholder="Search by name, store number (e.g. 1234 or ST-1234), or city..." oninput="searchStores()" style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;outline:none"/>
+          <input id="store-search" type="text" placeholder="Search by name, store # (e.g. 1234 or ST-1234), city, email, or phone..." oninput="searchStores()" style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;outline:none"/>
           <select id="store-depot-filter" onchange="searchStores()" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px">
             <option value="">All Depots</option>
           </select>
@@ -4037,11 +4037,15 @@ async function loadStores(search, province, hideInactive, depotId) {
   const offset = _storePage * STORE_PAGE_SIZE;
   let query = `stores?select=*,depot:depots(code,name)&order=name.asc&limit=${STORE_PAGE_SIZE}&offset=${offset}`;
   if (search) {
-    // Search across name, qb_name, public_code, and ship_city.
+    // Search across name, qb_name, public_code, ship_city, email, phone, and cell.
     // 
     // We TOKENIZE the user input on whitespace and require EACH token to
     // appear in at least one column. This makes "staples 2" find "Staples #2"
     // (each token matches qb_name independently of punctuation like '#').
+    //
+    // email/phone/customer_cell are included so a customer can be looked up by
+    // their email address or phone number (substring match, so it also finds one
+    // value within a comma-separated multi-value field).
     //
     // PostgREST nested boolean syntax:
     //   and=(or=(c1.ilike.*tok1*,c2.ilike.*tok1*),or=(c1.ilike.*tok2*,c2.ilike.*tok2*))
@@ -4057,6 +4061,9 @@ async function loadStores(search, province, hideInactive, depotId) {
           orParts.push(`qb_name.ilike.${enc}`);
           orParts.push(`public_code.ilike.${enc}`);
           orParts.push(`ship_city.ilike.${enc}`);
+          orParts.push(`email.ilike.${enc}`);
+          orParts.push(`phone.ilike.${enc}`);
+          orParts.push(`customer_cell.ilike.${enc}`);
         }
         return `or(${orParts.join(',')})`;
       });
