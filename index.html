@@ -3876,16 +3876,36 @@ window.saveCorrection = async (id) => {
   if ((d.qb_status||'pending') === 'approved') { alert('Cannot edit an approved delivery. Unapprove it first to make changes.'); return; }
   const items = Array.isArray(d.items) ? d.items.filter(i => parseInt(i.qtyDelivered) > 0) : [];
   const unitPrice = parseFloat(document.getElementById('edit-unit-price').value) || 0;
+  const bigUnitPrice = parseFloat(d.big_unit_price || d.unit_price) || unitPrice;
   const deliveryFee = parseFloat(document.getElementById('edit-delivery-fee').value) || 0;
   const paymentType = document.getElementById('edit-payment-type').value;
   const notes = document.getElementById('edit-notes').value.trim();
-  const updatedItems = d.items.map(item => {
-    const idx = items.findIndex(i => i.product === item.product);
-    const qtyEl = idx >= 0 ? document.getElementById(`edit-qty-${idx}`) : null;
-    return qtyEl ? { ...item, qtyDelivered: parseInt(qtyEl.value) || 0 } : item;
+  const BIG_PRODUCTS = ['BIG Cherry', 'BIG Mango', 'BIG Kiwi'];
+  // Read the edited quantities from the SAME filtered list the inputs were
+  // rendered from (items.map((i,idx) => edit-qty-${idx})). Reading by the same
+  // index avoids the stale-data bug where mapping over the full d.items and
+  // cross-referencing by product name picked up the wrong input (or none), so
+  // edits silently reverted and the export shipped the previous quantities.
+  const editedById = {};
+  items.forEach((i, idx) => {
+    const qtyEl = document.getElementById(`edit-qty-${idx}`);
+    editedById[i.product] = qtyEl ? (parseInt(qtyEl.value) || 0) : (parseInt(i.qtyDelivered) || 0);
   });
+  // Rebuild the full items array: apply edited qtys to the items that were
+  // shown/editable; leave any originally-zero (filtered-out) items untouched.
+  const updatedItems = d.items.map(item =>
+    Object.prototype.hasOwnProperty.call(editedById, item.product)
+      ? { ...item, qtyDelivered: editedById[item.product] }
+      : item
+  );
   const totalQty = updatedItems.reduce((s, i) => s + (parseInt(i.qtyDelivered) || 0), 0);
-  const subtotal = (totalQty * unitPrice) + deliveryFee;
+  // Subtotal must price BIG products at big_unit_price, matching server.js.
+  const productSubtotal = updatedItems.reduce((s, i) => {
+    const q = parseInt(i.qtyDelivered) || 0;
+    if (q <= 0) return s;
+    return s + q * (BIG_PRODUCTS.includes(i.product) ? bigUnitPrice : unitPrice);
+  }, 0);
+  const subtotal = productSubtotal + deliveryFee;
   const tax = Math.round(subtotal * 0.05 * 100) / 100;
   const total = Math.round((subtotal + tax) * 100) / 100;
   const fmt = n => parseFloat(n).toFixed(2);
@@ -3915,11 +3935,12 @@ window.saveCorrection = async (id) => {
     const mapped = QB_ITEM_MAP[item.product];
     const qbItem = mapped ? mapped.item : item.product;
     const qbDesc = mapped ? mapped.desc : item.product;
-    iifLines.push(`SPL\t\tINVOICE\t${dateStr}\tSales\t${d.store_name}\t-${fmt(qty*unitPrice)}\t${d.receipt_number}\t${qbDesc}\t-${qty}\t-${fmt(unitPrice)}\t${qbItem}\t${d.store_province||''}`);
+    const linePrice = BIG_PRODUCTS.includes(item.product) ? bigUnitPrice : unitPrice;
+    iifLines.push(`SPL\t\tINVOICE\t${dateStr}\tSales\t${d.store_name}\t-${fmt(qty*linePrice)}\t${d.receipt_number}\t${qbDesc}\t-${qty}\t-${fmt(linePrice)}\t${qbItem}\t${d.store_province||''}`);
   });
   if (deliveryFee > 0) iifLines.push(`SPL\t\tINVOICE\t${dateStr}\tFreight Income\t${d.store_name}\t-${fmt(deliveryFee)}\t${d.receipt_number}\tDelivery Fee\t-1\t-${fmt(deliveryFee)}\tFreight\t${d.store_province||''}`);
   iifLines.push('ENDTRNS');
-  const payload = { items: updatedItems, unit_price: unitPrice, delivery_fee: deliveryFee, subtotal, tax, total, payment_type: paymentType, notes: notes||null, iif_content: iifLines.join('\n'), needs_correction: false, correction_note: null, qb_status: 'pending' };
+  const payload = { items: updatedItems, unit_price: unitPrice, big_unit_price: bigUnitPrice, delivery_fee: deliveryFee, subtotal, tax, total, payment_type: paymentType, notes: notes||null, iif_content: iifLines.join('\n'), needs_correction: false, correction_note: null, qb_status: 'pending' };
   const r = await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify(payload) });
   if (r.ok) {
     const idx = allDeliveries.findIndex(x => x.id === id);
