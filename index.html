@@ -2492,6 +2492,38 @@
   </div>
 </div>
 
+<!-- Cancel Order Modal — optional customer notification with reason -->
+<div class="modal-overlay" id="cancel-order-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Cancel Order</span>
+      <button class="modal-close" onclick="closeCancelOrderModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="cancel-order-id"/>
+      <div id="cancel-order-context" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:var(--muted);line-height:1.5"></div>
+      <p style="font-size:13px;color:var(--muted);margin:0 0 14px">If this order is currently scheduled on a trip, the trip stop will be removed automatically.</p>
+
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;color:var(--text);margin-bottom:12px">
+        <input type="checkbox" id="cancel-notify-customer" onchange="window.onCancelNotifyToggle()" style="width:18px;height:18px"/>
+        ✉ Notify the customer by email
+      </label>
+
+      <div id="cancel-reason-row" class="field" style="display:none">
+        <label>Reason <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(shown to the customer)</span></label>
+        <textarea id="cancel-reason" rows="3" placeholder="e.g. Out of stock this cycle — we'll reach out when it's back." style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none;resize:vertical;font-family:inherit"></textarea>
+      </div>
+
+      <div id="cancel-order-error" style="display:none;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:6px;padding:10px 14px;color:#f85149;font-size:13px;margin-top:12px"></div>
+
+      <div style="display:flex;gap:12px;margin-top:20px">
+        <button class="btn-modal btn-modal-primary" style="flex:2;background:#f85149" id="cancel-order-confirm-btn" onclick="window.confirmCancelOrder()">Cancel Order</button>
+        <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeCancelOrderModal()">Keep Order</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script type="module">
 const SUPABASE_URL = 'https://jheqxfkyxewofpnkbayc.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_J86NoAfqHqRatJwieVR7-g_DUwoJnh2';
@@ -5545,9 +5577,86 @@ async function patchOrder(id, patch) {
   return true;
 }
 
-window.cancelOrder = async (id) => {
-  if (!confirm('Cancel this order?\n\nIf it is currently scheduled on a trip, the trip stop will be removed automatically.')) return;
-  if (await patchOrder(id, { status: 'cancelled' })) { await loadOrders(); updateOrdersBadge(); }
+window.cancelOrder = (id) => {
+  // Open the cancel modal. The actual cancel happens in confirmCancelOrder(),
+  // which either notifies the customer (via edge function) or cancels silently.
+  const o = (typeof allOrders !== 'undefined' ? allOrders : []).find(x => x.id === id);
+  document.getElementById('cancel-order-id').value = id;
+  document.getElementById('cancel-notify-customer').checked = false;
+  document.getElementById('cancel-reason').value = '';
+  document.getElementById('cancel-reason-row').style.display = 'none';
+  document.getElementById('cancel-order-error').style.display = 'none';
+  const ctx = document.getElementById('cancel-order-context');
+  if (o && o.store) {
+    const code = o.store.public_code ? `<span style="font-family:monospace;color:var(--gold)">${escapeHtml(o.store.public_code)}</span> · ` : '';
+    ctx.innerHTML = `<div style="font-weight:600;color:var(--text)">${escapeHtml(o.store.qb_name || 'Unknown store')}</div><div style="margin-top:2px">${code}${escapeHtml(o.status || '')}</div>`;
+  } else {
+    ctx.innerHTML = '<div style="color:var(--muted)">Order selected for cancellation.</div>';
+  }
+  document.getElementById('cancel-order-modal').classList.add('open');
+};
+
+window.onCancelNotifyToggle = () => {
+  const notify = document.getElementById('cancel-notify-customer').checked;
+  document.getElementById('cancel-reason-row').style.display = notify ? 'block' : 'none';
+};
+
+window.closeCancelOrderModal = () => {
+  document.getElementById('cancel-order-modal').classList.remove('open');
+};
+window.confirmCancelOrder = async () => {
+  const errEl = document.getElementById('cancel-order-error');
+  errEl.style.display = 'none';
+  const id = document.getElementById('cancel-order-id').value;
+  const notify = document.getElementById('cancel-notify-customer').checked;
+  const reason = document.getElementById('cancel-reason').value.trim();
+  const btn = document.getElementById('cancel-order-confirm-btn');
+
+  if (notify && !reason) {
+    errEl.textContent = 'Please enter a reason to send to the customer.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true; btn.textContent = 'Cancelling…';
+  try {
+    if (notify) {
+      // Edge function cancels the order AND emails the customer the reason.
+      const token = (window._session && window._session.access_token) || window._token;
+      const r = await fetch(`${SUPABASE_URL}/functions/v1/send-order-cancellation`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: id, reason }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.ok) {
+        errEl.textContent = 'Cancel/notify failed: ' + (data.error || r.status);
+        errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Cancel Order';
+        return;
+      }
+      if (data.email_status === 'skipped_no_email') {
+        // Order was cancelled but we had no email on file — let the admin know.
+        alert('Order cancelled, but no email address was on file for this customer, so no notification was sent.');
+      } else if (data.email_status === 'failed') {
+        alert('Order cancelled, but the notification email failed to send.');
+      }
+    } else {
+      // Silent cancel — status PATCH only (original behaviour).
+      const ok = await patchOrder(id, { status: 'cancelled' });
+      if (!ok) {
+        errEl.textContent = 'Cancel failed.'; errEl.style.display = 'block';
+        btn.disabled = false; btn.textContent = 'Cancel Order';
+        return;
+      }
+    }
+    closeCancelOrderModal();
+    btn.disabled = false; btn.textContent = 'Cancel Order';
+    await loadOrders();
+    updateOrdersBadge();
+  } catch (e) {
+    errEl.textContent = 'Network error: ' + e.message;
+    errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Cancel Order';
+  }
 };
 
 // ── Edit Order (notes + PO#) ─────────────────────────────────────────────
@@ -5592,6 +5701,9 @@ window.closeEditOrderModal = () => {
 };
 document.getElementById('edit-order-modal').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeEditOrderModal();
+});
+document.getElementById('cancel-order-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeCancelOrderModal();
 });
 
 window.saveOrderEdits = async () => {
@@ -5979,6 +6091,21 @@ window.saveOrder = async () => {
   const includesSorbet = productType === 'sorbet' || productType === 'both';
 
   if (!storeId) { errEl.textContent = 'Please select a store.'; errEl.style.display = 'block'; return; }
+
+  // Warn (but allow) if this store already has an open order. Admins are
+  // exempt from the hard block the customer form enforces, but should be aware
+  // they're creating a second concurrent order.
+  try {
+    const openRows = await sbFetch(`orders?select=status,submitted_at&store_id=eq.${storeId}&status=in.(pending,scheduled)&order=submitted_at.desc`);
+    if (Array.isArray(openRows) && openRows.length > 0) {
+      const o = openRows[0];
+      const when = o.submitted_at ? new Date(o.submitted_at).toLocaleDateString('en-CA') : 'an earlier date';
+      if (!confirm(`⚠ This store already has a ${o.status} order from ${when}.\n\nCreate another order anyway?`)) {
+        return;
+      }
+    }
+  } catch (e) { /* non-fatal: if the check fails, fall through and let the insert proceed */ }
+
   if (source === 'staples_po') {
     if (!poNumber) { errEl.textContent = 'PO number is required for Staples orders.'; errEl.style.display = 'block'; return; }
     if (totalUnits === null || isNaN(totalUnits) || totalUnits < 1) {
