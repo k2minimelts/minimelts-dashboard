@@ -2509,6 +2509,11 @@
         ✉ Notify the customer by email
       </label>
 
+      <label id="cancel-resend-row" style="display:none;align-items:center;gap:10px;cursor:pointer;font-size:14px;color:var(--text);margin-bottom:12px">
+        <input type="checkbox" id="cancel-resend-driver" style="width:18px;height:18px"/>
+        <span id="cancel-resend-label">📋 Also resend the driver's updated schedule</span>
+      </label>
+
       <div id="cancel-reason-row" class="field" style="display:none">
         <label>Reason <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(shown to the customer)</span></label>
         <textarea id="cancel-reason" rows="3" placeholder="e.g. Out of stock this cycle — we'll reach out when it's back." style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none;resize:vertical;font-family:inherit"></textarea>
@@ -5586,6 +5591,28 @@ window.cancelOrder = (id) => {
   document.getElementById('cancel-reason').value = '';
   document.getElementById('cancel-reason-row').style.display = 'none';
   document.getElementById('cancel-order-error').style.display = 'none';
+
+  // Resend-driver option: only when the order is scheduled on a driver's trip.
+  // Capture the driver id now (the cancel cascade nulls trip_stop_id, so we
+  // must read the driver before cancelling). Stash it on the confirm button's
+  // dataset for confirmCancelOrder to use.
+  const resendRow = document.getElementById('cancel-resend-row');
+  const resendCheck = document.getElementById('cancel-resend-driver');
+  const confirmBtn = document.getElementById('cancel-order-confirm-btn');
+  resendCheck.checked = false;
+  confirmBtn.dataset.resendDriverId = '';
+  confirmBtn.dataset.resendDayDate = '';
+  if (o && o.status === 'scheduled' && o.scheduled_driver_id) {
+    const dayStr = o.scheduled_day_date ? new Date(o.scheduled_day_date + 'T12:00:00Z').toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+    document.getElementById('cancel-resend-label').textContent =
+      `📋 Also resend ${o.scheduled_driver_name || 'the driver'}'s schedule${dayStr ? ' (' + dayStr + ')' : ''}`;
+    resendRow.style.display = 'flex';
+    confirmBtn.dataset.resendDriverId = o.scheduled_driver_id;
+    confirmBtn.dataset.resendDayDate = o.scheduled_day_date || '';
+  } else {
+    resendRow.style.display = 'none';
+  }
+
   const ctx = document.getElementById('cancel-order-context');
   if (o && o.store) {
     const code = o.store.public_code ? `<span style="font-family:monospace;color:var(--gold)">${escapeHtml(o.store.public_code)}</span> · ` : '';
@@ -5611,6 +5638,8 @@ window.confirmCancelOrder = async () => {
   const notify = document.getElementById('cancel-notify-customer').checked;
   const reason = document.getElementById('cancel-reason').value.trim();
   const btn = document.getElementById('cancel-order-confirm-btn');
+  // Capture the resend choice NOW, before any async work or modal reset.
+  const resendCheckedAtConfirm = document.getElementById('cancel-resend-driver').checked;
 
   if (notify && !reason) {
     errEl.textContent = 'Please enter a reason to send to the customer.';
@@ -5651,6 +5680,35 @@ window.confirmCancelOrder = async () => {
     }
     closeCancelOrderModal();
     btn.disabled = false; btn.textContent = 'Cancel Order';
+
+    // If the order was scheduled and the manager opted to resend, fire the
+    // driver's schedule email for the WEEK OF THE CANCELLED ORDER (not whatever
+    // week the Schedule tab is parked on). Compute the Monday of that day in the
+    // same UTC-noon space the scheduler uses, and call the edge fn directly so
+    // there's no second confirm() popup (the checkbox is the confirmation).
+    const resendDriverId = btn.dataset.resendDriverId;
+    const resendDayDate = btn.dataset.resendDayDate;
+    if (resendCheckedAtConfirm && resendDriverId && resendDayDate) {
+      try {
+        const d = schedParseDate(resendDayDate);          // UTC noon of the order's day
+        const dow = d.getUTCDay();                          // 0=Sun..6=Sat
+        const daysBackToMon = (dow + 6) % 7;                // days since Monday
+        const weekStart = schedAddDays(resendDayDate, -daysBackToMon);
+        const result = await schedCallEdgeFunction('send-driver-week-email', {
+          driver_id: resendDriverId,
+          week_start: weekStart,
+        });
+        if (result && result.skipped === 'empty_week') {
+          schedToast('Order cancelled · driver has no published trips that week — no email sent');
+        } else {
+          schedToast('✓ Order cancelled · driver schedule resent');
+        }
+      } catch (e) {
+        schedToast('Order cancelled, but the schedule resend failed — resend manually from the Schedule tab');
+        console.warn('[cancel] driver resend failed:', e.message);
+      }
+    }
+
     await loadOrders();
     updateOrdersBadge();
   } catch (e) {
