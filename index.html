@@ -847,35 +847,45 @@
     font-weight: 700;
   }
 
-  /* Per-day "Calculate drive time" button (real Mapbox depot-to-depot) */
-  .sched-calc-drive {
-    display: inline-block;
-    margin-top: 5px;
-    font-size: 9px;
-    line-height: 1;
-    padding: 3px 6px;
-    border-radius: 5px;
-    cursor: pointer;
+  /* Drive-time block in the day-edit panel header (real Mapbox depot-to-depot) */
+  .sched-cell-drivetime {
+    margin: 8px 0 4px;
+    padding: 10px 12px;
+    border-radius: 8px;
     border: 1px solid var(--border);
     background: var(--bg3);
-    color: var(--muted);
-    letter-spacing: 0.02em;
-    white-space: nowrap;
   }
-  .sched-calc-drive:hover:not(:disabled) {
-    border-color: var(--gold);
-    color: var(--gold);
+  .sched-cell-drivetime.is-est { border-color: rgba(226,176,74,0.35); }
+  .sched-cell-drivetime.is-real { border-color: rgba(79,195,212,0.3); }
+  .sched-cell-drivetime.is-over { border-color: rgba(229,72,72,0.5); }
+  .sched-cell-drivetime-main {
+    display: flex; align-items: baseline; gap: 8px;
   }
-  .sched-calc-drive:disabled { opacity: 0.6; cursor: default; }
-  /* Estimated (placeholder) → amber prompt; Real (Mapbox) → muted/green */
-  .sched-calc-drive.is-est {
-    border-color: rgba(226,176,74,0.4);
-    color: var(--gold);
+  .sched-cell-drivetime-hours {
+    font-size: 22px; font-weight: 800; color: var(--text);
   }
-  .sched-calc-drive.is-real {
-    border-color: rgba(79,195,212,0.3);
-    color: var(--mm-cyan);
+  .sched-cell-drivetime.is-real .sched-cell-drivetime-hours { color: var(--mm-cyan); }
+  .sched-cell-drivetime.is-over .sched-cell-drivetime-hours { color: #e54848; }
+  .sched-cell-drivetime-label {
+    font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;
   }
+  .sched-cell-drivetime-break {
+    font-size: 10px; color: var(--muted); margin-top: 3px;
+  }
+  .sched-cell-calc-btn {
+    margin-top: 8px; width: 100%;
+    padding: 7px 10px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--bg2); color: var(--text);
+  }
+  .sched-cell-calc-btn.is-est {
+    border-color: var(--gold); color: var(--gold);
+  }
+  .sched-cell-calc-btn.is-real {
+    border-color: rgba(79,195,212,0.4); color: var(--mm-cyan);
+  }
+  .sched-cell-calc-btn:hover:not(:disabled) { filter: brightness(1.2); }
+  .sched-cell-calc-btn:disabled { opacity: 0.6; cursor: default; }
 
   /* Multi-day trip linking */
   .sched-cell.sched-day-cell.trip-day {
@@ -9024,16 +9034,9 @@ function schedRenderGrid() {
       // Is the drive time a REAL Mapbox depot-to-depot figure, or the rough
       // client-side placeholder? estimated_drive_hours is only set by the
       // optimizer (publish, per-day calc, or re-optimize). When null, the cell
-      // shows the heuristic — which excludes depot legs and can be misleading.
+      // shows the heuristic — which excludes depot legs. The "~est" tag flags
+      // that; the manager calculates the real figure from the day-edit panel.
       const hasRealDrive = foundDay.estimated_drive_hours != null;
-      // "Calculate drive time" runs Mapbox for this one day so the manager sees
-      // the true day length (incl. depot out-and-back) before publishing.
-      const calcBtn = stopCount > 0
-        ? `<button class="sched-calc-drive ${hasRealDrive ? 'is-real' : 'is-est'}"
-             onclick="event.stopPropagation(); window.schedCalcDayDriveTime('${foundDay.id}', this)"
-             title="${hasRealDrive ? 'Real drive time (Mapbox, depot-to-depot). Click to recalculate.' : 'Estimated — click to calculate real drive time (Mapbox, depot-to-depot)'}">
-             ${hasRealDrive ? '📍 real · recalc' : '📍 calc drive time'}</button>`
-        : '';
 
       cells.push(`<div class="sched-cell sched-day-cell has-stops ${capClass} ${tripClasses.join(' ')}"
         data-driver-id="${driver.id}" data-day-iso="${iso}" data-trip-day-id="${foundDay.id}">
@@ -9045,7 +9048,6 @@ function schedRenderGrid() {
         ${overTag}
         ${tripBadge}
         ${tripCont}
-        ${calcBtn}
       </div>`);
     }
     return cells.join('');
@@ -10023,6 +10025,36 @@ function schedRenderCellEditSidebar(container) {
   const tripDayCount = trip ? Math.round((schedParseDate(trip.end_date) - schedParseDate(trip.start_date)) / 86400000) + 1 : 1;
   const isPublished = trip && trip.status === 'published';
 
+  // Drive-time readout for the header. The real (Mapbox depot-to-depot) figure
+  // lives on the trip_day as estimated_drive_hours; when present we show the
+  // true day length (service + real drive). When absent we show the rough
+  // placeholder and prompt the manager to calculate.
+  const dayObj = trip ? (trip.days || []).find(d => d.id === cell.trip_day_id) : null;
+  const stopCount = (cell.stops || []).length;
+  const svcHours = stopCount * schedState.workload.service_hours_per_stop;
+  const hasRealDrive = dayObj && dayObj.estimated_drive_hours != null;
+  const realDrive = hasRealDrive ? Number(dayObj.estimated_drive_hours) : null;
+  const estDrive = schedEstimateDriveHours((cell.stops || []).map(s => {
+    const lk = s.linked_machine_id ? `vm:${s.linked_machine_id}` : s.store_id;
+    const st = schedState.storesIndex.get(lk);
+    return { ship_city: st ? st.ship_city : null };
+  }));
+  const driveHours = hasRealDrive ? realDrive : estDrive;
+  const totalHours = svcHours + driveHours;
+  const overProductive = totalHours > schedState.workload.productive_hours;
+  const driveTimeHtml = stopCount > 0 ? `
+    <div class="sched-cell-drivetime ${hasRealDrive ? 'is-real' : 'is-est'} ${overProductive ? 'is-over' : ''}">
+      <div class="sched-cell-drivetime-main">
+        <span class="sched-cell-drivetime-hours">${schedFmtHours(totalHours)}</span>
+        <span class="sched-cell-drivetime-label">${hasRealDrive ? 'full day' : 'full day (est.)'}</span>
+      </div>
+      <div class="sched-cell-drivetime-break">${schedFmtHours(svcHours)} service + ${schedFmtHours(driveHours)} drive${hasRealDrive ? ' · real, depot-to-depot' : ''}${overProductive ? ` · ⚠ over by ${schedFmtHours(totalHours - schedState.workload.productive_hours)}` : ''}</div>
+      <button class="sched-cell-calc-btn ${hasRealDrive ? 'is-real' : 'is-est'}"
+        onclick="window.schedCalcDayDriveTime('${cell.trip_day_id}', this)">
+        ${hasRealDrive ? '↻ Recalculate drive time' : '📍 Calculate real drive time'}
+      </button>
+    </div>` : '';
+
   const stopsHtml = (cell.stops || []).map((stop, idx, arr) => {
     // Look up by 'vm:' prefix for vending stops, raw store_id otherwise
     const lookupKey = stop.linked_machine_id ? `vm:${stop.linked_machine_id}` : stop.store_id;
@@ -10110,6 +10142,7 @@ function schedRenderCellEditSidebar(container) {
         ${isPublished ? '<div class="sched-cell-pub-badge">Published</div>' : ''}
       </div>
     </div>
+    ${driveTimeHtml}
     ${emailPanelHtml}
     <div class="sched-cell-stop-list">
       ${(cell.stops && cell.stops.length) ? stopsHtml : '<div class="sched-empty"><p>No stops on this day yet.</p></div>'}
@@ -10435,6 +10468,12 @@ window.schedCalcDayDriveTime = async function(tripDayId, btnEl) {
     const hrs = dayResult && dayResult.drive_hours != null ? `${dayResult.drive_hours}h` : 'done';
     schedToast(`✓ Real drive time: ${hrs} (depot to depot)`);
     await schedRefreshData(); // estimated_drive_hours + sequence updated; refresh UI
+    // If the day-edit panel is still open on this day, rebuild its snapshot so
+    // the new drive time AND the optimized stop order both show immediately.
+    if (schedState.uiMode === 'cell-edit' && schedState.editingCell
+        && schedState.editingCell.trip_day_id === tripDayId) {
+      schedReopenEditingCell(tripDayId);
+    }
   } catch (e) {
     schedToast(`⚠ Calculate failed: ${e.message}`);
     console.warn('[sched] calc drive failed:', e.message);
