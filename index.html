@@ -4589,7 +4589,7 @@ window.switchTab = (tab) => {
   function renderDetail(lead, activity) {
     const detail = document.getElementById("leads-detail");
     const displayName = esc(lead.name || ((lead.first_name||"") + " " + (lead.last_name||"")).trim());
-    const replySubject = "Re: Mini Melts partnership inquiry";
+    const replySubject = "Re: Mini Melts inquiry";
     detail.innerHTML =
       '<h2 class="ld-name">' + displayName + '</h2>' +
       '<p class="ld-contact"><a href="mailto:' + esc(lead.email) + '">' + esc(lead.email) + '</a>' +
