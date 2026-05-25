@@ -1363,6 +1363,25 @@
   .ld-inline-msg { font-size:13px; padding:8px 11px; border-radius:6px; margin-bottom:8px; }
   .ld-inline-msg.ok  { background:rgba(63,185,80,0.12); color:var(--success); }
   .ld-inline-msg.err { background:rgba(248,81,73,0.12); color:var(--danger); }
+  /* ===== REFUNDS TAB (reuses .leads-* and .ld-* ; adds status colors + bits) ===== */
+  .lead-pill.info_needed { background:rgba(210,153,34,0.2); color:var(--gold2); }
+  .lead-pill.verified    { background:rgba(79,195,212,0.18); color:var(--mm-cyan); }
+  .lead-pill.refunded    { background:rgba(63,185,80,0.18); color:var(--success); }
+  .lead-pill.denied      { background:rgba(248,81,73,0.16); color:var(--danger); }
+  .lead-pill.archived    { background:rgba(139,148,158,0.18); color:var(--muted); }
+  .ld-amount { font-size:22px; font-weight:700; color:var(--gold2); }
+  .ld-grid { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; font-size:13px; margin:4px 0 0; }
+  .ld-grid dt { color:var(--muted); }
+  .ld-grid dd { margin:0; color:var(--text); }
+  .ld-venue-row { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  .ld-venue-row input { flex:1; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px 10px; font-size:13px; }
+  .ld-venue-results { border:1px solid var(--border); border-radius:6px; margin-top:6px; max-height:180px; overflow-y:auto; background:var(--bg); }
+  .ld-venue-opt { padding:8px 11px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border); }
+  .ld-venue-opt:last-child { border-bottom:none; }
+  .ld-venue-opt:hover { background:var(--bg3); }
+  .ld-venue-current { font-size:13px; color:var(--mm-cyan); margin-top:4px; }
+  .ld-refund-fields { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .ld-refund-fields select, .ld-refund-fields input { background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px 10px; font-size:13px; }
 </style>
 </head>
 <body>
@@ -1445,6 +1464,7 @@
       <button class="tab" onclick="switchTab('lot')" data-hide-from-depot-manager>🔬 Lot Lookup</button>
       <button class="tab" onclick="switchTab('drivers')">👤 Drivers</button>
       <button class="tab" onclick="switchTab('leads')" id="tab-btn-leads" data-admin-only style="display:none">📥 Leads <span id="leads-new-badge" class="leads-badge" style="display:none">0</span></button>
+      <button class="tab" onclick="switchTab('refunds')" id="tab-btn-refunds" data-refund-only style="display:none">💸 Refunds <span id="refunds-new-badge" class="leads-badge" style="display:none">0</span></button>
       <button class="tab" onclick="switchTab('access')" data-super-admin-only style="display:none">🔐 Access</button>
     </div>
 
@@ -1983,6 +2003,31 @@
         </div>
         <div id="leads-detail" class="leads-detail">
           <div class="leads-detail-empty">Select a lead to view details.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== REFUNDS TAB PANEL ===== -->
+    <div id="tab-refunds" style="display:none">
+      <div class="leads-layout">
+        <div class="leads-list-col">
+          <div class="leads-toolbar">
+            <select id="refunds-status-filter" onchange="window.loadRefundRequests()">
+              <option value="open">Open (pending + info needed + verified)</option>
+              <option value="pending">Pending</option>
+              <option value="info_needed">Info needed</option>
+              <option value="verified">Verified</option>
+              <option value="refunded">Refunded</option>
+              <option value="denied">Denied</option>
+              <option value="all">All (active)</option>
+              <option value="archived">Archived</option>
+            </select>
+            <button class="leads-refresh" onclick="window.loadRefundRequests()" title="Refresh">↻</button>
+          </div>
+          <div id="refunds-list" class="leads-list"><div class="leads-empty">Loading…</div></div>
+        </div>
+        <div id="refunds-detail" class="leads-detail">
+          <div class="leads-detail-empty">Select a refund request to view details.</div>
         </div>
       </div>
     </div>
@@ -2712,7 +2757,7 @@ async function fetchUserRole() {
   if (!authUserId) return null;
 
   // Try admins first — match on user_id (FK to auth.users), not on admins.id.
-  const admin = await sbFetch(`admins?select=user_id,name,email,is_super_admin&user_id=eq.${authUserId}&limit=1`);
+  const admin = await sbFetch(`admins?select=user_id,name,email,is_super_admin,can_manage_refunds&user_id=eq.${authUserId}&limit=1`);
   if (Array.isArray(admin) && admin.length > 0) {
     return {
       role: 'admin',
@@ -2720,6 +2765,7 @@ async function fetchUserRole() {
       email: admin[0].email,
       name: admin[0].name || admin[0].email,
       is_super_admin: !!admin[0].is_super_admin,
+      can_manage_refunds: !!admin[0].can_manage_refunds || !!admin[0].is_super_admin,
     };
   }
   // Try depot managers — same pattern. depot_managers has multiple rows per user
@@ -2759,6 +2805,10 @@ function applyRoleUI(roleInfo) {
   // Hide super-admin-only elements (e.g., the Access tab button)
   document.querySelectorAll('[data-super-admin-only]').forEach(el => {
     el.style.display = roleInfo.is_super_admin ? '' : 'none';
+  });
+  // Hide refund-only elements (Refunds tab) — refund managers + super admins only.
+  document.querySelectorAll('[data-refund-only]').forEach(el => {
+    el.style.display = roleInfo.can_manage_refunds ? '' : 'none';
   });
   // Hide scheduler-only elements (Schedule tab) for users who aren't an admin or depot manager.
   // Both 'admin' and 'depot_manager' roles can build schedules; everyone else cannot see it.
@@ -4449,7 +4499,7 @@ document.getElementById('store-modal').addEventListener('click', e => { if (e.ta
 window.switchTab = (tab) => {
   // The schedule tab uses a flex column layout; setting display:block
   // breaks it. Every other tab is fine with block, so we special-case here.
-  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','access'].forEach(t => {
+  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','refunds','access'].forEach(t => {
     const el = document.getElementById(`tab-${t}`);
     if (!el) return;
     if (t !== tab) {
@@ -4472,6 +4522,7 @@ window.switchTab = (tab) => {
   if (tab==='schedule') initScheduleTab();
   if (tab==='access') loadAccess();
   if (tab==='leads') window.loadLeads();
+  if (tab==='refunds') window.loadRefundRequests();
 };
 
 // ===== LEADS TAB =====
@@ -4695,6 +4746,269 @@ window.switchTab = (tab) => {
     SELECTED_LEAD_ID = null;
     document.getElementById("leads-detail").innerHTML = '<div class="leads-detail-empty">Lead deleted. Select another lead.</div>';
     await window.loadLeads();
+  };
+})();
+
+// ===== REFUNDS TAB =====
+(function () {
+  let RF_CACHE = [];
+  let RF_SELECTED = null;
+  let RF_VENUES = null; // lazy-loaded venue list for the picker
+
+  function timeAgo(iso) {
+    if (!iso) return "";
+    const s = Math.floor((new Date() - new Date(iso)) / 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return Math.floor(s/60) + "m ago";
+    if (s < 86400) return Math.floor(s/3600) + "h ago";
+    if (s < 604800) return Math.floor(s/86400) + "d ago";
+    return new Date(iso).toLocaleDateString('en-CA');
+  }
+  function fmtDateTime(iso) { return iso ? new Date(iso).toLocaleString([], {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""; }
+  function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+  function money(n){ return (n==null||n==="") ? "—" : ("$" + Number(n).toFixed(2)); }
+  function rfUserId(){ return (window._session && window._session.user_id) || null; }
+  async function rfWrite(path, method, bodyObj, prefer){
+    return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      method, headers: { ...headers(), 'Prefer': prefer || 'return=minimal' },
+      body: bodyObj ? JSON.stringify(bodyObj) : undefined,
+    });
+  }
+
+  window.loadRefundRequests = async function () {
+    const listEl = document.getElementById("refunds-list");
+    if (!listEl) return;
+    const filter = (document.getElementById("refunds-status-filter")||{}).value || "open";
+    listEl.innerHTML = '<div class="leads-empty">Loading…</div>';
+
+    let q = "refund_requests?select=id,name,email,refund_amount,status,location_text,created_at,archived_at&order=created_at.desc";
+    // Active (non-archived) unless explicitly viewing archived.
+    if (filter === "archived") q += "&archived_at=not.is.null";
+    else {
+      q += "&archived_at=is.null";
+      if (filter === "open") q += "&status=in.(pending,info_needed,verified)";
+      else if (filter !== "all") q += `&status=eq.${filter}`;
+    }
+    let data;
+    try { data = await sbFetch(q); } catch(e){ listEl.innerHTML='<div class="leads-empty">Error loading refunds.</div>'; return; }
+    RF_CACHE = Array.isArray(data) ? data : [];
+    renderRfList();
+    rfNewBadge();
+  };
+
+  async function rfNewBadge(){
+    let rows; try { rows = await sbFetch("refund_requests?select=id&status=eq.pending&archived_at=is.null"); } catch(e){ return; }
+    const n = Array.isArray(rows)?rows.length:0;
+    const b = document.getElementById("refunds-new-badge");
+    if (!b) return;
+    if (n>0){ b.textContent=n; b.style.display="inline-block"; } else b.style.display="none";
+  }
+
+  function renderRfList(){
+    const listEl = document.getElementById("refunds-list");
+    if (!listEl) return;
+    if (!RF_CACHE.length){ listEl.innerHTML='<div class="leads-empty">No refund requests in this view.</div>'; return; }
+    listEl.innerHTML = RF_CACHE.map(function(r){
+      const active = r.id===RF_SELECTED ? " active" : "";
+      return '<div class="lead-row'+active+'" onclick="window.rfSelect(\''+r.id+'\')">'+
+        '<div class="lead-row-top"><span class="lead-row-name">'+esc(r.name)+'</span>'+
+        '<span class="lead-row-when">'+timeAgo(r.created_at)+'</span></div>'+
+        '<div class="lead-row-email">'+money(r.refund_amount)+' · '+esc(r.location_text||"—")+'</div>'+
+        '<span class="lead-pill '+esc(r.status)+'">'+esc(r.status.replace("_"," "))+'</span></div>';
+    }).join("");
+  }
+
+  window.rfSelect = async function(id){
+    RF_SELECTED = id; renderRfList();
+    const detail = document.getElementById("refunds-detail");
+    detail.innerHTML = '<div class="leads-detail-empty">Loading…</div>';
+    let arr, activity, venue=null;
+    try {
+      arr = await sbFetch(`refund_requests?select=*&id=eq.${id}&limit=1`);
+      activity = await sbFetch(`refund_activity?select=*&refund_id=eq.${id}&order=created_at.desc`);
+    } catch(e){ detail.innerHTML='<div class="leads-detail-empty">Could not load.</div>'; return; }
+    const r = Array.isArray(arr)?arr[0]:null;
+    if (!r){ detail.innerHTML='<div class="leads-detail-empty">Could not load.</div>'; return; }
+    if (r.venue_id){
+      try { const v = await sbFetch(`vending_venues?select=name,city,province&id=eq.${r.venue_id}&limit=1`); venue = Array.isArray(v)?v[0]:null; } catch(e){}
+    }
+    rfRenderDetail(r, Array.isArray(activity)?activity:[], venue);
+  };
+
+  function rfStatusOptions(cur){
+    return ["pending","info_needed","verified","refunded","denied"].map(function(s){
+      const label = s.charAt(0).toUpperCase()+s.slice(1).replace("_"," ");
+      return '<option value="'+s+'"'+(s===cur?" selected":"")+'>'+label+'</option>';
+    }).join("");
+  }
+
+  function rfRenderEvent(e){
+    let text="";
+    if (e.activity_type==="created") text="Request created — "+esc(e.note||"web form");
+    else if (e.activity_type==="status_change") text="Status: "+esc((e.old_status||"?").replace("_"," "))+" → "+esc((e.new_status||"?").replace("_"," "));
+    else if (e.activity_type==="note") text=esc(e.note||"");
+    else if (e.activity_type==="refunded") text=esc(e.note||"Marked refunded");
+    else if (e.activity_type==="archived") text="Archived (removed from active view)";
+    else if (e.activity_type==="email_sent") text='Email sent: '+esc(e.email_subject||"");
+    return '<div class="ld-event"><div class="ld-event-dot '+esc(e.activity_type)+'"></div>'+
+      '<div class="ld-event-body"><div class="ld-event-text">'+text+'</div>'+
+      '<div class="ld-event-when">'+fmtDateTime(e.created_at)+'</div></div></div>';
+  }
+
+  function rfRenderDetail(r, activity, venue){
+    const detail = document.getElementById("refunds-detail");
+    const pm = r.purchase_method==="cash" ? "Cash" : (r.purchase_method==="credit_debit" ? "Credit/Debit" : "—");
+    const venueLine = venue
+      ? '<div class="ld-venue-current">📍 Linked venue: '+esc(venue.name)+(venue.city?' — '+esc(venue.city):'')+'</div>'
+      : '<div class="ld-venue-current" style="color:var(--muted)">No venue linked</div>';
+
+    detail.innerHTML =
+      '<h2 class="ld-name">'+esc(r.name)+'</h2>'+
+      '<p class="ld-contact"><a href="mailto:'+esc(r.email)+'">'+esc(r.email)+'</a>'+
+        (r.phone?" · "+esc(r.phone):"")+" · received "+fmtDateTime(r.created_at)+'</p>'+
+      '<div class="ld-amount">'+money(r.refund_amount)+'</div>'+
+      '<dl class="ld-grid">'+
+        '<dt>Paid by</dt><dd>'+pm+'</dd>'+
+        '<dt>Location</dt><dd>'+esc(r.location_text||"—")+'</dd>'+
+      '</dl>'+
+      '<div class="ld-section-label">What happened</div>'+
+      '<div class="ld-message">'+esc(r.customer_note||"(no details)")+'</div>'+
+
+      '<div class="ld-section-label">Venue link</div>'+
+      venueLine+
+      '<div class="ld-venue-row">'+
+        '<input id="rf-venue-search" type="text" placeholder="Search venues to link…" oninput="window.rfVenueSearch(\''+r.id+'\')">'+
+        (r.venue_id?'<button class="ld-btn ghost" onclick="window.rfLinkVenue(\''+r.id+'\',null)">Unlink</button>':'')+
+      '</div>'+
+      '<div id="rf-venue-results"></div>'+
+
+      '<div class="ld-section-label">Status</div>'+
+      '<div class="ld-status-row"><select id="rf-status-select" onchange="window.rfStatusChanged()">'+rfStatusOptions(r.status)+'</select>'+
+        '<button class="ld-btn ghost" onclick="window.rfUpdateStatus(\''+r.id+'\')">Update status</button></div>'+
+      // refund-method fields appear when status = refunded
+      '<div id="rf-refund-fields" class="ld-refund-fields" style="display:'+(r.status==="refunded"?"flex":"none")+'">'+
+        '<select id="rf-method">'+
+          '<option value="e-transfer"'+(r.refund_method==="e-transfer"?" selected":"")+'>E-transfer</option>'+
+          '<option value="cheque"'+(r.refund_method==="cheque"?" selected":"")+'>Cheque</option>'+
+          '<option value="cash"'+(r.refund_method==="cash"?" selected":"")+'>Cash</option>'+
+          '<option value="card_reversal"'+(r.refund_method==="card_reversal"?" selected":"")+'>Card reversal</option>'+
+        '</select>'+
+        '<input id="rf-reference" type="text" placeholder="Reference / confirmation #" value="'+esc(r.refund_reference||"")+'">'+
+      '</div>'+
+
+      '<div class="ld-actions">'+
+        '<button class="ld-btn ghost" onclick="window.rfToggleNote(true)">+ Add note</button>'+
+        '<button class="ld-btn danger" onclick="window.rfArchive(\''+r.id+'\')">'+(r.archived_at?'Restore':'Remove from view')+'</button>'+
+      '</div>'+
+      '<div id="rf-note-box" class="ld-compose" style="display:none">'+
+        '<div id="rf-note-msg"></div>'+
+        '<textarea id="rf-note-body" placeholder="Internal note (e.g. texted customer, waiting on details)…"></textarea>'+
+        '<button class="ld-btn ghost" onclick="window.rfSaveNote(\''+r.id+'\')">Save note</button> '+
+        '<button class="ld-btn ghost" onclick="window.rfToggleNote(false)">Cancel</button></div>'+
+
+      '<div class="ld-section-label">Activity</div>'+
+      '<div class="ld-timeline">'+(activity.length?activity.map(rfRenderEvent).join(""):'<div class="leads-empty">No activity yet.</div>')+'</div>';
+  }
+
+  // Show/hide refund-method fields live as the dropdown changes.
+  window.rfStatusChanged = function(){
+    const sel = document.getElementById("rf-status-select");
+    const fields = document.getElementById("rf-refund-fields");
+    if (sel && fields) fields.style.display = (sel.value==="refunded") ? "flex" : "none";
+  };
+
+  window.rfToggleNote = function(show){
+    const b = document.getElementById("rf-note-box"); if (b) b.style.display = show?"block":"none";
+  };
+
+  // ---- Venue picker ----
+  window.rfVenueSearch = async function(refundId){
+    const term = (document.getElementById("rf-venue-search").value||"").trim();
+    const box = document.getElementById("rf-venue-results");
+    if (term.length < 2){ box.innerHTML=""; return; }
+    if (!RF_VENUES){
+      try { RF_VENUES = await sbFetch("vending_venues?select=id,name,city,province&active=eq.true&order=name.asc"); } catch(e){ RF_VENUES=[]; }
+    }
+    const tl = term.toLowerCase();
+    const hits = (RF_VENUES||[]).filter(function(v){
+      return (v.name||"").toLowerCase().includes(tl) || (v.city||"").toLowerCase().includes(tl);
+    }).slice(0,12);
+    box.innerHTML = hits.length ? hits.map(function(v){
+      return '<div class="ld-venue-opt" onclick="window.rfLinkVenue(\''+refundId+'\',\''+v.id+'\')">'+esc(v.name)+(v.city?' — '+esc(v.city):'')+(v.province?', '+esc(v.province):'')+'</div>';
+    }).join("") : '<div class="ld-venue-opt" style="color:var(--muted)">No matches</div>';
+  };
+
+  window.rfLinkVenue = async function(refundId, venueId){
+    const uid = rfUserId();
+    const r = await rfWrite(`refund_requests?id=eq.${refundId}`, 'PATCH', { venue_id: venueId, last_touched_by: uid, last_touched_at: new Date().toISOString() });
+    if (!r.ok){ alert("Venue link failed."); return; }
+    await rfWrite('refund_activity','POST',{ refund_id: refundId, actor: uid, activity_type:'note', note: venueId?'Linked to venue':'Unlinked venue' });
+    await window.rfSelect(refundId);
+  };
+
+  // ---- Status update (captures refund method/reference when → refunded) ----
+  window.rfUpdateStatus = async function(id){
+    const sel = document.getElementById("rf-status-select");
+    const newStatus = sel.value;
+    let beforeArr; try { beforeArr = await sbFetch(`refund_requests?select=status&id=eq.${id}&limit=1`); } catch(e){ return; }
+    const oldStatus = (Array.isArray(beforeArr)&&beforeArr[0]) ? beforeArr[0].status : null;
+    const uid = rfUserId();
+
+    const patch = { status: newStatus, last_touched_by: uid, last_touched_at: new Date().toISOString() };
+    let refundNote = null;
+    if (newStatus === "refunded"){
+      const method = (document.getElementById("rf-method")||{}).value || "e-transfer";
+      const reference = ((document.getElementById("rf-reference")||{}).value || "").trim();
+      if (!reference){ alert("Please enter a reference/confirmation # before marking refunded."); return; }
+      patch.refund_method = method;
+      patch.refund_reference = reference;
+      patch.refunded_at = new Date().toISOString();
+      refundNote = "Refunded via " + method + " (ref: " + reference + ")";
+    }
+    if (oldStatus === newStatus && newStatus !== "refunded") return;
+
+    const r = await rfWrite(`refund_requests?id=eq.${id}`, 'PATCH', patch);
+    if (!r.ok){ alert("Status update failed."); return; }
+    if (newStatus === "refunded"){
+      await rfWrite('refund_activity','POST',{ refund_id:id, actor:uid, activity_type:'refunded', old_status:oldStatus, new_status:newStatus, note:refundNote });
+    } else {
+      await rfWrite('refund_activity','POST',{ refund_id:id, actor:uid, activity_type:'status_change', old_status:oldStatus, new_status:newStatus });
+    }
+    await window.rfSelect(id);
+    await window.loadRefundRequests();
+  };
+
+  window.rfSaveNote = async function(id){
+    const ta = document.getElementById("rf-note-body");
+    const msgEl = document.getElementById("rf-note-msg");
+    const note = (ta.value||"").trim();
+    if (!note){ msgEl.innerHTML='<div class="ld-inline-msg err">Note is empty.</div>'; return; }
+    const uid = rfUserId();
+    const r = await rfWrite('refund_activity','POST',{ refund_id:id, actor:uid, activity_type:'note', note:note });
+    if (!r.ok){ msgEl.innerHTML='<div class="ld-inline-msg err">Save failed.</div>'; return; }
+    await rfWrite(`refund_requests?id=eq.${id}`, 'PATCH', { last_touched_by: uid, last_touched_at: new Date().toISOString() });
+    await window.rfSelect(id);
+  };
+
+  // ---- Soft delete (archive) / restore ----
+  window.rfArchive = async function(id){
+    let arr; try { arr = await sbFetch(`refund_requests?select=archived_at&id=eq.${id}&limit=1`); } catch(e){ return; }
+    const isArchived = Array.isArray(arr)&&arr[0] && arr[0].archived_at;
+    const uid = rfUserId();
+    if (isArchived){
+      const r = await rfWrite(`refund_requests?id=eq.${id}`, 'PATCH', { archived_at: null, archived_by: null });
+      if (!r.ok){ alert("Restore failed."); return; }
+      await rfWrite('refund_activity','POST',{ refund_id:id, actor:uid, activity_type:'note', note:'Restored to active view' });
+    } else {
+      if (!confirm("Remove this refund from the active view? The record is kept and can be restored from the Archived filter.")) return;
+      const r = await rfWrite(`refund_requests?id=eq.${id}`, 'PATCH', { archived_at: new Date().toISOString(), archived_by: uid });
+      if (!r.ok){ alert("Archive failed."); return; }
+      await rfWrite('refund_activity','POST',{ refund_id:id, actor:uid, activity_type:'archived' });
+      RF_SELECTED = null;
+      document.getElementById("refunds-detail").innerHTML = '<div class="leads-detail-empty">Removed from view. Select another request.</div>';
+    }
+    await window.loadRefundRequests();
+    if (isArchived) await window.rfSelect(id);
   };
 })();
 
