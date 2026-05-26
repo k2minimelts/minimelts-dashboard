@@ -7377,7 +7377,7 @@ async function initMapboxGL() {
     // Format pct as a colored badge — green/yellow/red gradient
     let pctColor = '#888', pctBg = '#f3f4f6';
     if (pct != null) {
-      if (pct >= 70) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
+      if (pct >= 65) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
       else if (pct >= 40) { pctColor = '#92400e'; pctBg = '#fef3c7'; }
       else { pctColor = '#065f46'; pctBg = '#d1fae5'; }
     }
@@ -9230,7 +9230,7 @@ function schedInitMap() {
       // % sold colour-coded pill (green/yellow/red gradient — same thresholds as Map tab)
       let pctColor = '#888', pctBg = '#f3f4f6';
       if (pct != null) {
-        if (pct >= 70) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
+        if (pct >= 65) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
         else if (pct >= 40) { pctColor = '#92400e'; pctBg = '#fef3c7'; }
         else { pctColor = '#065f46'; pctBg = '#d1fae5'; }
       }
@@ -9831,7 +9831,7 @@ function schedStopRowHtml(s, isSelected) {
     const pct = s.pct_sold != null ? Number(s.pct_sold).toFixed(0) : null;
     const parts = [];
     if (pct != null) {
-      const pctColor = pct >= 70 ? '#e54848' : (pct >= 40 ? '#ff7a3a' : '#7bc47f');
+      const pctColor = pct >= 65 ? '#e54848' : (pct >= 40 ? '#ff7a3a' : '#7bc47f');
       parts.push(`<span style="color:${pctColor};font-weight:600">${pct}% sold</span>`);
     }
     if (s.no_sales_3d) parts.push(`<span style="color:#e54848">no sales ${s.days_since_last_sale}d</span>`);
