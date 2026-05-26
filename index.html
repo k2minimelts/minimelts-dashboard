@@ -4710,6 +4710,7 @@ window.switchTab = (tab) => {
         '<button class="ld-btn ghost" onclick="window.leadUpdateStatus(\'' + lead.id + '\')">Update status</button></div>' +
       '<div class="ld-actions">' +
         '<button class="ld-btn primary" onclick="window.leadToggleCompose(true)">✉ Reply</button>' +
+        '<button class="ld-btn ghost" onclick="window.leadToggleForward(true)">↪ Forward</button>' +
         '<button class="ld-btn ghost" onclick="window.leadToggleNote(true)">+ Add note</button>' +
         '<button class="ld-btn danger" onclick="window.leadDelete(\'' + lead.id + '\')">Delete</button></div>' +
       '<div id="ld-compose-box" class="ld-compose" style="display:none">' +
@@ -4719,6 +4720,13 @@ window.switchTab = (tab) => {
         '<p class="ld-compose-hint">Sends from sales@minimelts.ca · replies go to dave@minimelts.ca</p>' +
         '<button class="ld-btn primary" id="ld-send-btn" onclick="window.leadSendReply(\'' + lead.id + '\')">Send reply</button> ' +
         '<button class="ld-btn ghost" onclick="window.leadToggleCompose(false)">Cancel</button></div>' +
+      '<div id="ld-forward-box" class="ld-compose" style="display:none">' +
+        '<div id="ld-forward-msg"></div>' +
+        '<input id="ld-forward-to" type="email" placeholder="Forward to (email address)…">' +
+        '<textarea id="ld-forward-note" placeholder="Optional note for the recipient (e.g. \'This looks like a delivery issue, can you take it?\')…"></textarea>' +
+        '<p class="ld-compose-hint">Sends the lead\'s details · the recipient\'s reply goes to the customer (' + esc(lead.email) + ')</p>' +
+        '<button class="ld-btn primary" id="ld-forward-btn" onclick="window.leadForward(\'' + lead.id + '\')">Forward</button> ' +
+        '<button class="ld-btn ghost" onclick="window.leadToggleForward(false)">Cancel</button></div>' +
       '<div id="ld-note-box" class="ld-compose" style="display:none">' +
         '<div id="ld-note-msg"></div>' +
         '<textarea id="ld-note-body" placeholder="Internal note (not emailed)…"></textarea>' +
@@ -4731,12 +4739,26 @@ window.switchTab = (tab) => {
   window.leadToggleCompose = function (show) {
     const box = document.getElementById("ld-compose-box");
     if (box) box.style.display = show ? "block" : "none";
-    if (show) { const n = document.getElementById("ld-note-box"); if (n) n.style.display = "none"; }
+    if (show) {
+      const n = document.getElementById("ld-note-box"); if (n) n.style.display = "none";
+      const f = document.getElementById("ld-forward-box"); if (f) f.style.display = "none";
+    }
+  };
+  window.leadToggleForward = function (show) {
+    const box = document.getElementById("ld-forward-box");
+    if (box) box.style.display = show ? "block" : "none";
+    if (show) {
+      const c = document.getElementById("ld-compose-box"); if (c) c.style.display = "none";
+      const n = document.getElementById("ld-note-box"); if (n) n.style.display = "none";
+    }
   };
   window.leadToggleNote = function (show) {
     const box = document.getElementById("ld-note-box");
     if (box) box.style.display = show ? "block" : "none";
-    if (show) { const c = document.getElementById("ld-compose-box"); if (c) c.style.display = "none"; }
+    if (show) {
+      const c = document.getElementById("ld-compose-box"); if (c) c.style.display = "none";
+      const f = document.getElementById("ld-forward-box"); if (f) f.style.display = "none";
+    }
   };
 
   window.leadUpdateStatus = async function (id) {
@@ -4794,6 +4816,40 @@ window.switchTab = (tab) => {
     } catch (e) {
       msgEl.innerHTML = '<div class="ld-inline-msg err">Network error.</div>';
       btn.disabled = false; btn.textContent = "Send reply";
+    }
+  };
+
+  // ---- Forward lead to a free-text recipient (reply-to goes to the customer) ----
+  window.leadForward = async function (id) {
+    const toEl = document.getElementById("ld-forward-to");
+    const noteEl = document.getElementById("ld-forward-note");
+    const msgEl = document.getElementById("ld-forward-msg");
+    const btn = document.getElementById("ld-forward-btn");
+    const to = (toEl.value || "").trim();
+    const note = (noteEl.value || "").trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      msgEl.innerHTML = '<div class="ld-inline-msg err">Enter a valid email address to forward to.</div>';
+      return;
+    }
+    btn.disabled = true; btn.textContent = "Forwarding…";
+    try {
+      const token = (window._session && window._session.access_token) || window._token;
+      const r = await fetch(`${SUPABASE_URL}/functions/v1/forward-lead`, {
+        method: "POST",
+        headers: { 'Authorization': "Bearer " + token, 'apikey': SUPABASE_ANON_KEY, 'content-type': 'application/json' },
+        body: JSON.stringify({ lead_id: id, to: to, note: note }),
+      });
+      const data = await r.json().catch(function () { return {}; });
+      if (!r.ok || !data.ok) {
+        msgEl.innerHTML = '<div class="ld-inline-msg err">Forward failed: ' + esc(data.error || r.status) + '</div>';
+        btn.disabled = false; btn.textContent = "Forward"; return;
+      }
+      msgEl.innerHTML = '<div class="ld-inline-msg ok">Forwarded to ' + esc(to) + '.</div>';
+      noteEl.value = "";
+      setTimeout(function () { window.selectLead(id); }, 700);
+    } catch (e) {
+      msgEl.innerHTML = '<div class="ld-inline-msg err">Network error.</div>';
+      btn.disabled = false; btn.textContent = "Forward";
     }
   };
 
