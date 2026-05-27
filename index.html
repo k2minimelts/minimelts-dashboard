@@ -1484,6 +1484,18 @@
 
     <!-- Deliveries Tab -->
     <div id="tab-deliveries" style="display:none">
+      <!-- Unreconciled prints warning: receipts that were printed but never
+           submitted as a delivery. Auto-hidden when count = 0. -->
+      <div id="unreconciled-prints-banner" data-admin-only style="display:none;margin:0 0 12px;background:rgba(248,81,73,0.08);border:1px solid rgba(248,81,73,0.35);border-radius:8px;padding:12px 16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div>
+            <div style="color:#f85149;font-weight:700;font-size:14px">⚠ Unreconciled printed receipts</div>
+            <div id="unreconciled-prints-subtitle" style="color:var(--muted);font-size:13px;margin-top:2px">Receipts printed but never submitted as a delivery.</div>
+          </div>
+          <button class="btn-export" onclick="window.toggleUnreconciledPrints()" id="unreconciled-prints-toggle">Show details</button>
+        </div>
+        <div id="unreconciled-prints-list" style="display:none;margin-top:10px"></div>
+      </div>
       <div class="filters">
         <div class="filter-group"><label>Search</label><input type="text" id="filter-search" placeholder="Store, driver, receipt..." oninput="applyFilters()" style="min-width:200px"/></div>
         <div class="filter-group"><label>Driver</label><select id="filter-driver" onchange="applyFilters()"><option value="">All Drivers</option></select></div>
@@ -4581,7 +4593,79 @@ window.switchTab = (tab) => {
   if (tab==='access') loadAccess();
   if (tab==='leads') window.loadLeads();
   if (tab==='refunds') window.loadRefundRequests();
+  if (tab==='deliveries') window.loadUnreconciledPrints();
 };
+
+// ===== UNRECONCILED PRINTS =====
+// Receipts that were printed in the driver app but never linked to a submitted
+// delivery (delivery_id IS NULL) after 2 hours. Surfaces the "printed but lost"
+// failure mode (e.g. a driver who navigated away without submitting).
+(function () {
+  let UP_CACHE = [];
+
+  window.loadUnreconciledPrints = async function () {
+    const banner = document.getElementById('unreconciled-prints-banner');
+    const subtitle = document.getElementById('unreconciled-prints-subtitle');
+    if (!banner) return;
+    let rows;
+    try {
+      // 2-hour grace so legitimate in-progress deliveries don't show.
+      const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      rows = await sbFetch(
+        `delivery_prints?select=id,created_at,driver_name,store_name,receipt_number,total,payment_type,is_stamp_receipt,trip_stop_id` +
+        `&delivery_id=is.null&created_at=lt.${encodeURIComponent(cutoff)}&order=created_at.desc&limit=50`
+      );
+    } catch (e) { banner.style.display = 'none'; return; }
+    UP_CACHE = Array.isArray(rows) ? rows : [];
+    if (!UP_CACHE.length) { banner.style.display = 'none'; return; }
+    banner.style.display = 'block';
+    subtitle.textContent = `${UP_CACHE.length} receipt${UP_CACHE.length===1?'':'s'} printed but never submitted. The customer has paper proof — these likely need to be re-entered.`;
+    renderUnreconciledPrints();
+  };
+
+  function renderUnreconciledPrints() {
+    const listEl = document.getElementById('unreconciled-prints-list');
+    if (!listEl) return;
+    if (!UP_CACHE.length) { listEl.innerHTML = ''; return; }
+    const rowsHtml = UP_CACHE.map(function(p) {
+      const when = p.created_at ? new Date(p.created_at).toLocaleString() : '';
+      const total = (p.total != null) ? ('$' + Number(p.total).toFixed(2)) : '—';
+      const stamp = p.is_stamp_receipt ? ' · 🏷️ stamp' : '';
+      return '<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;flex-wrap:wrap">' +
+        '<div><span style="font-family:monospace;color:var(--gold)">' + escapeHtml(p.receipt_number||'') + '</span> · ' +
+        '<strong>' + escapeHtml(p.store_name||'—') + '</strong> · ' +
+        escapeHtml(p.driver_name||'—') + stamp + '</div>' +
+        '<div style="color:var(--muted)">' + escapeHtml(when) + ' · ' + total + ' · ' + escapeHtml(p.payment_type||'') +
+        ' <button class="btn-export" style="margin-left:8px;padding:2px 8px;font-size:12px" onclick="window.dismissUnreconciledPrint(\'' + p.id + '\')">Dismiss</button></div>' +
+        '</div>';
+    }).join('');
+    listEl.innerHTML = rowsHtml;
+  }
+
+  window.toggleUnreconciledPrints = function () {
+    const list = document.getElementById('unreconciled-prints-list');
+    const btn = document.getElementById('unreconciled-prints-toggle');
+    if (!list || !btn) return;
+    const showing = list.style.display !== 'none';
+    list.style.display = showing ? 'none' : 'block';
+    btn.textContent = showing ? 'Show details' : 'Hide details';
+  };
+
+  // Dismiss = client-side hide only. The row stays in the DB unlinked; it'll
+  // reappear the next time the tab loads. To permanently resolve an
+  // unreconciled print, either (a) the matching delivery gets submitted (the
+  // trigger auto-links it), or (b) re-create the delivery from the print data
+  // manually so the trigger picks it up. A persistent "acknowledged" mark
+  // would need a new column — keeping it simple for now.
+  window.dismissUnreconciledPrint = function (id) {
+    UP_CACHE = UP_CACHE.filter(function(p){ return p.id !== id; });
+    const banner = document.getElementById('unreconciled-prints-banner');
+    const subtitle = document.getElementById('unreconciled-prints-subtitle');
+    if (!UP_CACHE.length) { banner.style.display = 'none'; return; }
+    subtitle.textContent = `${UP_CACHE.length} receipt${UP_CACHE.length===1?'':'s'} printed but never submitted. The customer has paper proof — these likely need to be re-entered.`;
+    renderUnreconciledPrints();
+  };
+})();
 
 // ===== LEADS TAB =====
 (function () {
@@ -7377,7 +7461,7 @@ async function initMapboxGL() {
     // Format pct as a colored badge — green/yellow/red gradient
     let pctColor = '#888', pctBg = '#f3f4f6';
     if (pct != null) {
-      if (pct >= 65) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
+      if (pct >= 70) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
       else if (pct >= 40) { pctColor = '#92400e'; pctBg = '#fef3c7'; }
       else { pctColor = '#065f46'; pctBg = '#d1fae5'; }
     }
@@ -9230,7 +9314,7 @@ function schedInitMap() {
       // % sold colour-coded pill (green/yellow/red gradient — same thresholds as Map tab)
       let pctColor = '#888', pctBg = '#f3f4f6';
       if (pct != null) {
-        if (pct >= 65) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
+        if (pct >= 70) { pctColor = '#9b1c1c'; pctBg = '#fee2e2'; }
         else if (pct >= 40) { pctColor = '#92400e'; pctBg = '#fef3c7'; }
         else { pctColor = '#065f46'; pctBg = '#d1fae5'; }
       }
@@ -9831,7 +9915,7 @@ function schedStopRowHtml(s, isSelected) {
     const pct = s.pct_sold != null ? Number(s.pct_sold).toFixed(0) : null;
     const parts = [];
     if (pct != null) {
-      const pctColor = pct >= 65 ? '#e54848' : (pct >= 40 ? '#ff7a3a' : '#7bc47f');
+      const pctColor = pct >= 70 ? '#e54848' : (pct >= 40 ? '#ff7a3a' : '#7bc47f');
       parts.push(`<span style="color:${pctColor};font-weight:600">${pct}% sold</span>`);
     }
     if (s.no_sales_3d) parts.push(`<span style="color:#e54848">no sales ${s.days_since_last_sale}d</span>`);
