@@ -2902,6 +2902,36 @@ function applyRoleUI(roleInfo) {
     `;
     document.head.appendChild(styleEl);
   }
+  // For depot managers: prune the Province dropdown filters (Orders tab,
+  // Stores tab) to only the provinces their depots actually cover. Admins
+  // see all 10 provinces; depot managers see just the relevant ones. This
+  // is decluttering only — RLS at the database level is the real boundary.
+  // Fire-and-forget; never blocks login if it fails.
+  scopeProvinceFiltersByRole(roleInfo).catch(e => console.warn('[province-scope]', e));
+}
+
+async function scopeProvinceFiltersByRole(roleInfo) {
+  // Admins keep the full list — nothing to do.
+  if (!roleInfo || roleInfo.role === 'admin') return;
+  // For other roles, query distinct provinces from stores the user can read.
+  // RLS already limits stores visible to depot managers to their own depots,
+  // so this query naturally returns only the relevant provinces.
+  let rows;
+  try {
+    rows = await sbFetch('stores?select=province&active=eq.true');
+  } catch (e) { return; }
+  if (!Array.isArray(rows)) return;
+  const allowed = new Set(rows.map(r => r.province).filter(Boolean));
+  if (allowed.size === 0) return;
+  // Prune each province dropdown to keep only the "All" option + allowed codes.
+  ['orders-filter-province', 'store-province-filter'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    Array.from(sel.options).forEach(opt => {
+      if (opt.value === '') return; // keep the "All" option
+      if (!allowed.has(opt.value)) opt.remove();
+    });
+  });
 }
 
 window.doLogin = async () => {
