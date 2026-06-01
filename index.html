@@ -4643,7 +4643,7 @@ window.switchTab = (tab) => {
       const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
       rows = await sbFetch(
         `delivery_prints?select=id,created_at,driver_name,store_name,receipt_number,total,payment_type,is_stamp_receipt,trip_stop_id` +
-        `&delivery_id=is.null&created_at=lt.${encodeURIComponent(cutoff)}&order=created_at.desc&limit=50`
+        `&delivery_id=is.null&dismissed_at=is.null&created_at=lt.${encodeURIComponent(cutoff)}&order=created_at.desc&limit=50`
       );
     } catch (e) { banner.style.display = 'none'; return; }
     UP_CACHE = Array.isArray(rows) ? rows : [];
@@ -4681,13 +4681,50 @@ window.switchTab = (tab) => {
     btn.textContent = showing ? 'Show details' : 'Hide details';
   };
 
-  // Dismiss = client-side hide only. The row stays in the DB unlinked; it'll
-  // reappear the next time the tab loads. To permanently resolve an
-  // unreconciled print, either (a) the matching delivery gets submitted (the
-  // trigger auto-links it), or (b) re-create the delivery from the print data
-  // manually so the trigger picks it up. A persistent "acknowledged" mark
-  // would need a new column — keeping it simple for now.
-  window.dismissUnreconciledPrint = function (id) {
+  // Dismiss = persistent. Writes dismissed_at/dismissed_by/dismissed_reason
+  // to the row so the banner stops showing it on future page loads. The row
+  // itself is NEVER deleted — delivery_prints is the audit-trail safety net.
+  // Use when (a) the matching delivery was actually submitted but somehow
+  // didn't link, (b) the invoice was created manually in QB outside the app
+  // flow, or (c) the print was a test/stamp that doesn't correspond to a
+  // real delivery. Reason is optional but encouraged for the audit trail.
+  window.dismissUnreconciledPrint = async function (id) {
+    const print = UP_CACHE.find(function(p){ return p.id === id; });
+    if (!print) return;
+    const label = (print.receipt_number || '') + ' · ' + (print.store_name || '—');
+    const reason = window.prompt(
+      'Dismiss this unreconciled print?\n\n' + label +
+      '\n\nThe row stays in the audit log but stops showing in the banner.' +
+      '\n\nReason (optional):',
+      'Resolved manually'
+    );
+    if (reason === null) return; // cancelled
+    const dismissedBy = (window._session && window._session.user_email) || 'unknown';
+    try {
+      const resp = await fetch(`${SUPABASE_URL}/rest/v1/delivery_prints?id=eq.${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + (window._session && window._session.access_token),
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify({
+          dismissed_at: new Date().toISOString(),
+          dismissed_by: dismissedBy,
+          dismissed_reason: (reason || '').trim() || null,
+        }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(function(){return '';});
+        alert('Could not dismiss: ' + resp.status + (text ? ' — ' + text : ''));
+        return;
+      }
+    } catch (e) {
+      alert('Could not dismiss: ' + (e && e.message ? e.message : 'network error'));
+      return;
+    }
+    // Optimistic local update so the row disappears immediately.
     UP_CACHE = UP_CACHE.filter(function(p){ return p.id !== id; });
     const banner = document.getElementById('unreconciled-prints-banner');
     const subtitle = document.getElementById('unreconciled-prints-subtitle');
