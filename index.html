@@ -1496,11 +1496,20 @@
         </div>
         <div id="unreconciled-prints-list" style="display:none;margin-top:10px"></div>
       </div>
+      <div id="export-errors-banner" data-admin-only style="display:none;margin:0 0 12px;background:rgba(248,81,73,0.08);border:1px solid rgba(248,81,73,0.35);border-radius:8px;padding:12px 16px;cursor:pointer" onclick="window.showExportErrors()">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div>
+            <div style="color:#f85149;font-weight:700;font-size:14px">⚠ QuickBooks export errors</div>
+            <div id="export-errors-subtitle" style="color:var(--muted);font-size:13px;margin-top:2px"></div>
+          </div>
+          <button class="btn-export" onclick="event.stopPropagation();window.showExportErrors()">View</button>
+        </div>
+      </div>
       <div class="filters">
         <div class="filter-group"><label>Search</label><input type="text" id="filter-search" placeholder="Store, driver, receipt..." oninput="applyFilters()" style="min-width:200px"/></div>
         <div class="filter-group"><label>Driver</label><select id="filter-driver" onchange="applyFilters()"><option value="">All Drivers</option></select></div>
         <div class="filter-group"><label>Payment</label><select id="filter-payment" onchange="applyFilters()"><option value="">All Payments</option><option value="Terms">Terms</option><option value="Cash">Cash</option><option value="Cheque">Cheque</option><option value="E-Transfer">E-Transfer</option></select></div>
-        <div class="filter-group"><label>QB Status</label><select id="filter-qb" onchange="applyFilters()"><option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="exported">Exported</option></select></div>
+        <div class="filter-group"><label>QB Status</label><select id="filter-qb" onchange="applyFilters()"><option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="exported">Exported</option><option value="error">⚠️ Export error</option></select></div>
         <div class="filter-group"><label>From</label><input type="date" id="filter-from" onchange="applyFilters()"/></div>
         <div class="filter-group"><label>To</label><input type="date" id="filter-to" onchange="applyFilters()"/></div>
         <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
@@ -3303,12 +3312,37 @@ function payBadge(pt) {
   if (pt === 'Unpaid') return `<span class="badge" style="background:rgba(248,81,73,0.15);color:#f85149;border:1px solid rgba(248,81,73,0.4)">🔓 Unpaid</span>`;
   return `<span class="badge">${pt}</span>`;
 }
-function qbBadge(s) {
+function qbBadge(s, err) {
+  // A populated qb_export_error on a non-exported delivery means the last QB export
+  // was rejected (QBWC writes the QuickBooks statusMessage here and leaves it queued).
+  if (err && s !== 'exported') return `<span class="badge" style="background:rgba(248,81,73,0.15);color:#f85149;border:1px solid rgba(248,81,73,0.4)" title="${escapeHtml(String(err))}">⚠️ Export error</span>`;
   if (s === 'exported') return `<span class="badge badge-exported">✅ Exported</span>`;
   if (s === 'exporting') return `<span class="badge badge-exporting">⏳ Exporting...</span>`;
   if (s === 'approved') return `<span class="badge badge-etransfer">📤 Approved</span>`;
   return `<span class="badge badge-pending">⏳ Pending</span>`;
 }
+// True when a delivery's most recent QB export attempt failed.
+function hasQbError(d) { return !!d.qb_export_error && (d.qb_status||'pending') !== 'exported'; }
+// Show/hide the top-of-tab banner counting failed QB exports.
+function updateExportErrorBanner() {
+  const el = document.getElementById('export-errors-banner');
+  if (!el) return;
+  const n = allDeliveries.filter(hasQbError).length;
+  const sub = document.getElementById('export-errors-subtitle');
+  if (n > 0) {
+    if (sub) sub.textContent = `${n} ${n===1?'invoice':'invoices'} failed to export to QuickBooks and ${n===1?'is':'are'} still queued. Click to view.`;
+    el.style.display = '';
+  } else {
+    el.style.display = 'none';
+  }
+}
+window.showExportErrors = () => {
+  const f = document.getElementById('filter-qb');
+  if (f) f.value = 'error';
+  applyFilters();
+  const tb = document.getElementById('table-body');
+  if (tb) tb.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
 
 function renderTable(deliveries, bodyId, countId) {
   document.getElementById(countId).textContent = `${deliveries.length} records`;
@@ -3322,7 +3356,7 @@ function renderTable(deliveries, bodyId, countId) {
     <td>${d.driver_name}</td>
     <td>${payBadge(d.payment_type)}</td>
     <td class="total-cell">$${parseFloat(d.total).toFixed(2)}</td>
-    <td>${qbBadge(d.qb_status||'pending')}</td>
+    <td>${qbBadge(d.qb_status||'pending', d.qb_export_error)}${hasQbError(d) ? `<div style="color:#f85149;font-size:11px;margin-top:3px;max-width:240px;white-space:normal" title="${escapeHtml(String(d.qb_export_error))}">${escapeHtml(String(d.qb_export_error).slice(0,80))}${String(d.qb_export_error).length>80?'…':''}</div>` : ''}</td>
     <td>
       <button class="btn-sm" onclick="window.showDetail('${d.id}')">View</button>
       ${((d.qb_status||'pending') === 'pending')
@@ -3633,12 +3667,14 @@ window.applyFilters = () => {
     if (search && !`${d.store_name} ${d.driver_name} ${d.receipt_number}`.toLowerCase().includes(search)) return false;
     if (driver && d.driver_name !== driver) return false;
     if (payment && d.payment_type !== payment) return false;
-    if (qb && (d.qb_status||'pending') !== qb) return false;
+    if (qb === 'error') { if (!hasQbError(d)) return false; }
+    else if (qb && (d.qb_status||'pending') !== qb) return false;
     if (from && d.delivered_at < from) return false;
     if (to && d.delivered_at > to+'T23:59:59') return false;
     return true;
   });
   renderTable(filteredDeliveries, 'table-body', 'delivery-count');
+  updateExportErrorBanner();
 };
 
 // ── QB Export ──
@@ -3793,6 +3829,9 @@ window.showDetail = async (id) => {
     : isApproved
     ? `<div style="background:rgba(88,166,255,0.08);border:1px solid rgba(88,166,255,0.35);border-radius:8px;padding:12px 14px;margin-bottom:16px;display:flex;align-items:center;gap:10px"><span style="font-size:18px">🔒</span><div><div style="color:#58a6ff;font-weight:700;font-size:13px">Approved for export</div><div style="color:var(--muted);font-size:12px;margin-top:2px">This invoice has been approved and is locked. It cannot be edited or deleted.</div></div></div>`
     : '';
+  const errBanner = hasQbError(d)
+    ? `<div style="background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.4);border-radius:8px;padding:12px 14px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px"><span style="font-size:18px">⚠️</span><div><div style="color:#f85149;font-weight:700;font-size:13px">QuickBooks export failed</div><div style="color:var(--text);font-size:12px;margin-top:4px">${escapeHtml(String(d.qb_export_error))}</div><div style="color:var(--muted);font-size:11px;margin-top:6px">It stays queued and the QuickBooks Web Connector retries on its next run — fix the cause (often a customer-name mismatch) and it exports automatically.</div></div></div>`
+    : '';
   const editSection = isLocked ? '' : `
     <div class="section-title" style="color:var(--mm-cyan)">✏️ Correct Invoice</div>
     <div style="background:var(--bg3);border-radius:8px;padding:16px;margin-bottom:16px">
@@ -3827,6 +3866,7 @@ window.showDetail = async (id) => {
       </div>`;
   document.getElementById('modal-title').textContent = `${d.receipt_number} — ${d.store_name}`;
   document.getElementById('modal-body').innerHTML = `
+    ${errBanner}
     ${lockBanner}
     <div class="detail-row"><span class="detail-label">Date</span><span class="detail-value">${new Date(d.delivered_at).toLocaleString('en-CA')}</span></div>
     <div class="detail-row"><span class="detail-label">Store</span><span class="detail-value">${d.store_name}</span></div>
@@ -3834,7 +3874,7 @@ window.showDetail = async (id) => {
     <div class="detail-row"><span class="detail-label">Driver</span><span class="detail-value">${d.driver_name}</span></div>
     <div class="detail-row"><span class="detail-label">Payment</span><span class="detail-value">${payBadge(d.payment_type)}</span></div>
     ${d.payment_type === 'Unpaid' ? `<div class="detail-row"><span class="detail-label">Authorized By</span><span class="detail-value" style="color:#f85149;font-weight:700">🔓 ${d.unpaid_authorized_by ? escapeHtml(d.unpaid_authorized_by) : '⚠️ not recorded'}</span></div>${d.unpaid_auth_note ? `<div class="detail-row"><span class="detail-label">Auth Note</span><span class="detail-value">${escapeHtml(d.unpaid_auth_note)}</span></div>` : ''}` : ''}
-    <div class="detail-row"><span class="detail-label">QB Status</span><span class="detail-value">${qbBadge(d.qb_status||'pending')}</span></div>
+    <div class="detail-row"><span class="detail-label">QB Status</span><span class="detail-value">${qbBadge(d.qb_status||'pending', d.qb_export_error)}</span></div>
     <div class="detail-row"><span class="detail-label">Unit Price</span><span class="detail-value">$${parseFloat(d.unit_price).toFixed(2)}</span></div>
     ${d.notes ? `<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-value">${d.notes}</span></div>` : ''}
     <div class="section-title">Items Delivered</div>
