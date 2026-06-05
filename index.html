@@ -1477,7 +1477,7 @@
         <div class="stat-card"><div class="stat-label">Unpaid Balance</div><div class="stat-value" id="stat-unpaid">—</div><div class="stat-sub" id="stat-unpaid-count">—</div></div>
       </div>
       <div class="charts-grid">
-        <div class="chart-card"><div class="chart-title">Revenue by Store (This Month)</div><canvas id="chart-stores" height="200"></canvas></div>
+        <div class="chart-card"><div class="chart-title">Revenue by Depot (This Month)</div><canvas id="chart-stores" height="200"></canvas></div>
         <div class="chart-card"><div class="chart-title">Revenue by Driver (This Month)</div><canvas id="chart-drivers" height="200"></canvas></div>
       </div>
     </div>
@@ -3196,7 +3196,7 @@ async function loadAll() {
   const data = await sbFetch(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc&limit=10000`);
   allDeliveries = Array.isArray(data) ? data : [];
   filteredDeliveries = [...allDeliveries];
-  populateDriverFilter(); renderStats(); renderCharts();
+  populateDriverFilter(); renderStats(); await ensureStoreDepotMap(); renderCharts();
   renderTable(filteredDeliveries, 'table-body', 'delivery-count');
   renderUnpaid();
   loadShippingUnpaid();
@@ -3279,14 +3279,37 @@ function renderStats() {
 }
 
 // ── Charts ──
+let _depotByStoreId = null;
+// Build (once) a store_id -> depot-label map so the Overview chart can bucket revenue
+// by depot. Sourced from the stores_map view (admin-visible; the Overview tab is
+// admin-only). Paginated so it isn't capped at PostgREST's default row limit.
+async function ensureStoreDepotMap() {
+  if (_depotByStoreId) return _depotByStoreId;
+  const map = {};
+  try {
+    const pageSize = 1000;
+    for (let offset = 0; ; offset += pageSize) {
+      const rows = await sbFetch(`stores_map?select=id,depot_code,depot_name&limit=${pageSize}&offset=${offset}`);
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      for (const s of rows) map[s.id] = s.depot_name || s.depot_code || null;
+      if (rows.length < pageSize) break;
+    }
+  } catch (e) { /* leave partial/empty; unmapped stores fall through to 'Unassigned' */ }
+  _depotByStoreId = map;
+  return _depotByStoreId;
+}
 function renderCharts() {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const month = allDeliveries.filter(d => d.delivered_at >= monthStart);
-  const storeMap = {}; month.forEach(d => { storeMap[d.store_name] = (storeMap[d.store_name]||0) + parseFloat(d.total||0); });
-  const storeEntries = Object.entries(storeMap).sort((a,b) => b[1]-a[1]).slice(0,8);
+  // Seed every depot (each one that has stores) at 0 so all depots appear on the
+  // chart even with no sales this month, then add this month's revenue per depot.
+  const depotRev = {};
+  if (_depotByStoreId) { for (const label of Object.values(_depotByStoreId)) { if (label) depotRev[label] = 0; } }
+  month.forEach(d => { const depot = (_depotByStoreId && _depotByStoreId[d.store_id]) || 'Unassigned'; depotRev[depot] = (depotRev[depot]||0) + parseFloat(d.total||0); });
+  const depotEntries = Object.entries(depotRev).sort((a,b) => b[1]-a[1]);
   if (storeChart) storeChart.destroy();
-  storeChart = new Chart(document.getElementById('chart-stores'), { type: 'bar', data: { labels: storeEntries.map(e => e[0].length>20?e[0].slice(0,20)+'…':e[0]), datasets: [{ data: storeEntries.map(e=>e[1]), backgroundColor: '#4fc3d4', borderRadius: 6 }] }, options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }, y: { ticks: { color: '#8b949e', callback: v => '$'+v.toFixed(0) }, grid: { color: 'rgba(255,255,255,0.05)' } } } } });
+  storeChart = new Chart(document.getElementById('chart-stores'), { type: 'bar', data: { labels: depotEntries.map(e => e[0]), datasets: [{ data: depotEntries.map(e=>e[1]), backgroundColor: '#4fc3d4', borderRadius: 6 }] }, options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }, y: { ticks: { color: '#8b949e', callback: v => '$'+v.toFixed(0) }, grid: { color: 'rgba(255,255,255,0.05)' } } } } });
   const driverMap = {}; month.forEach(d => { driverMap[d.driver_name] = (driverMap[d.driver_name]||0) + parseFloat(d.total||0); });
   const driverEntries = Object.entries(driverMap).sort((a,b) => b[1]-a[1]);
   const colors = ['#e2b04a','#4fc3d4','#3fb950','#f85149','#e87bb5','#bc8cff'];
