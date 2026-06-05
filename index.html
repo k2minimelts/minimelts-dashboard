@@ -1496,20 +1496,11 @@
         </div>
         <div id="unreconciled-prints-list" style="display:none;margin-top:10px"></div>
       </div>
-      <div id="export-errors-banner" data-admin-only style="display:none;margin:0 0 12px;background:rgba(248,81,73,0.08);border:1px solid rgba(248,81,73,0.35);border-radius:8px;padding:12px 16px;cursor:pointer" onclick="window.showExportErrors()">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <div>
-            <div style="color:#f85149;font-weight:700;font-size:14px">⚠ QuickBooks export errors</div>
-            <div id="export-errors-subtitle" style="color:var(--muted);font-size:13px;margin-top:2px"></div>
-          </div>
-          <button class="btn-export" onclick="event.stopPropagation();window.showExportErrors()">View</button>
-        </div>
-      </div>
       <div class="filters">
         <div class="filter-group"><label>Search</label><input type="text" id="filter-search" placeholder="Store, driver, receipt..." oninput="applyFilters()" style="min-width:200px"/></div>
         <div class="filter-group"><label>Driver</label><select id="filter-driver" onchange="applyFilters()"><option value="">All Drivers</option></select></div>
         <div class="filter-group"><label>Payment</label><select id="filter-payment" onchange="applyFilters()"><option value="">All Payments</option><option value="Terms">Terms</option><option value="Cash">Cash</option><option value="Cheque">Cheque</option><option value="E-Transfer">E-Transfer</option></select></div>
-        <div class="filter-group"><label>QB Status</label><select id="filter-qb" onchange="applyFilters()"><option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="exported">Exported</option><option value="error">⚠️ Export error</option></select></div>
+        <div class="filter-group"><label>QB Status</label><select id="filter-qb" onchange="applyFilters()"><option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="exported">Exported</option></select></div>
         <div class="filter-group"><label>From</label><input type="date" id="filter-from" onchange="applyFilters()"/></div>
         <div class="filter-group"><label>To</label><input type="date" id="filter-to" onchange="applyFilters()"/></div>
         <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
@@ -3315,7 +3306,7 @@ function payBadge(pt) {
 function qbBadge(s, err) {
   // A populated qb_export_error on a non-exported delivery means the last QB export
   // was rejected (QBWC writes the QuickBooks statusMessage here and leaves it queued).
-  if (err && s !== 'exported') return `<span class="badge" style="background:rgba(248,81,73,0.15);color:#f85149;border:1px solid rgba(248,81,73,0.4)" title="${escapeHtml(String(err))}">⚠️ Export error</span>`;
+  if (err && s !== 'exported') return `<span class="badge" style="background:rgba(248,81,73,0.15);color:#f85149;border:1px solid rgba(248,81,73,0.4)" title="${escapeHtml(String(err))}">❌ Failed</span>`;
   if (s === 'exported') return `<span class="badge badge-exported">✅ Exported</span>`;
   if (s === 'exporting') return `<span class="badge badge-exporting">⏳ Exporting...</span>`;
   if (s === 'approved') return `<span class="badge badge-etransfer">📤 Approved</span>`;
@@ -3323,25 +3314,22 @@ function qbBadge(s, err) {
 }
 // True when a delivery's most recent QB export attempt failed.
 function hasQbError(d) { return !!d.qb_export_error && (d.qb_status||'pending') !== 'exported'; }
-// Show/hide the top-of-tab banner counting failed QB exports.
-function updateExportErrorBanner() {
-  const el = document.getElementById('export-errors-banner');
-  if (!el) return;
-  const n = allDeliveries.filter(hasQbError).length;
-  const sub = document.getElementById('export-errors-subtitle');
-  if (n > 0) {
-    if (sub) sub.textContent = `${n} ${n===1?'invoice':'invoices'} failed to export to QuickBooks and ${n===1?'is':'are'} still queued. Click to view.`;
-    el.style.display = '';
-  } else {
-    el.style.display = 'none';
-  }
-}
-window.showExportErrors = () => {
-  const f = document.getElementById('filter-qb');
-  if (f) f.value = 'error';
+// Reset a failed export back to Pending: clears the error and pulls it out of the QB
+// export queue so the office can fix the cause (e.g. a customer-name mismatch) and
+// re-approve it. Allowed by the deliveries_lock_edits trigger only when an export
+// error is present (a failed export never reached QuickBooks).
+window.resetExportError = async (id) => {
+  const d = allDeliveries.find(x => x.id === id);
+  const label = d ? d.receipt_number : 'this delivery';
+  if (!confirm(`Reset ${label} to Pending?\n\nThis clears the QuickBooks export error and removes it from the export queue so you can fix the cause and approve it again.`)) return;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=eq.${id}`, {
+    method: 'PATCH',
+    headers: { ...headers(), 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ qb_status: 'pending', qb_export_error: null })
+  });
+  if (!res.ok) { alert('Reset failed: ' + (await res.text())); return; }
+  if (d) { d.qb_status = 'pending'; d.qb_export_error = null; }
   applyFilters();
-  const tb = document.getElementById('table-body');
-  if (tb) tb.scrollIntoView({ behavior: 'smooth', block: 'start' });
 };
 
 function renderTable(deliveries, bodyId, countId) {
@@ -3359,6 +3347,7 @@ function renderTable(deliveries, bodyId, countId) {
     <td>${qbBadge(d.qb_status||'pending', d.qb_export_error)}${hasQbError(d) ? `<div style="color:#f85149;font-size:11px;margin-top:3px;max-width:240px;white-space:normal" title="${escapeHtml(String(d.qb_export_error))}">${escapeHtml(String(d.qb_export_error).slice(0,80))}${String(d.qb_export_error).length>80?'…':''}</div>` : ''}</td>
     <td>
       <button class="btn-sm" onclick="window.showDetail('${d.id}')">View</button>
+      ${hasQbError(d) ? `<button class="btn-sm" style="border-color:rgba(248,81,73,0.4);color:#f85149" onclick="window.resetExportError('${d.id}')">↺ Reset to Pending</button>` : ''}
       ${((d.qb_status||'pending') === 'pending')
         ? `<button class="btn-sm btn-qb" onclick="window.approveForQB('${d.id}')">📤 Approve</button>
            <button class="btn-sm" style="border-color:rgba(248,81,73,0.3);color:#f85149" onclick="window.deleteDelivery('${d.id}')">🗑</button>`
@@ -3667,14 +3656,12 @@ window.applyFilters = () => {
     if (search && !`${d.store_name} ${d.driver_name} ${d.receipt_number}`.toLowerCase().includes(search)) return false;
     if (driver && d.driver_name !== driver) return false;
     if (payment && d.payment_type !== payment) return false;
-    if (qb === 'error') { if (!hasQbError(d)) return false; }
-    else if (qb && (d.qb_status||'pending') !== qb) return false;
+    if (qb && (d.qb_status||'pending') !== qb) return false;
     if (from && d.delivered_at < from) return false;
     if (to && d.delivered_at > to+'T23:59:59') return false;
     return true;
   });
   renderTable(filteredDeliveries, 'table-body', 'delivery-count');
-  updateExportErrorBanner();
 };
 
 // ── QB Export ──
@@ -3853,8 +3840,10 @@ window.showDetail = async (id) => {
       <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">NOTES</label><input id="edit-notes" type="text" value="${d.notes||''}" placeholder="Optional notes..." style="width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-size:14px"/></div>
     </div>`;
   const resendBtn = `<button class="btn-modal btn-modal-outline" style="border-color:var(--mm-cyan);color:var(--mm-cyan)" onclick="window.resendDeliveryReceipt('${d.id}')">✉️ Resend Receipt</button>`;
+  const resetBtn = hasQbError(d) ? `<button class="btn-modal" style="background:rgba(248,81,73,0.15);border:1px solid rgba(248,81,73,0.4);color:#f85149;cursor:pointer;border-radius:8px;padding:12px;font-size:14px;font-weight:700" onclick="window.resetExportError('${d.id}');closeModal();">↺ Reset to Pending</button>` : '';
   const actions = isLocked
     ? `<div class="modal-actions">
+        ${resetBtn}
         ${resendBtn}
         <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeModal()">Close</button>
       </div>`
