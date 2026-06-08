@@ -1898,6 +1898,10 @@
               <span class="sw" style="background:var(--muted)"></span>
               <span>Already scheduled</span>
             </div>
+            <div class="sched-legend-row">
+              <span class="sw" style="background:#a371f7"></span>
+              <span>⚠ Skipped — reschedule</span>
+            </div>
           </div>
           <div class="sched-map-overlay sched-lasso-hint">
             Hold <kbd>Shift</kbd> + drag to lasso · click pins to select · <kbd>Esc</kbd> to clear
@@ -8723,6 +8727,7 @@ function schedCadenceStyle(daysOverdue) {
 }
 function schedPinInfo(store) {
   if (store.assigned) return { color: '#8b949e', size: '', stale: false };
+  if (store.skipped) return { color: '#a371f7', size: 'size-md', stale: false };  // skipped — reschedule
   if (store.type === 'order') {
     // New freezer install orders get a distinct hot-pink color (and bigger
     // size) so depot managers can spot them at a glance. Regular restock
@@ -9052,13 +9057,23 @@ async function schedLoadOrdersAndOverdue() {
   // route on every overdue/order row.
   const routesLitePromise = sbFetch(`routes?select=id,delivery_method`);
 
-  let overdueRows = [], orderRows = [], vendingRows = [], routesLite = [];
+  // Skipped-and-unresolved stops (latest trip stop = 'skipped', not since
+  // re-scheduled or serviced). Puts a driver's skip back into the schedulable
+  // pool. Depot-scoped, same as the overdue/vending layers.
+  const skippedPromise = sbFetch(
+    `sched_skipped_unresolved?select=kind,entity_id,name,addr1,city,province,lat,lng,depot_id,skipped_on,skip_reason` +
+    `&depot_id=in.(${depotIdList})` +
+    `&limit=2000`
+  );
+
+  let overdueRows = [], orderRows = [], vendingRows = [], routesLite = [], skippedRows = [];
   try {
-    [overdueRows, orderRows, vendingRows, routesLite] = await Promise.all([overduePromise, ordersPromise, vendingPromise, routesLitePromise]);
+    [overdueRows, orderRows, vendingRows, routesLite, skippedRows] = await Promise.all([overduePromise, ordersPromise, vendingPromise, routesLitePromise, skippedPromise]);
     if (!Array.isArray(overdueRows)) overdueRows = [];
     if (!Array.isArray(orderRows)) orderRows = [];
     if (!Array.isArray(vendingRows)) vendingRows = [];
     if (!Array.isArray(routesLite)) routesLite = [];
+    if (!Array.isArray(skippedRows)) skippedRows = [];
   } catch (e) {
     console.error('[sched] failed to load orders/overdue/vending', e);
     schedState.storesIndex = new Map();
@@ -9165,6 +9180,41 @@ async function schedLoadOrdersAndOverdue() {
     });
   }
 
+  // Merge skipped-unresolved items. If the store/machine is already a pin
+  // (overdue/order/vending), flag it skipped so it re-styles and always shows;
+  // otherwise add a fresh pin — this is what recovers skipped stores that aren't
+  // otherwise "due" (the gap the overdue layer alone misses).
+  for (const r of skippedRows) {
+    if (r.lat == null || r.lng == null) continue;
+    if (!depotIds.includes(r.depot_id)) continue;
+    const key = r.kind === 'vending' ? `vm:${r.entity_id}` : r.entity_id;
+    const existing = idx.get(key);
+    if (existing) {
+      existing.skipped = true;
+      existing.skip_reason = existing.skip_reason || r.skip_reason || null;
+      existing.skipped_on = existing.skipped_on || r.skipped_on || null;
+      continue;
+    }
+    if (r.kind === 'vending') {
+      idx.set(key, {
+        id: key, machine_id: r.entity_id, qb_name: r.name,
+        ship_addr1: r.addr1, ship_city: r.city, province: r.province,
+        lat: Number(r.lat), lng: Number(r.lng), depot_id: r.depot_id, depot: null,
+        type: 'vending', days_overdue: 0, assigned: false,
+        skipped: true, skip_reason: r.skip_reason || null, skipped_on: r.skipped_on || null,
+        venue_id: null, venue_name: r.name || '',
+      });
+    } else {
+      idx.set(key, {
+        id: r.entity_id, qb_name: r.name,
+        ship_addr1: r.addr1, ship_city: r.city, province: r.province,
+        lat: Number(r.lat), lng: Number(r.lng), depot_id: r.depot_id, depot: null,
+        type: 'overdue', days_overdue: 0, assigned: false,
+        skipped: true, skip_reason: r.skip_reason || null, skipped_on: r.skipped_on || null,
+      });
+    }
+  }
+
   schedState.storesIndex = idx;
   schedMarkAssignedStores();
 }
@@ -9174,6 +9224,10 @@ function schedMarkAssignedStores() {
   for (const trip of schedState.trips) {
     for (const day of trip.days || []) {
       for (const stop of day.stops || []) {
+        // A SKIPPED stop must NOT mark its store/machine as "assigned" — the visit
+        // didn't happen, so it stays available to reschedule (and the
+        // sched_skipped_unresolved layer surfaces it). Only planned/completed count.
+        if (stop.status === 'skipped') continue;
         // Vending stop — look up by 'vm:' prefix
         if (stop.linked_machine_id) {
           const key = `vm:${stop.linked_machine_id}`;
@@ -9616,6 +9670,9 @@ function schedRenderMarkers() {
     // submitted date, source, stock level, contact, and notes — info a depot
     // manager needs to triage scheduling. Vending is handled by the layer above.
     let popupHtml;
+    const skipBanner = store.skipped
+      ? `<div style="background:#a371f7;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.4px;margin-bottom:6px;text-align:center">⚠ SKIPPED${store.skipped_on ? ' · ' + new Date(store.skipped_on).toLocaleDateString('en-CA',{month:'short',day:'numeric'}) : ''} — RESCHEDULE</div>${store.skip_reason ? `<div style="font-size:11px;color:#6b21a8;background:#f3e8ff;border-radius:4px;padding:5px 8px;margin-bottom:6px">${schedEscapeHtml(store.skip_reason)}</div>` : ''}`
+      : '';
     if (store.type === 'order') {
       const submittedDate = store.order_submitted_at
         ? new Date(store.order_submitted_at).toLocaleDateString('en-CA', { year:'numeric', month:'short', day:'numeric' })
@@ -9657,6 +9714,7 @@ function schedRenderMarkers() {
         ? '<div style="background:#475569;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.5px;margin-bottom:6px;text-align:center">📦 SHIPPING-ONLY · DO NOT SCHEDULE ON A TRIP</div>'
         : '';
       popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;min-width:240px;max-width:300px">
+        ${skipBanner}
         ${shippingBanner}
         ${store.is_new_install ? '<div style="background:#ff4d9d;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.5px;margin-bottom:6px;text-align:center">🆕 NEW FREEZER INSTALL</div>' : ''}
         <div style="font-weight:700;font-size:13px">${schedEscapeHtml(store.qb_name)}</div>
@@ -9684,7 +9742,7 @@ function schedRenderMarkers() {
       const overdueShippingBanner = store.route_delivery_method === 'shipped'
         ? '<div style="background:#475569;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:800;letter-spacing:0.5px;margin-bottom:4px;text-align:center">📦 SHIPPING-ONLY</div>'
         : '';
-      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500">${overdueShippingBanner}<strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8;font-weight:400">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>${overdueBadge}</div>`;
+      popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;font-weight:500">${skipBanner}${overdueShippingBanner}<strong>${schedEscapeHtml(store.qb_name)}</strong><br><span style="opacity:0.8;font-weight:400">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>${overdueBadge}</div>`;
     }
     const marker = new mapboxgl.Marker({ element: el })
       .setLngLat([store.lng, store.lat])
@@ -9890,6 +9948,7 @@ function schedIsFiltered(store) {
     return !schedState.filters.scheduled;
   }
   if (schedState.highlightedDriver) return true;
+  if (store.skipped) return false;  // unresolved skips always show until rescheduled/serviced
   if (store.type === 'order' && !schedState.filters.orders) return true;
   if (store.type === 'overdue' && !schedState.filters.overdue) return true;
   if (store.type === 'vending' && !schedState.filters.vending) return true;
