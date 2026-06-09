@@ -6363,7 +6363,7 @@ async function loadCashRecon() {
   let rows;
   try {
     rows = await sbFetch(
-      `deliveries?select=receipt_number,store_name,qb_name,driver_name,payment_type,total,delivered_at` +
+      `deliveries?select=receipt_number,store_name,driver_name,payment_type,total,delivered_at` +
       `&payment_type=in.(Cash,Cheque)` +
       `&delivered_at=gte.${start.toISOString()}` +
       `&delivered_at=lt.${end.toISOString()}` +
@@ -6407,7 +6407,7 @@ async function loadCashRecon() {
     let dCash = 0, dCheque = 0;
     for (const r of list) { const a=Number(r.total||0); if (r.payment_type==='Cash') dCash+=a; else dCheque+=a; }
     const rowsHtml = list.map(r => {
-      const cust = r.qb_name || r.store_name || '—';
+      const cust = r.store_name || '—';
       const badgeBg = r.payment_type==='Cash' ? 'rgba(46,160,67,0.15)' : 'rgba(255,140,66,0.15)';
       const badgeCol = r.payment_type==='Cash' ? '#3fb950' : '#ff8c42';
       return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--border)">
