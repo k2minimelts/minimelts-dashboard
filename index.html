@@ -6427,6 +6427,10 @@ async function loadCashRecon() {
   }
   listEl.innerHTML = html;
 }
+// Exposed on window so the modal's inline onchange/onclick handlers (date picker,
+// Refresh button) can reach it — top-level fns in a <script type="module"> are
+// NOT global by default.
+window.loadCashRecon = loadCashRecon;
 
 async function loadRecurringList() {
   const listEl = document.getElementById('recurring-list');
