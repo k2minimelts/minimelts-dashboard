@@ -424,6 +424,49 @@
     color: var(--text);
   }
 
+  /* Search overlay — top-right, nudged left of the Mapbox zoom/compass control. */
+  .sched-search {
+    top: 12px; right: 52px;
+    width: 280px;
+    padding: 8px;
+  }
+  .sched-search input {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+  }
+  .sched-search input:focus { border-color: var(--gold); }
+  .sched-search-results {
+    margin-top: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+  }
+  .sched-search-result {
+    padding: 7px 8px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.4;
+  }
+  .sched-search-result:last-child { border-bottom: none; }
+  .sched-search-result:hover { background: var(--bg2); }
+  .sched-search-result .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .sched-search-result .tag {
+    display: inline-block; font-size: 9px; font-weight: 700;
+    padding: 1px 5px; border-radius: 3px; margin-right: 6px;
+    vertical-align: middle; text-transform: uppercase; letter-spacing: 0.03em;
+  }
+  .sched-search-empty { padding: 8px; color: var(--muted); font-size: 12px; }
+
   /* Sidebar */
   .sched-sidebar {
     background: var(--bg2);
@@ -903,6 +946,18 @@
   }
   .sched-cell-calc-btn:hover:not(:disabled) { filter: brightness(1.2); }
   .sched-cell-calc-btn:disabled { opacity: 0.6; cursor: default; }
+
+  .sched-cell-lock-btn {
+    margin-top: 6px; width: 100%;
+    padding: 7px 10px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--bg2); color: var(--muted);
+  }
+  .sched-cell-lock-btn.is-locked {
+    border-color: #6366f1; color: #a5b4fc; background: rgba(99,102,241,0.12);
+  }
+  .sched-cell-lock-btn:hover:not(:disabled) { filter: brightness(1.2); }
+  .sched-cell-lock-btn:disabled { opacity: 0.6; cursor: default; }
 
   /* Multi-day trip linking */
   .sched-cell.sched-day-cell.trip-day {
@@ -1906,6 +1961,17 @@
           </div>
           <div class="sched-map-overlay sched-lasso-hint">
             Hold <kbd>Shift</kbd> + drag to lasso · click pins to select · <kbd>Esc</kbd> to clear
+          </div>
+          <!-- Search overlay: find a specific store / vending machine among this
+               week's schedulable pins, fly to it, and add it to the selection. -->
+          <div class="sched-map-overlay sched-search" id="sched-search">
+            <input type="text" id="sched-search-input" autocomplete="off" spellcheck="false"
+                   placeholder="🔍 Find a store or vending machine…"
+                   oninput="window.schedSearch(this.value)"
+                   onfocus="window.schedSearchFocus()"
+                   onblur="window.schedSearchBlur()"
+                   onkeydown="window.schedSearchKey(event)" />
+            <div id="sched-search-results" class="sched-search-results" style="display:none"></div>
           </div>
         </div>
 
@@ -9446,7 +9512,7 @@ async function schedLoadTripsForWeek() {
   const we = schedState.weekEnd;
   const select =
     'id,driver_id,depot_id,start_date,end_date,status,notes,published_at,' +
-    'days:trip_days(id,day_date,day_index,status,estimated_drive_hours,' +
+    'days:trip_days(id,day_date,day_index,status,manual_order_locked,estimated_drive_hours,' +
       'last_email_sent_at,email_resend_pending_at,' +
       'stops:trip_stops(id,sequence,source,manager_note,store_id,linked_machine_id,linked_order_id,' +
         'store:stores(qb_name,ship_addr1,ship_city,province,lat,lng,depot_id),' +
@@ -11439,6 +11505,7 @@ function schedRenderCellEditSidebar(container) {
   const driveHours = hasRealDrive ? realDrive : estDrive;
   const totalHours = svcHours + driveHours;
   const overProductive = totalHours > schedState.workload.productive_hours;
+  const orderLocked = !!(dayObj && dayObj.manual_order_locked);
   const driveTimeHtml = stopCount > 0 ? `
     <div class="sched-cell-drivetime ${hasRealDrive ? 'is-real' : 'is-est'} ${overProductive ? 'is-over' : ''}">
       <div class="sched-cell-drivetime-main">
@@ -11448,7 +11515,12 @@ function schedRenderCellEditSidebar(container) {
       <div class="sched-cell-drivetime-break">${schedFmtHours(svcHours)} service + ${schedFmtHours(driveHours)} drive${hasRealDrive ? ' · real, depot-to-depot' : ''}${overProductive ? ` · ⚠ over by ${schedFmtHours(totalHours - schedState.workload.productive_hours)}` : ''}</div>
       <button class="sched-cell-calc-btn ${hasRealDrive ? 'is-real' : 'is-est'}"
         onclick="window.schedCalcDayDriveTime('${cell.trip_day_id}', this)">
-        ${hasRealDrive ? '↻ Recalculate drive time' : '📍 Calculate real drive time'}
+        ${hasRealDrive ? '↻ Recalculate drive time' : '📍 Calculate real drive time'}${orderLocked ? ' (keeps order)' : ''}
+      </button>
+      <button class="sched-cell-lock-btn ${orderLocked ? 'is-locked' : ''}"
+        onclick="window.schedToggleManualLock('${cell.trip_day_id}', this)"
+        title="${orderLocked ? 'Routing is locked to your manual order — automatic routing will not reorder this day. Click to allow automatic re-ordering again.' : 'Lock the current stop order so automatic routing never reorders this day.'}">
+        ${orderLocked ? '🔒 Manual order locked' : '🔓 Lock manual order'}
       </button>
     </div>` : '';
 
@@ -11661,6 +11733,92 @@ function schedTogglePinSelect_v3(storeId) {
   schedRenderAll();
 }
 
+// ── Schedule map search ───────────────────────────────────────────────
+// Find a specific store / vending machine among the pins currently loaded on
+// the map (this week's schedulable pool within the manager's depot scope),
+// fly to it, and add it to the selection. Selecting forces the pin visible
+// even if its category filter is toggled off (see schedIsFiltered).
+function schedSearchTag(s) {
+  if (s.type === 'vending') return { label: 'Vending',   color: '#9d174d', bg: '#fce7f3' };
+  if (s.skipped)            return { label: 'Skipped',   color: '#5b21b6', bg: '#ede9fe' };
+  if (s.assigned)           return { label: 'Scheduled', color: '#3730a3', bg: '#e0e7ff' };
+  if (s.type === 'order')   return { label: 'Order',     color: '#0e7490', bg: '#cffafe' };
+  if (s.type === 'overdue') return { label: 'Overdue',   color: '#9a3412', bg: '#ffedd5' };
+  return { label: 'Stop', color: '#374151', bg: '#e5e7eb' };
+}
+window.schedSearch = function (q) {
+  const resultsEl = document.getElementById('sched-search-results');
+  if (!resultsEl) return;
+  const query = (q || '').trim().toLowerCase();
+  if (!query) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; return; }
+  const tokens = query.split(/\s+/).filter(Boolean);
+  const matches = [];
+  for (const s of schedState.storesIndex.values()) {
+    if (s.lat == null || s.lng == null) continue;
+    const hay = [s.qb_name, s.ship_addr1, s.ship_city, s.province, s.venue_name, s.venue_chain]
+      .filter(Boolean).join(' ').toLowerCase();
+    if (tokens.every(t => hay.includes(t))) matches.push(s);
+  }
+  matches.sort((a, b) => (a.qb_name || '').localeCompare(b.qb_name || ''));
+  const top = matches.slice(0, 20);
+  if (top.length === 0) {
+    resultsEl.innerHTML = `<div class="sched-search-empty">No matching pin on this week's map.</div>`;
+    resultsEl.style.display = 'block';
+    return;
+  }
+  resultsEl.innerHTML = top.map(s => {
+    const t = schedSearchTag(s);
+    const loc = [s.ship_city, s.province].filter(Boolean).join(', ');
+    const key = String(s.id).replace(/'/g, "\\'");
+    return `<div class="sched-search-result" data-id="${schedEscapeHtml(String(s.id))}" onmousedown="window.schedSearchPick('${key}')">
+      <div><span class="tag" style="background:${t.bg};color:${t.color}">${t.label}</span>${schedEscapeHtml(s.qb_name || '(unnamed)')}</div>
+      ${loc ? `<div class="meta">${schedEscapeHtml(loc)}</div>` : ''}
+    </div>`;
+  }).join('') + (matches.length > top.length
+    ? `<div class="sched-search-empty">+${matches.length - top.length} more — refine your search</div>`
+    : '');
+  resultsEl.style.display = 'block';
+};
+window.schedSearchPick = function (storeId) {
+  const input = document.getElementById('sched-search-input');
+  const resultsEl = document.getElementById('sched-search-results');
+  const store = schedState.storesIndex.get(storeId);
+  if (!store) return;
+  if (!schedState.selected.has(storeId)) schedState.selected.add(storeId);
+  schedState.highlightedDriver = null;
+  schedRenderAll();
+  if (schedState.map && store.lat != null && store.lng != null) {
+    schedState.map.flyTo({
+      center: [Number(store.lng), Number(store.lat)],
+      zoom: Math.max(schedState.map.getZoom(), 13),
+      duration: 700,
+    });
+  }
+  if (resultsEl) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; }
+  if (input) { input.value = ''; input.blur(); }
+  schedToast('Selected ' + (store.qb_name || 'stop'));
+};
+window.schedSearchFocus = function () {
+  const i = document.getElementById('sched-search-input');
+  if (i && i.value.trim()) window.schedSearch(i.value);
+};
+window.schedSearchBlur = function () {
+  // Delay so an onmousedown on a result still registers before the list hides.
+  setTimeout(() => { const r = document.getElementById('sched-search-results'); if (r) r.style.display = 'none'; }, 150);
+};
+window.schedSearchKey = function (ev) {
+  if (ev.key === 'Enter') {
+    const first = document.querySelector('#sched-search-results .sched-search-result');
+    if (first && first.dataset.id) window.schedSearchPick(first.dataset.id);
+  } else if (ev.key === 'Escape') {
+    const i = document.getElementById('sched-search-input');
+    const r = document.getElementById('sched-search-results');
+    if (i) { i.value = ''; i.blur(); }
+    if (r) { r.style.display = 'none'; r.innerHTML = ''; }
+    ev.stopPropagation();  // don't also trigger the global Esc (clears selection)
+  }
+};
+
 // ════════════════════════════════════════════════════════════════════
 // Wire grid cell clicks for cell-edit + drag-and-drop between cells
 // schedRenderGrid (chunk 2) already builds the cell DOM. We add listeners
@@ -11814,6 +11972,13 @@ async function schedPublishWeek() {
 async function schedMaybeReoptimizeDay(tripDayId) {
   const trip = schedFindTripContainingDay(tripDayId);
   if (!trip || trip.status !== 'published') return;
+  const dayObj = (trip.days || []).find(d => d.id === tripDayId);
+  if (dayObj && dayObj.manual_order_locked) {
+    // Manager has locked this day's order — never auto-reorder it. Drive time
+    // can still be refreshed on demand via the day-edit "Recalculate" button.
+    schedToast('🔒 Manual order locked — route kept as-is');
+    return;
+  }
   schedToast('Re-optimizing route…');
   try {
     const result = await schedCallEdgeFunction('optimize-trip-routes', { trip_day_id: tripDayId });
@@ -11875,6 +12040,36 @@ window.schedCalcDayDriveTime = async function(tripDayId, btnEl) {
     schedToast(`⚠ Calculate failed: ${e.message}`);
     console.warn('[sched] calc drive failed:', e.message);
     if (btnEl) { btnEl.disabled = false; btnEl.textContent = original; }
+  }
+};
+
+// Toggle the per-day "manual order locked" flag. When locked, the optimizer
+// keeps the manager's sequence (computing drive time along it) and the
+// automatic published-trip re-optimize is suppressed. Persists via RPC
+// (admin / depot-manager authorised) then refreshes + reopens the panel.
+window.schedToggleManualLock = async function(tripDayId, btnEl) {
+  if (!tripDayId) return;
+  const trip = schedFindTripContainingDay(tripDayId);
+  const dayObj = trip ? (trip.days || []).find(d => d.id === tripDayId) : null;
+  const next = !(dayObj && dayObj.manual_order_locked);
+  if (btnEl) btnEl.disabled = true;
+  try {
+    const res = await sbFetch('rpc/set_trip_day_manual_lock', {
+      method: 'POST',
+      body: JSON.stringify({ p_trip_day_id: tripDayId, p_locked: next }),
+    });
+    if (res && typeof res === 'object' && res.message) throw new Error(res.message);
+    schedToast(next
+      ? "🔒 Manual order locked — automatic routing won't reorder this day"
+      : '🔓 Manual order unlocked — automatic routing re-enabled');
+    await schedRefreshData();
+    if (schedState.uiMode === 'cell-edit' && schedState.editingCell
+        && schedState.editingCell.trip_day_id === tripDayId) {
+      schedReopenEditingCell(tripDayId);
+    }
+  } catch (err) {
+    schedToast('⚠ Could not change lock — ' + ((err && err.message) || 'permission denied'));
+    if (btnEl) btnEl.disabled = false;
   }
 };
 
