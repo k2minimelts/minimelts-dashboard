@@ -9179,7 +9179,7 @@ async function schedLoadOrdersAndOverdue() {
   // (seeded by nearest-depot geography). Filtered to the active depots just like
   // overdue stores, so depot managers no longer see vending from depots they don't manage.
   const vendingPromise = sbFetch(
-    `vending_machines_map?select=id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_visit_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit,mqtt_online,depot_id,depot_code` +
+    `vending_machines_map?select=id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_visit_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit,mqtt_online,needs_scheduling,scheduling_flagged_at,depot_id,depot_code` +
     `&depot_id=in.(${depotIdList})` +
     `&limit=5000`  // explicit high cap so growth never silently truncates the vending set (PostgREST default ~1000)
   );
@@ -9310,6 +9310,9 @@ async function schedLoadOrdersAndOverdue() {
       days_since_last_sale: m.days_since_last_sale,
       days_since_last_visit: m.days_since_last_visit,
       mqtt_online: m.mqtt_online === true,
+      // Manual "needs scheduling" flag (depot manager / admin set via right-click)
+      needs_scheduling: m.needs_scheduling === true,
+      scheduling_flagged_at: m.scheduling_flagged_at || null,
     });
   }
 
@@ -9537,6 +9540,15 @@ function schedInitMap() {
         <circle cx="18" cy="18" r="15" fill="none" stroke="#e2b04a" stroke-width="3.5"/>
       </svg>`, 36);
 
+    // Indigo dashed ring overlay — manually flagged "needs scheduling".
+    // Larger radius + dashes so it reads distinctly from the red needs-attention
+    // ring and can sit outside it when a machine is both.
+    await addSvgIcon('sched-vending-schedule-ring', `
+      <svg xmlns="http://www.w3.org/2000/svg" width="42" height="42" viewBox="0 0 42 42">
+        <circle cx="21" cy="21" r="18" fill="none" stroke="#6366f1" stroke-width="3" stroke-dasharray="5 4"/>
+        <circle cx="21" cy="21" r="18" fill="rgba(99,102,241,0.10)"/>
+      </svg>`, 42);
+
     schedState.map.addSource('sched-vending', {
       type: 'geojson',
       data: { type: 'FeatureCollection', features: [] },
@@ -9576,6 +9588,21 @@ function schedInitMap() {
       }
     });
 
+    // Indigo dashed ring — manually flagged "needs scheduling". Hidden once the
+    // machine is assigned to a trip (the flag is auto-cleared in the DB anyway).
+    schedState.map.addLayer({
+      id: 'sched-vending-schedule-rings',
+      type: 'symbol',
+      source: 'sched-vending',
+      filter: ['all', ['get', 'needs_scheduling'], ['!', ['get', 'assigned']]],
+      layout: {
+        'icon-image': 'sched-vending-schedule-ring',
+        'icon-size': 1.0,
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+      }
+    });
+
     // Gold ring overlay — selected pins (sits on top of red)
     schedState.map.addLayer({
       id: 'sched-vending-selected',
@@ -9598,6 +9625,19 @@ function schedInitMap() {
       schedTogglePinSelect(id);
     });
 
+    // Right-click a vending diamond → toggle the manual "needs scheduling" flag.
+    // Persists via RPC (admin/depot-manager authorised server-side) and the
+    // indigo ring re-renders immediately.
+    schedState.map.on('contextmenu', 'sched-vending-points', (e) => {
+      if (e.originalEvent) e.originalEvent.preventDefault();
+      e.preventDefault && e.preventDefault();
+      const f = e.features && e.features[0];
+      if (!f) return;
+      const machineId = f.properties.machine_id;
+      if (!machineId) return;
+      schedToggleVendingNeedsScheduling(f.properties.id, machineId);
+    });
+
     // Cursor + hover popup for vending
     let hoverPopup = null;
     schedState.map.on('mouseenter', 'sched-vending-points', (e) => {
@@ -9616,6 +9656,7 @@ function schedInitMap() {
       const noSales3d = p.no_sales_3d === true || p.no_sales_3d === 'true';
       const online = p.mqtt_online === true || p.mqtt_online === 'true';
       const assigned = p.assigned === true || p.assigned === 'true';
+      const needsScheduling = p.needs_scheduling === true || p.needs_scheduling === 'true';
 
       // % sold colour-coded pill (green/yellow/red gradient — same thresholds as Map tab)
       let pctColor = '#888', pctBg = '#f3f4f6';
@@ -9630,6 +9671,7 @@ function schedInitMap() {
       if (noSales3d) alertBadges.push(`<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ No sales ${daysSinceSale}d</span>`);
       if (!online) alertBadges.push(`<span style="background:#e5e7eb;color:#374151;padding:2px 6px;border-radius:4px;font-size:11px">📵 Offline</span>`);
       if (assigned) alertBadges.push(`<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">📅 Scheduled</span>`);
+      if (needsScheduling && !assigned) alertBadges.push(`<span style="background:#eef2ff;color:#4338ca;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;border:1px solid #c7d2fe">🔵 Needs scheduling</span>`);
 
       const machineName = p.name && p.name !== '' ? p.name : '(unnamed machine)';
       const venueName = p.venue_name && p.venue_name !== '' && p.venue_name !== machineName ? p.venue_name : '';
@@ -9653,6 +9695,7 @@ function schedInitMap() {
             ${daysSinceVisit != null ? `<div>Last visit: <strong>${daysSinceVisit === 0 ? 'today' : daysSinceVisit + 'd ago'}</strong></div>` : ''}
             ${p.address ? `<div style="color:#6b7280;margin-top:4px">${schedEscapeHtml(p.address)}${p.city ? ', ' + schedEscapeHtml(p.city) : ''}</div>` : ''}
           </div>
+          ${assigned ? '' : `<div style="font-size:11px;color:#9ca3af;margin-top:6px">↪ Right-click to ${needsScheduling ? 'remove the scheduling flag' : 'flag “needs scheduling”'}</div>`}
         </div>`;
 
       if (hoverPopup) hoverPopup.remove();
@@ -10013,11 +10056,46 @@ function schedRenderVendingLayer() {
           needs_attention: needsAttention,
           selected: schedState.selected.has(store.id),
           highlighted: !!isHighlight,
+          // Raw machine UUID (feature `id` is the prefixed 'vm:' key) + manual flag,
+          // used by the right-click handler and the "needs scheduling" ring layer.
+          machine_id: store.machine_id || null,
+          needs_scheduling: store.needs_scheduling === true,
         },
       });
     }
   }
   src.setData({ type: 'FeatureCollection', features });
+}
+
+// Toggle a vending machine's manual "needs scheduling" flag. Optimistically
+// updates the in-memory store + ring, calls the depot-scoped RPC, and reverts
+// if the write fails (e.g. a manager right-clicks a machine outside their depot).
+async function schedToggleVendingNeedsScheduling(storeKey, machineId) {
+  const store = schedState.storesIndex.get(storeKey);
+  if (store && store.assigned) {
+    schedToast('Already scheduled — no flag needed');
+    return;
+  }
+  const current = !!(store && store.needs_scheduling);
+  const next = !current;
+  const prevFlaggedAt = store ? store.scheduling_flagged_at : null;
+  if (store) {
+    store.needs_scheduling = next;
+    store.scheduling_flagged_at = next ? new Date().toISOString() : null;
+  }
+  schedRenderVendingLayer();
+  try {
+    const res = await sbFetch('rpc/set_vending_needs_scheduling', {
+      method: 'POST',
+      body: JSON.stringify({ p_machine_id: machineId, p_flag: next }),
+    });
+    if (res && typeof res === 'object' && res.message) throw new Error(res.message);
+    schedToast(next ? '🔵 Flagged — needs scheduling' : 'Scheduling flag removed');
+  } catch (err) {
+    if (store) { store.needs_scheduling = current; store.scheduling_flagged_at = prevFlaggedAt; }
+    schedRenderVendingLayer();
+    schedToast('⚠ Could not update flag — ' + ((err && err.message) || 'permission denied'));
+  }
 }
 
 // Safety: log and self-heal if a render produced 0 visible markers
