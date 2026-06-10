@@ -3966,16 +3966,19 @@ window.showDetail = async (id) => {
       <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">NOTES</label><input id="edit-notes" type="text" value="${d.notes||''}" placeholder="Optional notes..." style="width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-size:14px"/></div>
     </div>`;
   const resendBtn = `<button class="btn-modal btn-modal-outline" style="border-color:var(--mm-cyan);color:var(--mm-cyan)" onclick="window.resendDeliveryReceipt('${d.id}')">✉️ Resend Receipt</button>`;
+  const correctedBtn = `<button class="btn-modal btn-modal-outline" style="border-color:var(--gold);color:var(--gold)" onclick="window.sendCorrectedReceipt('${d.id}')">✏️ Send Corrected Receipt</button>`;
   const resetBtn = hasQbError(d) ? `<button class="btn-modal" style="background:rgba(248,81,73,0.15);border:1px solid rgba(248,81,73,0.4);color:#f85149;cursor:pointer;border-radius:8px;padding:12px;font-size:14px;font-weight:700" onclick="window.resetExportError('${d.id}');closeModal();">↺ Reset to Pending</button>` : '';
   const actions = isLocked
     ? `<div class="modal-actions">
         ${resetBtn}
         ${resendBtn}
+        ${correctedBtn}
         <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeModal()">Close</button>
       </div>`
     : `<div class="modal-actions">
         <button class="btn-modal btn-modal-primary" style="background:var(--mm-cyan);flex:2" onclick="window.saveCorrection('${d.id}')">💾 Save Corrections</button>
         ${resendBtn}
+        ${correctedBtn}
         <button class="btn-modal" style="background:rgba(248,81,73,0.15);border:1px solid rgba(248,81,73,0.4);color:#f85149;cursor:pointer;border-radius:8px;padding:12px;font-size:14px;font-weight:700" onclick="window.deleteDelivery('${d.id}')">🗑 Delete</button>
         <button class="btn-modal btn-modal-outline" onclick="closeModal()">Close</button>
       </div>`;
@@ -4048,6 +4051,53 @@ window.resendDeliveryReceipt = async (id) => {
     alert(`✓ Receipt for ${d.receipt_number} resent to ${sentTo}.`);
   } catch (err) {
     alert('Resend failed: ' + err.message);
+  }
+};
+
+// Send a CORRECTED receipt: emails the current (corrected) figures with wording
+// that tells the customer the receipt was adjusted, and NO attachments (they
+// keep the signed paper copy; the stored PDF still shows the old pricing).
+// Make sure any pricing correction has been saved first.
+window.sendCorrectedReceipt = async (id) => {
+  const d = allDeliveries.find(x => x.id === id);
+  if (!d) { alert('Could not find that delivery. Refresh and try again.'); return; }
+  const note = prompt(
+    `Send a CORRECTED receipt for ${d.receipt_number} — ${d.store_name}?\n\n` +
+    `The email shows the current totals (Total Due $${parseFloat(d.total||0).toFixed(2)}) and tells the customer the receipt was adjusted. No PDF is attached.\n\n` +
+    `Make sure you've saved the pricing correction first.\n\n` +
+    `Optional: briefly describe the adjustment (shown in the email), or leave blank:`,
+    ''
+  );
+  if (note === null) return; // cancelled
+
+  const session = window._session;
+  if (!session?.access_token) { alert('Your session has expired. Please refresh and sign in again.'); return; }
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/resend-delivery-email`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ delivery_id: id, adjusted: true, adjustment_note: note.trim() || null }),
+    });
+    const data = await res.json();
+    if (!data?.ok) {
+      if (data?.code === 'no_email') {
+        alert(`Can't send: no email on file for ${d.store_name}.\n\nAdd their email in the Stores tab first.`);
+      } else if (data?.code === 'not_found') {
+        alert('That delivery could not be found on the server. Refresh and try again.');
+      } else {
+        alert('Send failed: ' + (data?.error || 'unknown error'));
+      }
+      return;
+    }
+    const sentTo = Array.isArray(data.sent_to) ? data.sent_to.join(', ') : data.sent_to;
+    alert(`✓ Corrected receipt for ${d.receipt_number} sent to ${sentTo}.`);
+  } catch (err) {
+    alert('Send failed: ' + err.message);
   }
 };
 
