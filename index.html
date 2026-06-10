@@ -6858,13 +6858,15 @@ function renderRefillDetail(r) {
   const r2 = parseInt(r.rolls_2dollar) || 0;
   const r1 = parseInt(r.rolls_1dollar) || 0;
   const rq = parseInt(r.rolls_quarter) || 0;
+  const rd = parseInt(r.rolls_dime) || 0;
   const rn = parseInt(r.rolls_nickel) || 0;
-  const rollsBlock = (r2 + r1 + rq + rn === 0)
+  const rollsBlock = (r2 + r1 + rq + rd + rn === 0)
     ? '<span style="color:var(--muted);font-style:italic">No change added</span>'
     : `<table style="width:100%;font-size:12px">
         ${r2 > 0 ? `<tr><td>$2 rolls × ${r2}</td><td style="text-align:right">$${(r2 * 50).toFixed(2)}</td></tr>` : ''}
         ${r1 > 0 ? `<tr><td>$1 rolls × ${r1}</td><td style="text-align:right">$${(r1 * 25).toFixed(2)}</td></tr>` : ''}
         ${rq > 0 ? `<tr><td>$0.25 rolls × ${rq}</td><td style="text-align:right">$${(rq * 10).toFixed(2)}</td></tr>` : ''}
+        ${rd > 0 ? `<tr><td>$0.10 rolls × ${rd}</td><td style="text-align:right">$${(rd * 5).toFixed(2)}</td></tr>` : ''}
         ${rn > 0 ? `<tr><td>$0.05 rolls × ${rn}</td><td style="text-align:right">$${(rn * 2).toFixed(2)}</td></tr>` : ''}
       </table>`;
 
