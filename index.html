@@ -4156,7 +4156,21 @@ window.saveCorrection = async (id) => {
     return s + q * (BIG_PRODUCTS.includes(i.product) ? bigUnitPrice : unitPrice);
   }, 0);
   const subtotal = productSubtotal + deliveryFee;
-  const tax = Math.round(subtotal * 0.05 * 100) / 100;
+  // Tax rate is driven by the store's tax_code — the same source server.js uses
+  // for the QB SalesTaxCodeRef — not a flat 5% GST. Fetched live so correcting
+  // an HST/QST invoice never silently reverts it to GST.
+  const TAX_RATE_BY_CODE = { 'G': 0.05, 'H13': 0.13, 'H14': 0.14, 'H15': 0.15, 'Q-S': 0.14975, 'E': 0 };
+  let taxRate = null;
+  try {
+    const storeRows = await sbFetch(`stores?select=tax_code&id=eq.${d.store_id}`);
+    const tc = Array.isArray(storeRows) && storeRows[0] ? storeRows[0].tax_code : null;
+    if (tc && Object.prototype.hasOwnProperty.call(TAX_RATE_BY_CODE, tc)) taxRate = TAX_RATE_BY_CODE[tc];
+  } catch (e) { /* taxRate stays null -> handled below */ }
+  if (taxRate === null) {
+    alert("Couldn't determine this store's tax rate (its tax code is missing or unrecognized). The correction was NOT saved — set the correct tax code in the Stores tab, then try again.");
+    return;
+  }
+  const tax = Math.round(subtotal * taxRate * 100) / 100;
   const total = Math.round((subtotal + tax) * 100) / 100;
   const fmt = n => parseFloat(n).toFixed(2);
   const dateStr = new Date(d.delivered_at).toLocaleDateString('en-US');
