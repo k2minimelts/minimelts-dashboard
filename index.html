@@ -3931,7 +3931,13 @@ window.showDetail = async (id) => {
     }
   }
   const items = Array.isArray(d.items) ? d.items.filter(i => parseInt(i.qtyDelivered)>0) : [];
-  const itemRows = items.map(i => `<tr><td>${i.product}</td><td style="text-align:center">${i.lotBatch||'—'}</td><td style="text-align:center">${i.currentStock||0}</td><td style="text-align:center">${i.qtyDelivered}</td><td style="text-align:right">$${(parseInt(i.qtyDelivered)*parseFloat(d.unit_price)).toFixed(2)}</td></tr>`).join('');
+  const BIG_SET = ['BIG Cherry', 'BIG Mango', 'BIG Kiwi'];
+  const itemRows = items.map(i => {
+    const lp = BIG_SET.includes(i.product)
+      ? parseFloat(d.big_unit_price != null ? d.big_unit_price : d.unit_price)
+      : parseFloat(d.unit_price);
+    return `<tr><td>${i.product}</td><td style="text-align:center">${i.lotBatch||'—'}</td><td style="text-align:center">${i.currentStock||0}</td><td style="text-align:center">${i.qtyDelivered}</td><td style="text-align:right">$${(parseInt(i.qtyDelivered)*lp).toFixed(2)}</td></tr>`;
+  }).join('');
   const sigHtml = d.signature_data ? `<div class="section-title">Manager Signature${d.signer_name ? ` — <span style="color:var(--gold)">${d.signer_name}</span>` : ''}</div><div class="modal-sig" style="padding:8px;overflow:hidden">${d.signature_data}</div>` : '';
   const status = d.qb_status || 'pending';
   const isApproved = status === 'approved';
