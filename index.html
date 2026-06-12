@@ -2467,6 +2467,25 @@
         </div>
       </div>
 
+      <!-- Freezer Pickup — offboarding visit: no product, no payment, no invoice.
+           Mutually exclusive with new-install; hides the product/stock fields.
+           The driver completes it by photographing the retrieved freezer. -->
+      <div class="field" id="order-pickup-field" style="background:rgba(245,166,35,0.07);border:1px solid rgba(245,166,35,0.3);border-radius:8px;padding:10px 14px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;margin:0;text-transform:none;letter-spacing:0">
+          <input type="checkbox" id="order-is-pickup" onchange="window.onOrderPickupToggle()" style="accent-color:#f5a623;cursor:pointer;width:18px;height:18px"/>
+          <span style="font-size:14px;color:var(--text);font-weight:600">
+            📦 This is a <span style="color:#f5a623">freezer pickup</span> (customer is leaving)
+          </span>
+        </label>
+        <div style="margin-top:4px;font-size:11px;color:var(--muted);padding-left:28px">
+          No product, no payment, no invoice. The driver photographs the freezer to complete it.
+        </div>
+        <label id="order-pickup-deactivate-row" style="display:none;align-items:center;gap:10px;cursor:pointer;user-select:none;margin:10px 0 0;text-transform:none;letter-spacing:0;padding-left:28px">
+          <input type="checkbox" id="order-deactivate-store" checked style="accent-color:#f5a623;cursor:pointer;width:16px;height:16px"/>
+          <span style="font-size:13px;color:var(--text)">Deactivate the store once the pickup is completed</span>
+        </label>
+      </div>
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div class="field">
           <label>Contact Name</label>
@@ -5698,7 +5717,7 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,includes_sorbet,sorbet_stock_level,shipped_at,invoiced_at,paid_at,' +
+    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,shipped_at,invoiced_at,paid_at,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
     'store:stores!store_id(id,public_code,qb_name,ship_city,province,phone,email,route:routes(delivery_method))'
   );
@@ -6008,7 +6027,7 @@ function renderOrdersTable(orders, totalCount, alreadySorted) {
         <span style="font-family:monospace;font-weight:600;color:var(--gold);font-size:13px">#${o.id.replace(/-/g,'').slice(-8).toUpperCase()}</span>
       </td>
       <td>
-        <div style="font-weight:600">${escapeHtml(storeName)}${o.is_new_install ? ' <span style="background:rgba(232,123,181,0.18);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px">🆕 NEW INSTALL</span>' : ''}${shippingBadge}</div>
+        <div style="font-weight:600">${escapeHtml(storeName)}${o.is_new_install ? ' <span style="background:rgba(232,123,181,0.18);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px">🆕 NEW INSTALL</span>' : ''}${o.is_freezer_pickup ? ' <span style="background:rgba(245,166,35,0.18);color:#f5a623;border:1px solid rgba(245,166,35,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px">📦 FREEZER PICKUP</span>' : ''}${shippingBadge}</div>
         <div style="font-size:12px;color:var(--muted)">${storeCode ? `<span style="font-family:monospace;color:var(--gold)">${storeCode}</span> · ` : ''}${escapeHtml(cityProv)}</div>
       </td>
       <td>${sourceBadge(o.source)}</td>
@@ -6333,6 +6352,12 @@ window.showNewOrderModal = (source) => {
   document.getElementById('order-contact-email').value = '';
   document.getElementById('order-notes').value = '';
   document.getElementById('order-is-new-install').checked = false;
+  // Freezer pickup: off by default, deactivate-store on by default, row hidden.
+  // The pickup option only applies to phone orders (hidden for Staples PO).
+  document.getElementById('order-is-pickup').checked = false;
+  document.getElementById('order-deactivate-store').checked = true;
+  document.getElementById('order-pickup-deactivate-row').style.display = 'none';
+  document.getElementById('order-pickup-field').style.display = isStaples ? 'none' : 'block';
   // Reset product type to ice cream and reflect in the stock-level row visibility.
   const iceRadio = document.querySelector('input[name="order-product-type"][value="ice_cream"]');
   if (iceRadio) iceRadio.checked = true;
@@ -6359,6 +6384,30 @@ window.onOrderProductTypeChange = () => {
   // Clear any stale value in a hidden field so it doesn't leak into the payload.
   if (!showIce) document.getElementById('order-stock-level').value = '';
   if (!showSorbet) document.getElementById('order-sorbet-stock-level').value = '';
+};
+
+// Freezer pickup carries no product. When on, hide the product/stock/units rows
+// and the new-install flag (mutually exclusive), and reveal the deactivate-store
+// option. When off, restore product visibility for the current source.
+window.onOrderPickupToggle = () => {
+  const on = document.getElementById('order-is-pickup').checked;
+  ['order-product-type-row','order-stock-level-row','order-sorbet-stock-level-row','order-total-units-row']
+    .forEach(id => { const el = document.getElementById(id); if (el && on) el.style.display = 'none'; });
+  document.getElementById('order-pickup-deactivate-row').style.display = on ? 'flex' : 'none';
+  if (on) {
+    const ni = document.getElementById('order-is-new-install');
+    if (ni) ni.checked = false;
+  } else {
+    const isStaples = document.getElementById('order-source').value === 'staples_po';
+    document.getElementById('order-product-type-row').style.display = isStaples ? 'none' : 'block';
+    document.getElementById('order-total-units-row').style.display = isStaples ? 'block' : 'none';
+    if (isStaples) {
+      document.getElementById('order-stock-level-row').style.display = 'none';
+      document.getElementById('order-sorbet-stock-level-row').style.display = 'none';
+    } else {
+      window.onOrderProductTypeChange();
+    }
+  }
 };
 
 window.closeOrderModal = () => {
@@ -6701,6 +6750,8 @@ window.saveOrder = async () => {
   const contactEmail = document.getElementById('order-contact-email').value.trim() || null;
   const notes = document.getElementById('order-notes').value.trim() || null;
   const isNewInstall = document.getElementById('order-is-new-install').checked;
+  const isFreezerPickup = document.getElementById('order-is-pickup').checked;
+  const deactivateStore = document.getElementById('order-deactivate-store').checked;
   // Staples PO is always ice cream today; the product-type chooser is hidden
   // for it. For other sources, read the selected radio.
   const productType = source === 'staples_po'
@@ -6751,18 +6802,20 @@ window.saveOrder = async () => {
   const payload = {
     store_id: storeId,
     source,
-    stock_level: isStaples ? null : (includesIceCream ? stockLevel : null),
-    total_units: isStaples ? totalUnits : null,
+    stock_level: isFreezerPickup ? null : (isStaples ? null : (includesIceCream ? stockLevel : null)),
+    total_units: isFreezerPickup ? null : (isStaples ? totalUnits : null),
     notes,
     submitted_by_name: contactName,
     submitted_by_phone: contactPhone,
     submitted_by_email: contactEmail,
     po_number: isStaples ? poNumber : null,
     status: 'pending',
-    is_new_install: isNewInstall,
-    includes_sorbet: includesSorbet,
-    sorbet_stock_level: includesSorbet ? sorbetStockLevel : null,
-    raw_form_payload: { entered_from: 'admin_dashboard', product_type: productType }
+    is_new_install: isFreezerPickup ? false : isNewInstall,
+    includes_sorbet: isFreezerPickup ? false : includesSorbet,
+    sorbet_stock_level: isFreezerPickup ? null : (includesSorbet ? sorbetStockLevel : null),
+    is_freezer_pickup: isFreezerPickup,
+    deactivate_store_on_pickup: deactivateStore,
+    raw_form_payload: { entered_from: 'admin_dashboard', product_type: isFreezerPickup ? 'freezer_pickup' : productType }
   };
 
   const resp = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
@@ -7408,7 +7461,7 @@ async function loadMapData() {
     fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit,depot_id,depot_code'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
-    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level&order=submitted_at.desc'),
+    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,is_freezer_pickup,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level&order=submitted_at.desc'),
   ]);
   _mapStores = stores;
   _mapMachines = venues;
@@ -7937,6 +7990,10 @@ async function initMapboxGL() {
         const stockLabel = stockMap[o.stock_level] || o.stock_level || '—';
         detailLabel = `Stock: <strong>${stockLabel}</strong>`;
       }
+      if (o.is_freezer_pickup) detailLabel = '📦 <strong>Freezer pickup</strong>';
+      const pickupLabel = o.is_freezer_pickup
+        ? '<span style="background:#f5a623;color:#1a1a1a;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px">📦 PICKUP</span>'
+        : '';
       const installLabel = o.is_new_install
         ? '<span style="background:#ff4d9d;color:#fff;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px">🆕 INSTALL</span>'
         : '';
@@ -7948,9 +8005,9 @@ async function initMapboxGL() {
         ? `<div style="font-size:11px;color:#9d174d;margin-top:2px;font-weight:600">🍧 Sorbet stock: <strong>${stockMap[o.sorbet_stock_level] || o.sorbet_stock_level || '—'}</strong></div>`
         : '';
       const noteSnippet = o.notes ? `<div style="color:#666;font-size:11px;margin-top:2px;font-style:italic">${escapeHtmlMap(o.notes.slice(0, 80))}${o.notes.length > 80 ? '…' : ''}</div>` : '';
-      return `<div style="border-left:3px solid ${o.is_new_install ? '#ff4d9d' : '#ef4444'};padding:6px 8px;margin-bottom:6px;background:${o.is_new_install ? '#fdf2f8' : '#fef2f2'};border-radius:0 4px 4px 0">
+      return `<div style="border-left:3px solid ${o.is_freezer_pickup ? '#f5a623' : (o.is_new_install ? '#ff4d9d' : '#ef4444')};padding:6px 8px;margin-bottom:6px;background:${o.is_freezer_pickup ? '#fff8ec' : (o.is_new_install ? '#fdf2f8' : '#fef2f2')};border-radius:0 4px 4px 0">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
-          <span style="font-family:monospace;font-weight:700;color:#991b1b;font-size:12px">#${shortId}${installLabel}${sorbetLabel}</span>
+          <span style="font-family:monospace;font-weight:700;color:#991b1b;font-size:12px">#${shortId}${pickupLabel}${installLabel}${sorbetLabel}</span>
           <span style="font-size:10px;color:#666">${submitted}</span>
         </div>
         <div style="font-size:11px;color:#444;margin-top:2px">${sourceLabel} · ${detailLabel}</div>
