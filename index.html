@@ -1590,6 +1590,7 @@
             <option value="">All types</option>
             <option value="E-Transfer">E-Transfer</option>
             <option value="Unpaid">🔓 Unpaid (authorized)</option>
+            <option value="Mail Cheque">✉️ Mail Cheque</option>
             <option value="Shipped">📦 Shipped</option>
           </select>
         </div>
@@ -3368,7 +3369,7 @@ function renderStats() {
   const today = allDeliveries.filter(d => d.delivered_at?.startsWith(todayStr));
   const week = allDeliveries.filter(d => d.delivered_at >= weekAgo);
   const month = allDeliveries.filter(d => d.delivered_at >= monthStart);
-  const unpaid = allDeliveries.filter(d => (d.payment_type === 'E-Transfer' || d.payment_type === 'Unpaid') && !d.paid);
+  const unpaid = allDeliveries.filter(d => (d.payment_type === 'E-Transfer' || d.payment_type === 'Unpaid' || d.payment_type === 'Mail Cheque') && !d.paid);
   const sum = arr => arr.reduce((s,d) => s + parseFloat(d.total||0), 0);
   const fmt = n => `$${n.toFixed(2)}`;
   document.getElementById('stat-today').textContent = fmt(sum(today));
@@ -3427,6 +3428,7 @@ function payBadge(pt) {
   if (pt === 'Cheque') return `<span class="badge badge-cheque">Cheque</span>`;
   if (pt === 'E-Transfer') return `<span class="badge badge-etransfer">E-Transfer</span>`;
   if (pt === 'Unpaid') return `<span class="badge" style="background:rgba(248,81,73,0.15);color:#f85149;border:1px solid rgba(248,81,73,0.4)">🔓 Unpaid</span>`;
+  if (pt === 'Mail Cheque') return `<span class="badge" style="background:rgba(245,166,35,0.15);color:#f5a623;border:1px solid rgba(245,166,35,0.4)">✉️ Mail Cheque</span>`;
   return `<span class="badge">${pt}</span>`;
 }
 function qbBadge(s, err) {
@@ -3501,6 +3503,7 @@ window.toggleAll = (cb) => { document.querySelectorAll('.delivery-cb:not(:disabl
 function _normalizeDsdUnpaid(d) {
   const isEt = d.payment_type === 'E-Transfer';
   const isUnpaidAuth = d.payment_type === 'Unpaid';
+  const isMailCheque = d.payment_type === 'Mail Cheque';
   const etDisplay = isEt
     ? (d.e_transfer_date
         ? `<span style="color:#58a6ff;font-weight:600">${escapeHtml(d.e_transfer_date)}</span>`
@@ -3509,6 +3512,8 @@ function _normalizeDsdUnpaid(d) {
     ? (d.unpaid_authorized_by
         ? `<span style="color:var(--warning)" title="${escapeHtml(d.unpaid_auth_note || '')}">🔓 Auth: ${escapeHtml(d.unpaid_authorized_by)}</span>`
         : `<span style="color:var(--danger)">⚠️ no auth</span>`)
+    : isMailCheque
+    ? `<span style="color:#f5a623;font-weight:600">✉️ Awaiting mailed cheque</span>`
     : `<span style="color:var(--muted)">—</span>`;
   return {
     kind: 'dsd',
@@ -3566,7 +3571,7 @@ function renderUnpaid() {
   // belong in this workflow alongside E-Transfers. Shipping orders are a
   // separate stream merged in below.
   const dsdUnpaid = allDeliveries.filter(d =>
-    (d.payment_type === 'E-Transfer' || d.payment_type === 'Unpaid') && !d.paid
+    (d.payment_type === 'E-Transfer' || d.payment_type === 'Unpaid' || d.payment_type === 'Mail Cheque') && !d.paid
   );
 
   // 2. Normalize both sources into the common row shape
