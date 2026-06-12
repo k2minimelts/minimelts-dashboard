@@ -3390,7 +3390,7 @@ function renderStats() {
   const month = allDeliveries.filter(d => d.delivered_at >= monthStart);
   const unpaid = allDeliveries.filter(d => (d.payment_type === 'E-Transfer' || d.payment_type === 'Unpaid' || d.payment_type === 'Mail Cheque') && !d.paid);
   const sum = arr => arr.reduce((s,d) => s + parseFloat(d.total||0), 0);
-  const fmt = n => `$${n.toFixed(2)}`;
+  const fmt = n => `$${n.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   document.getElementById('stat-today').textContent = fmt(sum(today));
   document.getElementById('stat-today-count').textContent = `${today.length} deliveries`;
   document.getElementById('stat-week').textContent = fmt(sum(week));
