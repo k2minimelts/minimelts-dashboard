@@ -1586,6 +1586,7 @@
     <!-- Unpaid Tab -->
     <div id="tab-unpaid" style="display:none">
       <div class="filters" style="margin-bottom:16px">
+        <div class="filter-group"><label>Search</label><input type="text" id="unpaid-filter-search" placeholder="Store, reference (MM-…), driver…" oninput="window.onUnpaidSearchInput()" style="min-width:220px"/></div>
         <div class="filter-group"><label>Type</label>
           <select id="unpaid-filter-type" onchange="renderUnpaid()">
             <option value="">All types</option>
@@ -3572,6 +3573,8 @@ function _normalizeDsdUnpaid(d) {
     kind: 'dsd',
     id: d.id,
     dateISO: d.delivered_at,
+    // Plain-text haystack for the Search box (store name, MM-reference, driver).
+    searchText: `${d.store_name || ''} ${d.receipt_number || ''} ${d.driver_name || ''}`.toLowerCase(),
     store: escapeHtml(d.store_name || '—'),
     storeSub: d.driver_name ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${escapeHtml(d.driver_name)}</div>` : '',
     typeBadge: payBadge(d.payment_type),
@@ -3605,6 +3608,9 @@ function _normalizeShippingUnpaid(o) {
     id: o.id,
     // Shipping rows age from shipped_at (when Mark Shipped was clicked).
     dateISO: o.shipped_at || o.invoiced_at || o.submitted_at,
+    // Plain-text haystack for the Search box (no driver on shipping rows;
+    // include PO# and store code since those are how these get chased).
+    searchText: `${s.qb_name || ''} ${o.po_number || ''} ${s.public_code || ''}`.toLowerCase(),
     store: escapeHtml(s.qb_name || '—'),
     storeSub,
     typeBadge: '<span style="background:rgba(71,85,105,0.15);color:#94a3b8;border:1px solid rgba(71,85,105,0.4);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">📦 Shipped</span>',
@@ -3638,6 +3644,16 @@ function renderUnpaid() {
   const typeFilter = typeEl ? typeEl.value : '';
   if (typeFilter) rows = rows.filter(r => r.typeRaw === typeFilter);
 
+  // 3b. Apply the free-text Search filter (store name, MM-reference, driver).
+  //     Multi-word queries match when every token is present somewhere in the
+  //     row's haystack, so "staples calgary" narrows even across fields.
+  const searchEl = document.getElementById('unpaid-filter-search');
+  const searchQuery = (searchEl ? searchEl.value : '').trim().toLowerCase();
+  if (searchQuery) {
+    const terms = searchQuery.split(/\s+/);
+    rows = rows.filter(r => terms.every(t => (r.searchText || '').includes(t)));
+  }
+
   // 4. Sort by date. Rows with no date sink to the bottom regardless of order.
   const sortEl = document.getElementById('unpaid-filter-sort');
   const sortDir = sortEl ? sortEl.value : 'oldest';
@@ -3653,7 +3669,9 @@ function renderUnpaid() {
 
   const body = document.getElementById('unpaid-body');
   if (!rows.length) {
-    body.innerHTML = '<div class="empty" style="padding:30px;text-align:center;color:var(--muted)">No unpaid invoices' + (typeFilter ? ' of this type' : '') + '. 🎉</div>';
+    body.innerHTML = searchQuery
+      ? '<div class="empty" style="padding:30px;text-align:center;color:var(--muted)">No matches for “' + escapeHtml(searchQuery) + '”.</div>'
+      : '<div class="empty" style="padding:30px;text-align:center;color:var(--muted)">No unpaid invoices' + (typeFilter ? ' of this type' : '') + '. 🎉</div>';
     return;
   }
 
@@ -3699,6 +3717,15 @@ async function loadShippingUnpaid() {
 }
 window.loadShippingUnpaid = loadShippingUnpaid;
 window.renderUnpaid = renderUnpaid;
+
+// Debounced handler for the Unpaid-tab Search box. Filtering is in-memory over
+// already-loaded rows, so a short debounce keeps typing smooth without re-render
+// thrash. Selects call renderUnpaid() directly (no debounce needed).
+let _unpaidSearchTimer = null;
+window.onUnpaidSearchInput = () => {
+  clearTimeout(_unpaidSearchTimer);
+  _unpaidSearchTimer = setTimeout(renderUnpaid, 180);
+};
 
 window.markShippingOrderPaidFromUnpaid = async (id) => {
   const o = _shippingUnpaid.find(x => x.id === id);
