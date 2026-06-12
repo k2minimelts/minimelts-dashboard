@@ -1510,6 +1510,7 @@
       <button class="tab" onclick="switchTab('deliveries')" data-hide-from-depot-manager>Deliveries</button>
       <button class="tab" onclick="switchTab('unpaid')" data-hide-from-depot-manager>Unpaid</button>
       <button class="tab" onclick="switchTab('orders')" id="tab-btn-orders">📦 Orders</button>
+      <button class="tab" onclick="switchTab('missed')" id="tab-btn-missed">⏱️ Missed</button>
       <button class="tab" onclick="switchTab('corrections')" id="tab-btn-corrections" data-hide-from-depot-manager>⚠️ Corrections</button>
       <button class="tab" onclick="switchTab('stores')">🏪 Stores</button>
       <button class="tab" onclick="switchTab('map')">🗺️ Map</button>
@@ -1671,6 +1672,37 @@
           <span id="orders-page-label" style="color:var(--muted);font-size:12px;min-width:90px;text-align:center">Page 1</span>
           <button id="orders-next-btn" onclick="window.ordersNextPage()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer">Next →</button>
         </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+     ⏱️ MISSED STOPS TAB
+     Stops on a past trip day still planned/in_progress — neither delivered nor
+     skipped — so a linked order is frozen at 'scheduled'. Reads the
+     missed_stops view (security_invoker, so depot managers see only their own).
+     "Revert to pending" marks the stop skipped (stamping customer_skip_notified_at
+     to suppress the late customer email); the skip-revert trigger returns the
+     order to pending for rescheduling. Resolved rows drop off on refresh.
+     ════════════════════════════════════════════════════════════════════ -->
+    <div id="tab-missed" style="display:none">
+      <div class="filters">
+        <div class="filter-group"><label>Show</label>
+          <select id="missed-filter-kind" onchange="loadMissedStops()">
+            <option value="order">Order stops (stuck as scheduled)</option>
+            <option value="all">All missed stops</option>
+            <option value="vending">Vending only</option>
+          </select>
+        </div>
+        <div class="filter-group"><label>Driver</label>
+          <select id="missed-filter-driver" onchange="renderMissedStops()"><option value="">All drivers</option></select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-header">
+          <span class="table-title">⏱️ Missed Stops</span>
+          <span class="table-count" id="missed-count">Loading...</span>
+        </div>
+        <div id="missed-body"><div class="loading">Loading…</div></div>
       </div>
     </div>
 
@@ -3325,6 +3357,7 @@ async function loadAll() {
   loadShippingUnpaid();
   updateCorrectionsBadge();
   updateOrdersBadge();
+  updateMissedBadge();
 }
 
 async function updateCorrectionsBadge() {
@@ -3675,6 +3708,7 @@ window.markShippingOrderPaidFromUnpaid = async (id) => {
   if (ok) {
     await loadShippingUnpaid();
     if (typeof updateOrdersBadge === 'function') updateOrdersBadge();
+    if (typeof updateMissedBadge === 'function') updateMissedBadge();
   }
 };
 
@@ -4851,7 +4885,7 @@ document.getElementById('store-modal').addEventListener('click', e => { if (e.ta
 window.switchTab = (tab) => {
   // The schedule tab uses a flex column layout; setting display:block
   // breaks it. Every other tab is fine with block, so we special-case here.
-  ['overview','deliveries','unpaid','orders','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','refunds','access'].forEach(t => {
+  ['overview','deliveries','unpaid','orders','missed','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','refunds','access'].forEach(t => {
     const el = document.getElementById(`tab-${t}`);
     if (!el) return;
     if (t !== tab) {
@@ -4868,6 +4902,7 @@ window.switchTab = (tab) => {
   if (tab==='drivers') loadDrivers();
   if (tab==='corrections') loadCorrections();
   if (tab==='orders') loadOrders();
+  if (tab==='missed') loadMissedStops();
   if (tab==='map') initMapTab();
   if (tab==='routes') loadRoutes();
   if (tab==='refills') loadRefills();
@@ -5697,6 +5732,153 @@ async function updateOrdersBadge() {
     btn.innerHTML = '📦 Orders';
   }
 }
+
+// ════════════════════════════════════════════════════════════════════
+// ⏱️ MISSED STOPS TAB
+// Stops on a past trip day still planned/in_progress (neither delivered nor
+// skipped) — surfaced from the missed_stops view so the office can resolve
+// them. "Revert to pending" PATCHes the stop to skipped: the BEFORE
+// skip-revert trigger returns the linked order to pending, and stamping
+// customer_skip_notified_at makes the skip-email edge function no-op so the
+// customer doesn't get a stale notice. Resolved rows leave the view on reload.
+// ════════════════════════════════════════════════════════════════════
+let _missedStops = [];
+
+async function loadMissedStops() {
+  const kind = (document.getElementById('missed-filter-kind') || {}).value || 'order';
+  const body = document.getElementById('missed-body');
+  if (body) body.innerHTML = '<div class="loading">Loading…</div>';
+  let q = 'missed_stops?select=*&order=day_date.asc';
+  if (kind !== 'all') q += `&kind=eq.${kind}`;
+  let rows;
+  try { rows = await sbFetch(q); }
+  catch (e) { if (body) body.innerHTML = `<div class="loading">Error: ${escapeHtml(e.message || String(e))}</div>`; return; }
+  _missedStops = Array.isArray(rows) ? rows : [];
+  // Populate driver filter (preserve current selection)
+  const drvSel = document.getElementById('missed-filter-driver');
+  if (drvSel) {
+    const cur = drvSel.value;
+    const drivers = [...new Set(_missedStops.map(r => r.driver_name).filter(Boolean))].sort();
+    drvSel.innerHTML = '<option value="">All drivers</option>' +
+      drivers.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
+    drvSel.value = cur;
+  }
+  renderMissedStops();
+  updateMissedBadge();
+}
+window.loadMissedStops = loadMissedStops;
+
+function renderMissedStops() {
+  const body = document.getElementById('missed-body');
+  if (!body) return;
+  const driver = (document.getElementById('missed-filter-driver') || {}).value || '';
+  let rows = _missedStops;
+  if (driver) rows = rows.filter(r => r.driver_name === driver);
+  const countEl = document.getElementById('missed-count');
+  if (countEl) countEl.textContent = `${rows.length} stop${rows.length === 1 ? '' : 's'}`;
+  if (!rows.length) { body.innerHTML = '<div class="loading">🎉 No missed stops.</div>'; return; }
+  const byDriver = {};
+  rows.forEach(r => { const k = r.driver_name || '(unassigned)'; (byDriver[k] = byDriver[k] || []).push(r); });
+  body.innerHTML = Object.keys(byDriver).sort().map(drv => {
+    const items = byDriver[drv];
+    return `<div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-weight:700;color:var(--text);margin-bottom:6px">${escapeHtml(drv)} · ${items.length}</div>
+      ${items.map(renderMissedRow).join('')}
+    </div>`;
+  }).join('');
+}
+window.renderMissedStops = renderMissedStops;
+
+function renderMissedRow(r) {
+  const isOrder = r.kind === 'order';
+  const sourceMap = { online:'📱 Online', phone:'📞 Phone', staples_po:'📋 Staples', staples_vmi:'🏪 VMI', driver_walk_in:'🚚 Walk-in', recurring:'🔄 Recurring' };
+  const title = isOrder
+    ? `${escapeHtml(r.store_name || '—')} <span style="color:var(--muted);font-family:monospace;font-size:11px">${escapeHtml(r.store_code || '')}</span>`
+    : `${escapeHtml(r.venue_name || r.machine_label || 'Vending')} <span style="color:var(--muted);font-size:11px">${escapeHtml(r.venue_city || '')}</span>`;
+  const prov = isOrder ? (r.store_province || '') : (r.venue_province || '');
+  const overdue = r.days_overdue === 1 ? '1 day' : `${r.days_overdue} days`;
+  const meta = isOrder
+    ? `${sourceMap[r.order_source] || r.order_source || ''}${r.po_number ? ' · PO ' + escapeHtml(r.po_number) : ''}${r.is_new_install ? ' · 🆕 install' : ''}${r.is_freezer_pickup ? ' · 📦 pickup' : ''} · order <strong>${escapeHtml(r.order_status || '')}</strong>`
+    : '🥤 vending restock';
+  const badge = isOrder
+    ? '<span style="background:rgba(245,166,35,0.18);color:#f5a623;border:1px solid rgba(245,166,35,0.45);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">ORDER</span>'
+    : '<span style="background:rgba(91,201,255,0.15);color:#5bc9ff;border:1px solid rgba(91,201,255,0.4);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">VENDING</span>';
+  const action = `<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+    <button class="btn-sm" style="background:var(--gold);color:var(--bg);border:none;padding:6px 12px;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap"
+      onclick="resolveMissedStop('${r.stop_id}','${r.kind}')">${isOrder ? 'Revert to pending' : 'Mark resolved'}</button>
+    <button class="btn-sm" style="background:transparent;color:var(--danger);border:1px solid var(--danger);padding:6px 10px;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap"
+      onclick="deleteMissedStop('${r.stop_id}','${r.kind}','${r.order_id || ''}')">Delete</button>
+  </div>`;
+  return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid rgba(255,255,255,0.04)">
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600">${title} ${badge}</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:2px">${escapeHtml(r.day_date || '')} · ${overdue} overdue${prov ? ' · ' + escapeHtml(prov) : ''} · ${meta}</div>
+    </div>
+    ${action}
+  </div>`;
+}
+
+window.resolveMissedStop = async (stopId, kind) => {
+  const verb = kind === 'order' ? 'revert the linked order to pending so it can be rescheduled' : 'mark this stop resolved';
+  if (!confirm(`This records the stop as skipped and will ${verb}. No customer email is sent. Continue?`)) return;
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/trip_stops?id=eq.${stopId}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=minimal' },
+      body: JSON.stringify({
+        status: 'skipped',
+        skip_reason: 'Missed — not completed',
+        completed_at: new Date().toISOString(),
+        customer_skip_notified_at: new Date().toISOString()
+      })
+    });
+    if (!resp.ok) { alert('Could not resolve: ' + (await resp.text())); return; }
+    await loadMissedStops();
+  } catch (e) { alert('Could not resolve: ' + (e.message || String(e))); }
+};
+
+// "Delete entirely" — get rid of the missed stop for good (not rescheduled).
+// Order stop: cancel the order; fn_order_cancel_cascade removes the linked stop
+// and blocks the pending-revert, leaving the order recorded as 'cancelled'.
+// Vending/other stop: delete the trip_stop row outright. No customer email.
+window.deleteMissedStop = async (stopId, kind, orderId) => {
+  const msg = (kind === 'order' && orderId)
+    ? 'This CANCELS the order and removes the stop entirely — it will NOT be rescheduled. Continue?'
+    : 'This removes this stop entirely. Continue?';
+  if (!confirm(msg)) return;
+  try {
+    let resp;
+    if (kind === 'order' && orderId) {
+      resp = await fetch(`${SUPABASE_URL}/rest/v1/orders?id=eq.${orderId}`, {
+        method: 'PATCH',
+        headers: { ...headers(), 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ status: 'cancelled' })
+      });
+    } else {
+      resp = await fetch(`${SUPABASE_URL}/rest/v1/trip_stops?id=eq.${stopId}`, {
+        method: 'DELETE',
+        headers: { ...headers(), 'Prefer': 'return=minimal' }
+      });
+    }
+    if (!resp.ok) { alert('Could not delete: ' + (await resp.text())); return; }
+    await loadMissedStops();
+    if (typeof updateOrdersBadge === 'function') updateOrdersBadge();
+  } catch (e) { alert('Could not delete: ' + (e.message || String(e))); }
+};
+
+async function updateMissedBadge() {
+  const btn = document.getElementById('tab-btn-missed');
+  if (!btn) return;
+  let count = 0;
+  try {
+    const rows = await sbFetch('missed_stops?select=stop_id&kind=eq.order');
+    count = Array.isArray(rows) ? rows.length : 0;
+  } catch { /* leave at 0 */ }
+  btn.innerHTML = count > 0
+    ? `⏱️ Missed <span style="background:var(--warning);color:#000;border-radius:10px;padding:1px 7px;font-size:11px;font-weight:700;margin-left:4px">${count}</span>`
+    : '⏱️ Missed';
+}
+window.updateMissedBadge = updateMissedBadge;
 
 async function loadOrders() {
   _orderPage = 0;  // any filter change / reload returns to the first page
