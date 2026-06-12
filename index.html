@@ -3344,9 +3344,10 @@ window.doSignOut = async () => {
 // the heavy base64 fields (receipt PDF, freezer/payment/stamp photos, signature)
 // — those can be 100KB+ each and would blow up browser memory at thousands of
 // rows. The delivery detail modal fetches those on-demand for the single row
-// being viewed (see showDetail). iif_content is kept because bulk QB export
-// needs it across many rows at once. limit guards against silent truncation.
-const DELIVERY_LIST_COLS = 'id,receipt_number,store_id,store_name,driver_id,driver_name,items,unit_price,delivery_fee,subtotal,tax,total,payment_type,notes,po_number,unpaid_authorized_by,unpaid_auth_note,iif_content,delivered_at,created_at,qb_status,qb_export_error,qb_exported_at,signer_name,needs_correction,correction_note,big_unit_price,e_transfer_date,credits,store_email,paid,trip_stop_id,lot_cotton_candy,lot_cookies_cream,lot_banana_split,lot_cookie_dough,lot_orange,lot_mint_choc,lot_rainbow,lot_big_cherry,lot_big_mango,lot_big_kiwi,reminder_sent_at';
+// being viewed (see showDetail). IIF is generated on demand at download time
+// (see buildDeliveryIIF), so the iif_content column is no longer fetched here.
+// limit guards against silent truncation.
+const DELIVERY_LIST_COLS = 'id,receipt_number,store_id,store_name,driver_id,driver_name,items,unit_price,delivery_fee,subtotal,tax,total,payment_type,notes,po_number,unpaid_authorized_by,unpaid_auth_note,delivered_at,created_at,qb_status,qb_export_error,qb_exported_at,signer_name,needs_correction,correction_note,big_unit_price,e_transfer_date,credits,store_email,paid,trip_stop_id,lot_cotton_candy,lot_cookies_cream,lot_banana_split,lot_cookie_dough,lot_orange,lot_mint_choc,lot_rainbow,lot_big_cherry,lot_big_mango,lot_big_kiwi,reminder_sent_at';
 async function loadAll() {
   const data = await sbFetch(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc&limit=10000`);
   allDeliveries = Array.isArray(data) ? data : [];
@@ -3948,24 +3949,122 @@ window.exportToQB = async () => {
   }, 5000);
 };
 
-// ── IIF Export ──
-window.downloadIIF = (id) => {
-  const d = allDeliveries.find(x => x.id === id);
-  if (!d?.iif_content) { alert('No IIF content found for this delivery.'); return; }
-  if ((d.qb_status||'pending') === 'pending') { alert('This delivery must be approved before exporting to QuickBooks.'); return; }
-  const blob = new Blob([d.iif_content], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = `${d.receipt_number}_${d.store_name.replace(/\s+/g,'_')}.iif`; a.click(); URL.revokeObjectURL(url);
+// ── IIF Export (generated on demand) ──
+// The QuickBooks Web Connector (server.js) is the LIVE export path: it builds
+// qbXML fresh from each delivery row and never reads a stored IIF. These IIF
+// downloads are a manual break-glass fallback for when QBWC is unavailable.
+// They are generated on demand from the CURRENT delivery row + store, so they
+// can never go stale (no cached iif_content). Logic mirrors server.js's
+// buildInvoiceAddXml:
+//   customer   = store.qb_name || store_name
+//   AR account = store.is_edi ? 'Accounts Receivable - EDI' : 'Accounts Receivable'
+//   prices     = the delivery's invoiced unit_price / big_unit_price
+//   class      = store province
+const IIF_BIG_PRODUCTS = ['BIG Cherry', 'BIG Mango', 'BIG Kiwi'];
+const IIF_QB_ITEM_MAP = {
+  'Cotton Candy':    { item: 'Mini Melts Pre Packs:Prepack-Cotton',            desc: 'Mini Melts Pre Pack - Cotton Candy' },
+  'Cookies & Cream': { item: 'Mini Melts Pre Packs:Prepack-Cookies',           desc: 'Mini Melts Pre Pack - Cookies N Cream' },
+  'Cookie Dough':    { item: 'Mini Melts Pre Packs:Prepack-Cookie Dough',      desc: 'Mini Melts Pre Pack - Cookie Dough' },
+  'Banana Split':    { item: 'Mini Melts Pre Packs:Prepack-Banana',            desc: 'Mini Melts Pre Pack - Banana Split' },
+  'Mint Chocolate':  { item: 'Mini Melts Pre Packs:Prepack-Mint',              desc: 'Mini Melts Pre Pack - Mint Chocolate' },
+  'Rainbow':         { item: 'Mini Melts Pre Packs:Prepack-Rainbow Ice',       desc: 'Mini Melts Pre Pack - Rainbow Ice' },
+  'Orange':          { item: 'Mini Melts Pre Packs:Prepack-Orange',            desc: 'Mini Melts Pre Pack - Orange' },
+  'BIG Cherry':      { item: 'Mini Melts BIG:Mini Melts BIG Cherry (24 pack)', desc: 'Mini Melts BIG Cherry (24 pack)' },
+  'BIG Mango':       { item: 'Mini Melts BIG:Mini Melts BIG Mango (24 pack)',  desc: 'Mini Melts BIG Mango (24 pack)' },
+  'BIG Kiwi':        { item: 'Mini Melts BIG:Mini Melts BIG Kiwi (24 pack)',   desc: 'Mini Melts BIG Kiwi (24 pack)' },
 };
 
-window.exportBulkIIF = () => {
-  const approved = filteredDeliveries.filter(d => d.qb_status === 'approved' && d.iif_content);
+// Fetch QB customer fields for a set of store ids in one request.
+// Returns a map: store_id -> { id, qb_name, is_edi, province }.
+async function fetchStoresForIIF(storeIds) {
+  const ids = [...new Set((storeIds || []).filter(Boolean))];
+  if (ids.length === 0) return {};
+  const inList = ids.map(encodeURIComponent).join(',');
+  const rows = await sbFetch(`stores?id=in.(${inList})&select=id,qb_name,is_edi,province`);
+  const map = {};
+  for (const s of (Array.isArray(rows) ? rows : [])) map[s.id] = s;
+  return map;
+}
+
+// Build the IIF text for ONE delivery row, fresh, from the current row + store.
+function buildDeliveryIIF(d, store) {
+  const fmt = (n) => parseFloat(n || 0).toFixed(2);
+  const dateStr = new Date(d.delivered_at).toLocaleDateString('en-US');
+  const qbCustomer = (store && store.qb_name) || d.store_name;
+  const qbClass = (store && store.province) || '';
+  const arAccount = (store && store.is_edi === true) ? 'Accounts Receivable - EDI' : 'Accounts Receivable';
+  const unitPrice = parseFloat(d.unit_price);
+  const bigUnitPrice = parseFloat(d.big_unit_price || d.unit_price);
+  const deliveryFee = parseFloat(d.delivery_fee || 0);
+  const poMemo = d.po_number ? ' | PO: ' + d.po_number : '';
+  const lines = [
+    '!TRNS\tTRNSID\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO\tTOPRINT',
+    '!SPL\tSPLID\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO\tQNTY\tPRICE\tINVITEM\tCLASS',
+    '!ENDTRNS',
+    `TRNS\t\tINVOICE\t${dateStr}\t${arAccount}\t${qbCustomer}\t${fmt(d.total)}\t${d.receipt_number}\tMini Melts Delivery - ${d.driver_name}${d.e_transfer_date ? ' | E-Transfer: ' + d.e_transfer_date : ''}${poMemo}\tY`,
+  ];
+  (Array.isArray(d.items) ? d.items : []).forEach((item) => {
+    const qty = parseInt(item.qtyDelivered) || 0;
+    if (qty <= 0) return;
+    const mapped = IIF_QB_ITEM_MAP[item.product];
+    const qbItem = mapped ? mapped.item : item.product;
+    const qbDesc = mapped ? mapped.desc : item.product;
+    const price = IIF_BIG_PRODUCTS.includes(item.product) ? bigUnitPrice : unitPrice;
+    lines.push(`SPL\t\tINVOICE\t${dateStr}\tSales\t${qbCustomer}\t-${fmt(qty*price)}\t${d.receipt_number}\t${qbDesc}\t-${qty}\t-${fmt(price)}\t${qbItem}\t${qbClass}`);
+  });
+  const creditQty = parseInt(d.credits) || 0;
+  if (creditQty > 0) {
+    lines.push(`SPL\t\tINVOICE\t${dateStr}\tSales\t${qbCustomer}\t${fmt(creditQty*1.00)}\t${d.receipt_number}\tMelted Cup Credit\t${creditQty}\t1.00\tMini Melts Pre Packs\t${qbClass}`);
+  }
+  if (deliveryFee > 0) {
+    lines.push(`SPL\t\tINVOICE\t${dateStr}\tFreight Income\t${qbCustomer}\t-${fmt(deliveryFee)}\t${d.receipt_number}\tDelivery Fee\t-1\t-${fmt(deliveryFee)}\tFreight\t${qbClass}`);
+  }
+  lines.push('ENDTRNS');
+  return lines.join('\n');
+}
+
+window.downloadIIF = async (id) => {
+  const d = allDeliveries.find(x => x.id === id);
+  if (!d) { alert('Delivery not found.'); return; }
+  if ((d.qb_status||'pending') === 'pending') { alert('This delivery must be approved before exporting to QuickBooks.'); return; }
+  try {
+    const storeMap = await fetchStoresForIIF([d.store_id]);
+    const iif = buildDeliveryIIF(d, storeMap[d.store_id]);
+    const blob = new Blob([iif], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `${d.receipt_number}_${d.store_name.replace(/\s+/g,'_')}.iif`; a.click(); URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('Could not generate IIF: ' + (e && e.message ? e.message : e));
+  }
+};
+
+window.exportBulkIIF = async () => {
+  const approved = filteredDeliveries.filter(d => d.qb_status === 'approved');
   if (!approved.length) { alert('No approved deliveries to export. Please approve deliveries first.'); return; }
-  const combined = approved.map(d => d.iif_content).join('\n');
-  const blob = new Blob([combined], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = `MiniMelts_Bulk_${new Date().toISOString().slice(0,10)}.iif`; a.click(); URL.revokeObjectURL(url);
-  alert(`✓ Exported ${approved.length} approved deliveries to IIF.`);
+  try {
+    const storeMap = await fetchStoresForIIF(approved.map(d => d.store_id));
+    const combined = approved.map(d => buildDeliveryIIF(d, storeMap[d.store_id])).join('\n');
+    const blob = new Blob([combined], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `MiniMelts_Bulk_${new Date().toISOString().slice(0,10)}.iif`; a.click(); URL.revokeObjectURL(url);
+    alert(`\u2713 Exported ${approved.length} approved deliveries to IIF.`);
+  } catch (e) {
+    alert('Could not generate bulk IIF: ' + (e && e.message ? e.message : e));
+  }
+};
+
+// On-demand IIF preview inside the detail modal (fresh, never cached).
+window.previewIIF = async (id) => {
+  const d = allDeliveries.find(x => x.id === id);
+  const el = document.getElementById('iif-preview-' + id);
+  if (!d || !el) return;
+  el.style.display = 'block'; el.textContent = 'Generating\u2026';
+  try {
+    const storeMap = await fetchStoresForIIF([d.store_id]);
+    el.textContent = buildDeliveryIIF(d, storeMap[d.store_id]);
+  } catch (e) {
+    el.textContent = 'Could not generate IIF: ' + (e && e.message ? e.message : e);
+  }
 };
 
 // ── Detail Modal ──
@@ -4072,7 +4171,7 @@ window.showDetail = async (id) => {
     ${d.freezer_photo_2_base64 ? `<div class="section-title">Freezer Photo (2 of 2)</div><img class="modal-photo" src="data:image/jpeg;base64,${d.freezer_photo_2_base64}" alt="Freezer 2"/>` : ''}
     ${d.payment_photo_base64 ? `<div class="section-title">Payment Photo${d.payment_type ? ` — ${d.payment_type}` : ''}</div><img class="modal-photo" src="data:image/jpeg;base64,${d.payment_photo_base64}" alt="Payment proof"/>` : ''}
     ${sigHtml}
-    ${d.iif_content ? `<div class="section-title">IIF Preview</div><div class="iif-preview">${d.iif_content}</div>` : ''}
+    ${(d.qb_status && d.qb_status !== 'pending') ? `<div class="section-title">QuickBooks IIF (backup)</div><button class="btn-modal" style="background:var(--bg3);width:100%;margin-bottom:8px" onclick="window.previewIIF('${d.id}')">Generate IIF preview</button><pre id="iif-preview-${d.id}" class="iif-preview" style="display:none;white-space:pre-wrap;word-break:break-word"></pre>` : ''}
     ${editSection}
     ${actions}`;
   document.getElementById('detail-modal').classList.add('open');
@@ -4237,38 +4336,7 @@ window.saveCorrection = async (id) => {
   const tax = Math.round(subtotal * taxRate * 100) / 100;
   const total = Math.round((subtotal + tax) * 100) / 100;
   const fmt = n => parseFloat(n).toFixed(2);
-  const dateStr = new Date(d.delivered_at).toLocaleDateString('en-US');
-  const isEDI = /safeway|sobeys/i.test(d.store_name);
-  const arAccount = isEDI ? 'Accounts Receivable - EDI' : 'Accounts Receivable';
-  const QB_ITEM_MAP = {
-    'Cotton Candy':    { item: 'Mini Melts Pre Packs:Prepack-Cotton',               desc: 'Mini Melts Pre Pack - Cotton Candy' },
-    'Cookies & Cream': { item: 'Mini Melts Pre Packs:Prepack-Cookies',              desc: 'Mini Melts Pre Pack - Cookies N Cream' },
-    'Cookie Dough':    { item: 'Mini Melts Pre Packs:Prepack-Cookie Dough',         desc: 'Mini Melts Pre Pack - Cookie Dough' },
-    'Banana Split':    { item: 'Mini Melts Pre Packs:Prepack-Banana',               desc: 'Mini Melts Pre Pack - Banana Split' },
-    'Mint Chocolate':  { item: 'Mini Melts Pre Packs:Prepack-Mint',                 desc: 'Mini Melts Pre Pack - Mint Chocolate' },
-    'Rainbow':         { item: 'Mini Melts Pre Packs:Prepack-Rainbow Ice',           desc: 'Mini Melts Pre Pack - Rainbow Ice' },
-    'Orange':          { item: 'Mini Melts Pre Packs:Prepack-Orange',                desc: 'Mini Melts Pre Pack - Orange' },
-    'BIG Cherry':      { item: 'Mini Melts BIG:Mini Melts BIG Cherry (24 pack)',    desc: 'Mini Melts BIG Cherry (24 pack)' },
-    'BIG Mango':       { item: 'Mini Melts BIG:Mini Melts BIG Mango (24 pack)',     desc: 'Mini Melts BIG Mango (24 pack)' },
-    'BIG Kiwi':        { item: 'Mini Melts BIG:Mini Melts BIG Kiwi (24 pack)',      desc: 'Mini Melts BIG Kiwi (24 pack)' },
-  };
-  const iifLines = [
-    '!TRNS\tTRNSID\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO\tTOPRINT',
-    '!SPL\tSPLID\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO\tQNTY\tPRICE\tINVITEM\tCLASS',
-    '!ENDTRNS',
-    `TRNS\t\tINVOICE\t${dateStr}\t${arAccount}\t${d.store_name}\t${fmt(total)}\t${d.receipt_number}\tMini Melts Delivery - ${d.driver_name}\tY`,
-  ];
-  updatedItems.filter(i => parseInt(i.qtyDelivered) > 0).forEach(item => {
-    const qty = parseInt(item.qtyDelivered);
-    const mapped = QB_ITEM_MAP[item.product];
-    const qbItem = mapped ? mapped.item : item.product;
-    const qbDesc = mapped ? mapped.desc : item.product;
-    const linePrice = BIG_PRODUCTS.includes(item.product) ? bigUnitPrice : unitPrice;
-    iifLines.push(`SPL\t\tINVOICE\t${dateStr}\tSales\t${d.store_name}\t-${fmt(qty*linePrice)}\t${d.receipt_number}\t${qbDesc}\t-${qty}\t-${fmt(linePrice)}\t${qbItem}\t${d.store_province||''}`);
-  });
-  if (deliveryFee > 0) iifLines.push(`SPL\t\tINVOICE\t${dateStr}\tFreight Income\t${d.store_name}\t-${fmt(deliveryFee)}\t${d.receipt_number}\tDelivery Fee\t-1\t-${fmt(deliveryFee)}\tFreight\t${d.store_province||''}`);
-  iifLines.push('ENDTRNS');
-  const payload = { items: updatedItems, unit_price: unitPrice, big_unit_price: bigUnitPrice, delivery_fee: deliveryFee, subtotal, tax, total, payment_type: paymentType, notes: notes||null, iif_content: iifLines.join('\n'), needs_correction: false, correction_note: null, qb_status: 'pending' };
+  const payload = { items: updatedItems, unit_price: unitPrice, big_unit_price: bigUnitPrice, delivery_fee: deliveryFee, subtotal, tax, total, payment_type: paymentType, notes: notes||null, needs_correction: false, correction_note: null, qb_status: 'pending' };
   const r = await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify(payload) });
   if (r.ok) {
     const idx = allDeliveries.findIndex(x => x.id === id);
