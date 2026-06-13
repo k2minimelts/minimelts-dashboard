@@ -9249,6 +9249,8 @@ const schedState = {
     warn_at_pct: 0.88,
   },
   initialized: false,
+  locations: [],            // route_locations (hotels + supply pickups)
+  locationsIndex: new Map(),// route_location id → row
 };
 window.schedState = schedState; // expose for debugging
 
@@ -9614,6 +9616,7 @@ async function schedRefreshData() {
   await Promise.all([
     schedLoadOrdersAndOverdue(),
     schedLoadTripsForWeek(),
+    schedLoadRouteLocations(),
   ]);
   schedRenderAll();
   schedFitMapToDepots();
@@ -9927,11 +9930,13 @@ async function schedLoadTripsForWeek() {
   const select =
     'id,driver_id,depot_id,start_date,end_date,status,notes,published_at,' +
     'days:trip_days(id,day_date,day_index,status,manual_order_locked,estimated_drive_hours,' +
+      'overnight_location_id,overnight_lat,overnight_lng,start_lat,start_lng,end_lat,end_lng,' +
       'last_email_sent_at,email_resend_pending_at,' +
-      'stops:trip_stops(id,sequence,source,manager_note,store_id,linked_machine_id,linked_order_id,' +
+      'stops:trip_stops(id,sequence,source,manager_note,store_id,linked_machine_id,linked_order_id,location_id,' +
         'store:stores(qb_name,ship_addr1,ship_city,province,lat,lng,depot_id),' +
         'machine:vending_machines(id,nayax_machine_number,lat,lng,' +
-          'venue:vending_venues(name,address,city,province,lat,lng))))';
+          'venue:vending_venues(name,address,city,province,lat,lng)),' +
+        'location:route_locations(id,name,address,province,lat,lng,kind)))';
   const url = `trips?select=${encodeURIComponent(select)}` +
     `&depot_id=in.(${depotIdList})` +
     `&start_date=lte.${we}&end_date=gte.${ws}` +
@@ -9951,6 +9956,20 @@ async function schedLoadTripsForWeek() {
     console.error('[sched] failed to load trips', e);
     schedState.trips = [];
   }
+}
+
+// Load saved route locations (hotels + supply pickups) for the overnight and
+// custom-stop pickers. RLS allows authenticated SELECT. Cheap; refreshed with
+// the week so newly-added hotels appear without a reload.
+async function schedLoadRouteLocations() {
+  try {
+    const rows = await sbFetch('route_locations?select=id,name,kind,address,province,lat,lng,active&active=eq.true&order=kind.asc,name.asc');
+    schedState.locations = Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    console.error('[sched] failed to load route_locations', e);
+    schedState.locations = [];
+  }
+  schedState.locationsIndex = new Map(schedState.locations.map(l => [l.id, l]));
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -11453,8 +11472,14 @@ async function schedRemoveStopFromCell(tripStopId) {
   if (!stop) return;
 
   // Resolve a friendly name for the confirm dialog.
-  const lookupKey = stop.linked_machine_id ? `vm:${stop.linked_machine_id}` : stop.store_id;
-  const store = schedState.storesIndex.get(lookupKey) || { qb_name: 'this stop' };
+  let store;
+  if (stop.source === 'custom' || stop.location_id) {
+    const loc = stop.location || schedState.locationsIndex.get(stop.location_id) || {};
+    store = { qb_name: loc.name || 'this stop' };
+  } else {
+    const lookupKey = stop.linked_machine_id ? `vm:${stop.linked_machine_id}` : stop.store_id;
+    store = schedState.storesIndex.get(lookupKey) || { qb_name: 'this stop' };
+  }
 
   // Build a confirmation message. Tone is calm — destructive but reversible
   // by re-adding from the map. Three pieces of context worth surfacing:
@@ -11938,12 +11963,62 @@ function schedRenderCellEditSidebar(container) {
       </button>
     </div>` : '';
 
+  // Overnight picker: shown on multi-day trips for every day except the last
+  // (the last day returns to the depot). Picking a hotel sets this day's end
+  // anchor and tomorrow's start anchor via the set_trip_day_overnight RPC.
+  let overnightHtml = '';
+  {
+    const dayPos = trip ? (trip.days.findIndex(d => d.id === cell.trip_day_id) + 1) : 1;
+    const isLastDay = dayPos === tripDayCount;
+    if (tripDayCount > 1 && !isLastDay) {
+      const curId = (dayObj && dayObj.overnight_location_id) ? dayObj.overnight_location_id : '';
+      const hotels = (schedState.locations || []).filter(l => l.kind === 'hotel');
+      const opts = ['<option value="">Depot / none</option>']
+        .concat(hotels.map(h => `<option value="${schedEscapeHtml(h.id)}"${h.id === curId ? ' selected' : ''}>${schedEscapeHtml(h.name)}</option>`))
+        .concat(['<option value="__add__">➕ Add a hotel…</option>'])
+        .join('');
+      overnightHtml = `
+        <div class="sched-overnight" style="margin:10px 12px;padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px">
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:6px">🏨 OVERNIGHT AFTER THIS DAY</label>
+          <select id="sched-overnight-select" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:13px;outline:none">${opts}</select>
+          <div style="font-size:11px;color:var(--muted);margin-top:6px">Sets where this day ends and tomorrow starts. Depot = drive back.</div>
+        </div>`;
+    }
+  }
+
+  // Custom-stop picker: add a saved supply pickup (dry ice) or "other" location
+  // as a source='custom' stop the optimizer routes into the day. Same select +
+  // change-handler mechanism as the overnight picker.
+  let customAddHtml = '';
+  {
+    const picks = (schedState.locations || []).filter(l => l.kind === 'supply_pickup' || l.kind === 'other');
+    const opts = ['<option value="">+ Add pickup / other stop…</option>']
+      .concat(picks.map(l => `<option value="${schedEscapeHtml(l.id)}">${schedEscapeHtml(l.name)}${l.province ? ' (' + schedEscapeHtml(l.province) + ')' : ''}</option>`))
+      .concat(['<option value="__add__">➕ New pickup location…</option>'])
+      .join('');
+    customAddHtml = `
+      <div class="sched-cell-custom-add" style="margin:0 12px 10px">
+        <select id="sched-add-custom-select" style="width:100%;background:var(--bg3);border:1px dashed var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:13px;outline:none">${opts}</select>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Dry-ice or other non-store stop the optimizer routes into the day.</div>
+      </div>`;
+  }
+
   const stopsHtml = (cell.stops || []).map((stop, idx, arr) => {
-    // Look up by 'vm:' prefix for vending stops, raw store_id otherwise
-    const lookupKey = stop.linked_machine_id ? `vm:${stop.linked_machine_id}` : stop.store_id;
-    const store = schedState.storesIndex.get(lookupKey) || { qb_name: '?', ship_city: '', province: '' };
+    // Custom stops (dry-ice pickups, etc.) carry a route_location, not a store/vm.
+    const isCustom = (stop.source === 'custom' || !!stop.location_id);
+    let store, lookupKey;
+    if (isCustom) {
+      const loc = stop.location || schedState.locationsIndex.get(stop.location_id) || {};
+      lookupKey = '';
+      store = { qb_name: loc.name || 'Custom stop', ship_city: loc.province || '', province: '', type: 'custom' };
+    } else {
+      // Look up by 'vm:' prefix for vending stops, raw store_id otherwise
+      lookupKey = stop.linked_machine_id ? `vm:${stop.linked_machine_id}` : stop.store_id;
+      store = schedState.storesIndex.get(lookupKey) || { qb_name: '?', ship_city: '', province: '' };
+    }
     const lateness = (store.days_overdue || 0) > 0 ? `<span class="${(store.days_overdue || 0) > 90 ? 'late' : ''}">${store.days_overdue}d overdue</span>` : '';
     const vendingTag = store.type === 'vending' ? `<span style="color:#e87bb5;font-weight:600">vending</span>` : '';
+    const customTag = isCustom ? `<span style="color:#f5a623;font-weight:600">pickup/other</span>` : '';
     // Show an "order" pill when this stop came from a customer order, so
     // the manager can tell at a glance that removing it will revert the
     // order to Pending. Cyan to match the "Order pending" map legend.
@@ -11961,6 +12036,7 @@ function schedRenderCellEditSidebar(container) {
           <span>${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</span>
           ${lateness}
           ${vendingTag}
+          ${customTag}
           ${orderTag}
         </div>
       </div>
@@ -12026,6 +12102,7 @@ function schedRenderCellEditSidebar(container) {
       </div>
     </div>
     ${driveTimeHtml}
+    ${overnightHtml}
     ${emailPanelHtml}
     <div class="sched-cell-stop-list">
       ${(cell.stops && cell.stops.length) ? stopsHtml : '<div class="sched-empty"><p>No stops on this day yet.</p></div>'}
@@ -12036,10 +12113,40 @@ function schedRenderCellEditSidebar(container) {
       </button>
       <button class="sched-cell-action-btn warn" id="sched-delete-day-btn">Delete day</button>
     </div>
+    ${customAddHtml}
   `;
 
   // Wire interactions
   document.getElementById('sched-cell-back-btn').addEventListener('click', () => schedExitCellEdit());
+
+  // Overnight picker — pick a hotel (sets end anchor + tomorrow's start anchor),
+  // "Depot / none" to clear, or "➕ Add a hotel…" to geocode + save a new one.
+  const ovSel = document.getElementById('sched-overnight-select');
+  if (ovSel) {
+    ovSel.addEventListener('change', (e) => {
+      const v = e.target.value;
+      if (v === '__add__') {
+        // restore the previous selection while the add flow runs
+        e.target.value = (dayObj && dayObj.overnight_location_id) ? dayObj.overnight_location_id : '';
+        schedAddHotelInline(cell.trip_day_id);
+      } else {
+        schedSetOvernight(cell.trip_day_id, v || null);
+      }
+    });
+  }
+
+  // Custom-stop picker — add a saved pickup/other location, or "➕ New…" to
+  // geocode + save one. Resets to the placeholder after each selection.
+  const cuSel = document.getElementById('sched-add-custom-select');
+  if (cuSel) {
+    cuSel.addEventListener('change', (e) => {
+      const v = e.target.value;
+      e.target.value = '';
+      if (!v) return;
+      if (v === '__add__') schedAddPickupInline(cell.trip_day_id);
+      else schedAddCustomStopToCell(v);
+    });
+  }
 
   // Resend / Send-now button (only present on published days)
   const resendBtn = document.getElementById('sched-resend-now-btn');
@@ -12484,6 +12591,133 @@ window.schedToggleManualLock = async function(tripDayId, btnEl) {
   } catch (err) {
     schedToast('⚠ Could not change lock — ' + ((err && err.message) || 'permission denied'));
     if (btnEl) btnEl.disabled = false;
+  }
+};
+
+// Set (or clear) the overnight hotel for a day. Persists via RPC, which writes
+// this day's end anchor + the next day's start anchor, then refreshes, reopens
+// the panel, and re-optimizes the day so the drive time reflects the anchor.
+window.schedSetOvernight = async function(tripDayId, locationId) {
+  if (!tripDayId) return;
+  try {
+    const res = await sbFetch('rpc/set_trip_day_overnight', {
+      method: 'POST',
+      body: JSON.stringify({ p_trip_day_id: tripDayId, p_location_id: locationId || null }),
+    });
+    if (res && typeof res === 'object' && res.message) throw new Error(res.message);
+    schedToast(locationId ? '🏨 Overnight set' : '↩ Overnight cleared — day ends at depot');
+    await schedRefreshData();
+    if (schedState.uiMode === 'cell-edit' && schedState.editingCell
+        && schedState.editingCell.trip_day_id === tripDayId) {
+      schedReopenEditingCell(tripDayId);
+    }
+    schedMaybeReoptimizeDay(tripDayId);
+  } catch (err) {
+    schedToast('⚠ Could not set overnight — ' + ((err && err.message) || 'error'));
+  }
+};
+
+// Add a new hotel on the fly: manager enters name + address, we geocode via
+// Mapbox (same token the map uses), confirm the resolved address, save through
+// add_route_location, then immediately set it as this day's overnight.
+window.schedAddHotelInline = async function(tripDayId) {
+  const name = prompt('Hotel name (e.g. "Prestige Vernon Lodge"):');
+  if (!name || !name.trim()) return;
+  const address = prompt('Hotel address (street, city, province):');
+  if (!address || !address.trim()) return;
+  schedToast('📍 Locating hotel…');
+  try {
+    const geoUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json` +
+      `?access_token=${MAPBOX_TOKEN}&country=ca&limit=1`;
+    const gr = await fetch(geoUrl);
+    const gj = await gr.json();
+    if (!gj.features || !gj.features.length) {
+      schedToast('⚠ Could not locate that address — try adding city/province');
+      return;
+    }
+    const feat = gj.features[0];
+    const lng = feat.center[0], lat = feat.center[1];
+    if (!confirm(`Save hotel "${name.trim()}"\n\nResolved to:\n${feat.place_name}\n\nUse this location?`)) return;
+    const res = await sbFetch('rpc/add_route_location', {
+      method: 'POST',
+      body: JSON.stringify({ p_name: name.trim(), p_kind: 'hotel', p_address: address.trim(), p_lat: lat, p_lng: lng, p_province: null }),
+    });
+    if (res && typeof res === 'object' && res.message) throw new Error(res.message);
+    const newId = (typeof res === 'string') ? res : (Array.isArray(res) ? res[0] : (res && res.id) ? res.id : null);
+    if (!newId) throw new Error('no id returned');
+    await schedLoadRouteLocations();
+    await schedSetOvernight(tripDayId, newId);
+  } catch (err) {
+    schedToast('⚠ Could not add hotel — ' + ((err && err.message) || 'error'));
+  }
+};
+
+// Add a saved route_location (dry-ice pickup / other) as a source='custom' stop.
+// Mirrors schedAddStopToCell but carries location_id instead of a store/machine.
+window.schedAddCustomStopToCell = async function(locationId) {
+  const cell = schedState.editingCell;
+  if (!cell || !locationId) return;
+  const loc = schedState.locationsIndex.get(locationId);
+  if (!loc) { schedToast('⚠ Location not found — try reloading'); return; }
+  const existingStops = cell.stops || [];
+  if (existingStops.length >= 11) {
+    schedToast('⚠ Day already at 11 stops (optimizer limit). Move some elsewhere first.');
+    return;
+  }
+  const maxSeq = existingStops.reduce((m, s) => Math.max(m, s.sequence || 0), 0);
+  const payload = {
+    trip_day_id: cell.trip_day_id,
+    store_id: null,
+    linked_machine_id: null,
+    location_id: locationId,
+    sequence: maxSeq + 10,
+    source: 'custom',
+    status: 'planned',
+    linked_order_id: null,
+  };
+  try {
+    await schedInsert('trip_stops', payload, true);
+    schedToast(`✓ Added ${loc.name}`);
+    await schedRefreshData();
+    schedReopenEditingCell(cell.trip_day_id);
+    schedMaybeReoptimizeDay(cell.trip_day_id);
+  } catch (e) {
+    console.error('[sched] add custom stop failed:', e);
+    schedToast(`⚠ Failed: ${e.message}`);
+  }
+};
+
+// Add a brand-new pickup location (geocoded) and drop it onto this day as a
+// custom stop. Same geocode + save flow as schedAddHotelInline, kind differs.
+window.schedAddPickupInline = async function(tripDayId) {
+  const name = prompt('Pickup location name (e.g. "Linde Calgary"):');
+  if (!name || !name.trim()) return;
+  const address = prompt('Address (street, city, province):');
+  if (!address || !address.trim()) return;
+  schedToast('📍 Locating…');
+  try {
+    const geoUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json` +
+      `?access_token=${MAPBOX_TOKEN}&country=ca&limit=1`;
+    const gr = await fetch(geoUrl);
+    const gj = await gr.json();
+    if (!gj.features || !gj.features.length) {
+      schedToast('⚠ Could not locate that address — try adding city/province');
+      return;
+    }
+    const feat = gj.features[0];
+    const lng = feat.center[0], lat = feat.center[1];
+    if (!confirm(`Save pickup "${name.trim()}"\n\nResolved to:\n${feat.place_name}\n\nUse this location?`)) return;
+    const res = await sbFetch('rpc/add_route_location', {
+      method: 'POST',
+      body: JSON.stringify({ p_name: name.trim(), p_kind: 'supply_pickup', p_address: address.trim(), p_lat: lat, p_lng: lng, p_province: null }),
+    });
+    if (res && typeof res === 'object' && res.message) throw new Error(res.message);
+    const newId = (typeof res === 'string') ? res : (Array.isArray(res) ? res[0] : (res && res.id) ? res.id : null);
+    if (!newId) throw new Error('no id returned');
+    await schedLoadRouteLocations();
+    await schedAddCustomStopToCell(newId);
+  } catch (err) {
+    schedToast('⚠ Could not add pickup — ' + ((err && err.message) || 'error'));
   }
 };
 
