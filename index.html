@@ -4855,6 +4855,7 @@ window.searchStores = async () => {
 };
 
 window.showAddStore = () => {
+  window._pendingAppConversion = null;
   ['store-edit-id','store-name','store-qbname','store-firstname','store-lastname','store-phone','store-email','store-addr1','store-city','store-postal','store-ship-addr1','store-ship-city','store-ship-postal','store-save-msg'].forEach(id => document.getElementById(id).value='');
   document.getElementById('store-modal-title').textContent = 'Add New Store';
   document.getElementById('store-province').value = 'AB';
@@ -4947,7 +4948,22 @@ window.provinceFromPostal = (postal) => {
   return map[c] || '';
 };
 
+// Map an application's province (stored as a full name like "Alberta", or
+// sometimes already a 2-letter code) to the store modal's dropdown code.
+// Returns '' for anything not in the dropdown so the field stays at its default.
+window.provinceNameToCode = (p) => {
+  if (!p) return '';
+  const s = String(p).trim();
+  const valid = ['AB','BC','MB','SK','ON','QC','NS','NB','PE','NL','WA'];
+  if (/^[A-Za-z]{2}$/.test(s)) { const up = s.toUpperCase(); return valid.includes(up) ? up : ''; }
+  const m = { 'alberta':'AB','british columbia':'BC','manitoba':'MB','saskatchewan':'SK','ontario':'ON',
+    'quebec':'QC','québec':'QC','nova scotia':'NS','new brunswick':'NB','prince edward island':'PE','pei':'PE',
+    'newfoundland':'NL','newfoundland and labrador':'NL','washington':'WA' };
+  return m[s.toLowerCase()] || '';
+};
+
 window.editStore = (id) => {
+  window._pendingAppConversion = null;
   const s = allStoresData.find(x => x.id === id);
   if (!s) return;
   document.getElementById('store-edit-id').value = s.id;
@@ -4987,10 +5003,48 @@ window.saveStore = async () => {
   if (!payload.name || !payload.qb_name) { document.getElementById('store-save-msg').textContent = '⚠️ Store name and QB name are required.'; return; }
   const msg = document.getElementById('store-save-msg');
   msg.textContent = 'Saving...';
+  // When "Set up customer" armed a conversion, we need the new row's id back.
+  const pendingConv = (isNew && window._pendingAppConversion) ? window._pendingAppConversion : null;
+  const newPrefer = pendingConv ? 'return=representation' : 'return=minimal';
   const r = id
     ? await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify(payload) })
-    : await fetch(`${SUPABASE_URL}/rest/v1/stores`, { method: 'POST', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify(payload) });
-  if (r.ok) { msg.style.color='var(--success)'; msg.textContent = id ? '✅ Store updated!' : '✅ Store added! QB sync within 5 minutes.'; loadStores(); }
+    : await fetch(`${SUPABASE_URL}/rest/v1/stores`, { method: 'POST', headers: { ...headers(), 'Prefer': newPrefer }, body: JSON.stringify(payload) });
+  if (r.ok) {
+    msg.style.color='var(--success)';
+    msg.textContent = id ? '✅ Store updated!' : '✅ Store added! QB sync within 5 minutes.';
+    loadStores();
+    if (pendingConv) {
+      try {
+        const rows = await r.json();
+        const newStore = Array.isArray(rows) ? rows[0] : rows;
+        const newId = newStore && newStore.id;
+        if (!newId) {
+          msg.style.color='var(--danger)';
+          msg.textContent='⚠️ Store saved, but its id could not be read to link the application.';
+        } else {
+          const rpc = await fetch(`${SUPABASE_URL}/rest/v1/rpc/convert_application_to_store`, {
+            method: 'POST', headers: headers(),
+            body: JSON.stringify({ p_lead_id: pendingConv.lead_id, p_store_id: newId })
+          });
+          if (rpc.ok) {
+            window._pendingAppConversion = null;
+            msg.style.color='var(--success)';
+            msg.textContent='✅ Store created and linked to the application.';
+            if (window.loadApplications) window.loadApplications();
+            if (window.selectApplication) window.selectApplication(pendingConv.lead_id);
+            setTimeout(() => { if (window.closeStoreModal) window.closeStoreModal(); }, 1200);
+          } else {
+            let em=''; try { const j = await rpc.json(); em = j.message || j.error || JSON.stringify(j); } catch(e){}
+            msg.style.color='var(--danger)';
+            msg.textContent='⚠️ Store was saved, but linking to the application failed: '+(em||('HTTP '+rpc.status))+'. The store exists; resolve and re-link from the application.';
+          }
+        }
+      } catch(e){
+        msg.style.color='var(--danger)';
+        msg.textContent='⚠️ Store was saved, but linking errored: '+e.message;
+      }
+    }
+  }
   else { msg.style.color='var(--danger)'; msg.textContent = '❌ Error saving store. Try again.'; }
 };
 
@@ -5525,15 +5579,21 @@ window.switchTab = (tab) => {
     const detail = document.getElementById("apps-detail");
     detail.innerHTML = '<div class="leads-detail-empty">Loading…</div>';
     await ensureDepots();
-    let arr, activity;
+    let arr, activity, agreements=[];
     try {
       arr = await sbFetch("leads?select=*&id=eq."+id+"&limit=1");
       activity = await sbFetch("lead_activity?select=*&lead_id=eq."+id+"&order=created_at.desc");
     } catch(e){ detail.innerHTML='<div class="leads-detail-empty">Could not load application.</div>'; return; }
+    // Agreements are admin-read; fetch separately so a permission/empty result
+    // never blanks out the whole detail panel.
+    try {
+      const ag = await sbFetch("lead_agreements?select=program,status,signer_name,signed_at,signed_pdf_url&lead_id=eq."+id+"&order=program.asc");
+      agreements = Array.isArray(ag) ? ag : [];
+    } catch(e){ agreements = []; }
     const a = Array.isArray(arr)?arr[0]:null;
     if (!a){ detail.innerHTML='<div class="leads-detail-empty">Could not load application.</div>'; return; }
     a.nearest_depot = { code: (DEPOT_CODES && DEPOT_CODES[a.nearest_depot_id]) || null };
-    renderAppDetail(a, Array.isArray(activity)?activity:[]);
+    renderAppDetail(a, Array.isArray(activity)?activity:[], agreements);
   };
 
   function row(label, val){
@@ -5552,7 +5612,35 @@ window.switchTab = (tab) => {
       '<div class="ld-event-when">'+fmtDateTime(e.created_at)+'</div></div></div>';
   }
 
-  function renderAppDetail(a, activity){
+  function agreementsBlock(a, agreements){
+    if (!agreements || !agreements.length) return "";
+    const token = a.sign_token || null;
+    const expired = !!(token && a.sign_token_expires_at && (new Date(a.sign_token_expires_at) < new Date()));
+    const rows = agreements.map(function(g){
+      const label = g.program==="ice_cream" ? "Ice cream" : g.program==="sorbet" ? "Sorbet" : esc(g.program||"");
+      const isSigned = g.status==="signed";
+      const color = isSigned ? "#3fb950" : g.status==="void" ? "#9aa7ad" : "#d29922";
+      const badge = isSigned ? "Signed" : g.status==="void" ? "Void" : "Sent";
+      const meta = isSigned ? esc([g.signer_name, g.signed_at?fmtDateTime(g.signed_at):""].filter(Boolean).join(" · ")) : "";
+      const pdfBtn = (isSigned && g.signed_pdf_url)
+        ? ' <button class="ld-btn ghost" style="padding:2px 9px;font-size:12px" onclick="window.appViewAgreementPdf(\''+esc(g.signed_pdf_url)+'\')">View PDF</button>'
+        : "";
+      return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:14px;flex-wrap:wrap">'+
+        '<span style="min-width:88px;color:#e6edf3">'+label+'</span>'+
+        '<span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;background:'+color+'22;color:'+color+'">'+badge+'</span>'+
+        (meta?'<span style="color:#9aa7ad;font-size:12px">'+meta+'</span>':'')+pdfBtn+'</div>';
+    }).join("");
+    let linkRow = "";
+    if (token){
+      linkRow = '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+
+        '<button class="ld-btn ghost" onclick="window.appCopySignLink(\''+esc(token)+'\')">📋 Copy signing link</button>'+
+        '<button class="ld-btn ghost" onclick="window.appResendSigning(\''+a.id+'\')">✉ Resend</button>'+
+        (expired?'<span style="color:#f5a623;font-size:12px">link expired</span>':'')+'</div>';
+    }
+    return '<div class="ld-section-label">Agreements</div>'+rows+linkRow;
+  }
+
+  function renderAppDetail(a, activity, agreements){
     const detail = document.getElementById("apps-detail");
     const ex = a.application_extra || {};
     const nm = esc(a.operating_name || a.legal_name || a.name || "(no name)");
@@ -5570,11 +5658,11 @@ window.switchTab = (tab) => {
                 '<button class="ld-btn danger" onclick="window.appDecline(\''+a.id+'\')">Decline</button>'+
                 '<button class="ld-btn ghost" onclick="window.appToggleNote(true)">+ Add note</button>';
     } else if (a.status === "approved") {
-      actions = '<button class="ld-btn primary" onclick="window.appStub(\'Send for signing\')">✍ Send for signing</button>'+
+      actions = '<button class="ld-btn primary" onclick="window.appSendSigning(\''+a.id+'\')">✍ Send for signing</button>'+
                 '<button class="ld-btn ghost" onclick="window.appToggleNote(true)">+ Add note</button>'+
                 '<button class="ld-btn ghost" onclick="window.appReopen(\''+a.id+'\')">↩ Back to review</button>';
     } else if (a.status === "signed") {
-      actions = '<button class="ld-btn primary" onclick="window.appStub(\'Set up customer\')">🏪 Set up customer</button>'+
+      actions = '<button class="ld-btn primary" onclick="window.appSetupCustomer(\''+a.id+'\')">🏪 Set up customer</button>'+
                 '<button class="ld-btn ghost" onclick="window.appToggleNote(true)">+ Add note</button>';
     } else if (a.status === "auto_rejected" || a.status === "dead") {
       actions = '<button class="ld-btn ghost" onclick="window.appReopen(\''+a.id+'\')">↩ Move to review</button>'+
@@ -5617,6 +5705,7 @@ window.switchTab = (tab) => {
       row("Commits to minimum", yn(a.commits_to_minimum)) +
       row("Payment preference", esc(PAY[a.payment_pref]||a.payment_pref||"")) +
       (a.auto_reject_reason? row("Auto-decline reason", esc(a.auto_reject_reason)) : "") +
+      agreementsBlock(a, agreements) +
       '<div class="ld-section-label">Status</div>'+
       '<div class="ld-actions">'+actions+'</div>'+
       '<div id="app-note-box" class="ld-compose" style="display:none">'+
@@ -5665,6 +5754,99 @@ window.switchTab = (tab) => {
     await appsWrite("leads?id=eq."+id,"PATCH",{ last_touched_by:u, last_touched_at:new Date().toISOString() });
     await window.selectApplication(id);
   };
+  // ---- Send for signing -------------------------------------------------
+  async function sendForSigning(id, isResend){
+    const verb = isResend ? "Resend the signing email" : "Send this application for signing";
+    if(!confirm(verb+"?\n\nThe retailer gets a bilingual link to sign their agreement(s) at orders.minimelts.ca.")) return;
+    const token = (window._session && window._session.access_token) || window._token;
+    try {
+      const r = await fetch(SUPABASE_URL+"/functions/v1/send-for-signing", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "apikey":SUPABASE_ANON_KEY, "Authorization":"Bearer "+token },
+        body: JSON.stringify({ lead_id: id })
+      });
+      let j={}; try { j = await r.json(); } catch(e){}
+      if(!r.ok || j.ok===false){
+        alert("Send for signing failed: "+(j.error||j.message||("HTTP "+r.status)));
+        return;
+      }
+      alert((isResend?"Signing email resent":"Sent for signing")+(j.email_sent===false?" — but the email did not send, check the address.":".")
+        +(j.programs&&j.programs.length?("\nPrograms: "+j.programs.join(", ")):""));
+      await window.selectApplication(id);
+      await window.loadApplications();
+    } catch(e){
+      alert("Send for signing errored: "+e.message);
+    }
+  }
+  window.appSendSigning   = function(id){ return sendForSigning(id, false); };
+  window.appResendSigning = function(id){ return sendForSigning(id, true);  };
+
+  window.appCopySignLink = function(token){
+    const link = "https://orders.minimelts.ca/sign/"+token;
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(link).then(
+        function(){ alert("Signing link copied:\n"+link); },
+        function(){ window.prompt("Copy this signing link:", link); }
+      );
+    } else { window.prompt("Copy this signing link:", link); }
+  };
+
+  // Signed agreement PDFs live in the private freezer-agreements bucket, so
+  // mint a short-lived signed URL on demand rather than linking the raw path.
+  window.appViewAgreementPdf = async function(path){
+    const token = (window._session && window._session.access_token) || window._token;
+    try {
+      const r = await fetch(SUPABASE_URL+"/storage/v1/object/sign/freezer-agreements/"+encodeURI(path), {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "apikey":SUPABASE_ANON_KEY, "Authorization":"Bearer "+token },
+        body: JSON.stringify({ expiresIn: 600 })
+      });
+      let j={}; try { j = await r.json(); } catch(e){}
+      if (r.ok && j.signedURL){ window.open(SUPABASE_URL+"/storage/v1"+j.signedURL, "_blank"); }
+      else { alert("Could not open the signed PDF: "+(j.error||j.message||("HTTP "+r.status))); }
+    } catch(e){ alert("Could not open PDF: "+e.message); }
+  };
+
+  // ---- Set up customer (signed application -> store) --------------------
+  // Opens the standard Add New Store modal pre-filled from the application,
+  // and arms saveStore() to call convert_application_to_store on success.
+  window.appSetupCustomer = async function(id){
+    let a;
+    try { const arr = await sbFetch("leads?select=*&id=eq."+id+"&limit=1"); a = Array.isArray(arr)?arr[0]:null; }
+    catch(e){ alert("Could not load the application."); return; }
+    if (!a){ alert("Could not load the application."); return; }
+    if (a.converted_store_id){ alert("This application is already converted to a store."); return; }
+    if (typeof window.showAddStore !== "function"){ alert("Add Store modal is unavailable."); return; }
+
+    window.showAddStore(); // resets the form (and clears any prior _pendingAppConversion)
+
+    const opName = a.operating_name || a.legal_name || a.name || "";
+    const setVal = function(elId, val){ const el=document.getElementById(elId); if(el) el.value = (val==null?"":val); };
+    setVal("store-name", opName);
+    setVal("store-qbname", opName);
+
+    let fn = a.first_name||"", ln = a.last_name||"";
+    if (!fn && !ln && a.name){ const p=String(a.name).trim().split(/\s+/); fn=p.shift()||""; ln=p.join(" "); }
+    setVal("store-firstname", fn);
+    setVal("store-lastname", ln);
+    setVal("store-phone", a.phone||"");
+    setVal("store-email", a.email||"");
+
+    const prov = (typeof window.provinceNameToCode==="function") ? window.provinceNameToCode(a.province) : "";
+    if (prov){ setVal("store-province", prov); if (window.autoSetTaxCode) window.autoSetTaxCode(); }
+
+    // Application has one address — seed both Bill To and Ship To from it.
+    setVal("store-addr1", a.addr1||"");      setVal("store-city", a.city||"");      setVal("store-postal", a.postal||"");
+    setVal("store-ship-addr1", a.addr1||""); setVal("store-ship-city", a.city||""); setVal("store-ship-postal", a.postal||"");
+
+    // Mirror manual entry so chain-based defaults (terms/EDI/price) still apply.
+    if (window.applyChainAutoDetect) window.applyChainAutoDetect();
+
+    window._pendingAppConversion = { lead_id: a.id };
+    const msg = document.getElementById("store-save-msg");
+    if (msg){ msg.style.color="var(--gold)"; msg.textContent="From application — review tax code & depot, then Save to create the store and link it."; }
+  };
+
   window.appStub = function(which){ alert(which + " is the next piece we're building — not wired up yet."); };
 })();
 
