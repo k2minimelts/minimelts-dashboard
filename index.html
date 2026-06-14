@@ -1689,8 +1689,8 @@
       <div class="filters">
         <div class="filter-group"><label>Show</label>
           <select id="missed-filter-kind" onchange="loadMissedStops()">
-            <option value="order">Order stops (stuck as scheduled)</option>
             <option value="all">All missed stops</option>
+            <option value="order">Order stops (stuck as scheduled)</option>
             <option value="vending">Vending only</option>
           </select>
         </div>
@@ -5840,7 +5840,7 @@ async function updateOrdersBadge() {
 let _missedStops = [];
 
 async function loadMissedStops() {
-  const kind = (document.getElementById('missed-filter-kind') || {}).value || 'order';
+  const kind = (document.getElementById('missed-filter-kind') || {}).value || 'all';
   const body = document.getElementById('missed-body');
   if (body) body.innerHTML = '<div class="loading">Loading…</div>';
   let q = 'missed_stops?select=*&order=day_date.asc';
@@ -5966,7 +5966,7 @@ async function updateMissedBadge() {
   if (!btn) return;
   let count = 0;
   try {
-    const rows = await sbFetch('missed_stops?select=stop_id&kind=eq.order');
+    const rows = await sbFetch('missed_stops?select=stop_id');
     count = Array.isArray(rows) ? rows.length : 0;
   } catch { /* leave at 0 */ }
   btn.innerHTML = count > 0
