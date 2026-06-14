@@ -1520,6 +1520,7 @@
       <button class="tab" onclick="switchTab('lot')" data-hide-from-depot-manager>🔬 Lot Lookup</button>
       <button class="tab" onclick="switchTab('drivers')">👤 Drivers</button>
       <button class="tab" onclick="switchTab('leads')" id="tab-btn-leads" data-admin-only style="display:none">📥 Leads <span id="leads-new-badge" class="leads-badge" style="display:none">0</span></button>
+      <button class="tab" onclick="switchTab('applications')" id="tab-btn-applications" data-admin-only style="display:none">📋 Applications <span id="apps-new-badge" class="leads-badge" style="display:none">0</span></button>
       <button class="tab" onclick="switchTab('refunds')" id="tab-btn-refunds" data-refund-only style="display:none">💸 Refunds <span id="refunds-new-badge" class="leads-badge" style="display:none">0</span></button>
       <button class="tab" onclick="switchTab('access')" data-super-admin-only style="display:none">🔐 Access</button>
     </div>
@@ -2120,6 +2121,29 @@
         </div>
         <div id="leads-detail" class="leads-detail">
           <div class="leads-detail-empty">Select a lead to view details.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== APPLICATIONS TAB PANEL ===== -->
+    <div id="tab-applications" style="display:none">
+      <div class="leads-layout">
+        <div class="leads-list-col">
+          <div class="leads-toolbar">
+            <select id="apps-status-filter" onchange="window.loadApplications()">
+              <option value="review">Needs review</option>
+              <option value="approved">Approved</option>
+              <option value="signed">Signed</option>
+              <option value="converted">Converted</option>
+              <option value="declined">Declined</option>
+              <option value="all">All</option>
+            </select>
+            <button class="leads-refresh" onclick="window.loadApplications()" title="Refresh">↻</button>
+          </div>
+          <div id="apps-list" class="leads-list"><div class="leads-empty">Loading…</div></div>
+        </div>
+        <div id="apps-detail" class="leads-detail">
+          <div class="leads-detail-empty">Select an application to view details.</div>
         </div>
       </div>
     </div>
@@ -3360,6 +3384,7 @@ async function loadAll() {
   updateCorrectionsBadge();
   updateOrdersBadge();
   updateMissedBadge();
+  if (window.updateApplicationsBadge) window.updateApplicationsBadge();
 }
 
 async function updateCorrectionsBadge() {
@@ -4980,7 +5005,7 @@ document.getElementById('store-modal').addEventListener('click', e => { if (e.ta
 window.switchTab = (tab) => {
   // The schedule tab uses a flex column layout; setting display:block
   // breaks it. Every other tab is fine with block, so we special-case here.
-  ['overview','deliveries','unpaid','orders','missed','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','refunds','access'].forEach(t => {
+  ['overview','deliveries','unpaid','orders','missed','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','applications','refunds','access'].forEach(t => {
     const el = document.getElementById(`tab-${t}`);
     if (!el) return;
     if (t !== tab) {
@@ -5004,6 +5029,7 @@ window.switchTab = (tab) => {
   if (tab==='schedule') initScheduleTab();
   if (tab==='access') loadAccess();
   if (tab==='leads') window.loadLeads();
+  if (tab==='applications') window.loadApplications();
   if (tab==='refunds') window.loadRefundRequests();
   if (tab==='deliveries') window.loadUnreconciledPrints();
 };
@@ -5158,7 +5184,7 @@ window.switchTab = (tab) => {
     const filter = (document.getElementById("leads-status-filter") || {}).value || "active";
     listEl.innerHTML = '<div class="leads-empty">Loading…</div>';
 
-    let q = "leads?select=id,name,first_name,last_name,email,phone,message,status,created_at,last_touched_at&order=created_at.desc";
+    let q = "leads?select=id,name,first_name,last_name,email,phone,message,status,created_at,last_touched_at&source=neq.application&order=created_at.desc";
     if (filter === "active") q += "&status=in.(new,contacted,qualified)";
     else if (filter !== "all") q += `&status=eq.${filter}`;
 
@@ -5172,7 +5198,7 @@ window.switchTab = (tab) => {
 
   async function updateNewBadge() {
     let rows;
-    try { rows = await sbFetch("leads?select=id&status=eq.new"); } catch (e) { return; }
+    try { rows = await sbFetch("leads?select=id&status=eq.new&source=neq.application"); } catch (e) { return; }
     const n = Array.isArray(rows) ? rows.length : 0;
     const badge = document.getElementById("leads-new-badge");
     if (!badge) return;
@@ -5394,6 +5420,252 @@ window.switchTab = (tab) => {
     document.getElementById("leads-detail").innerHTML = '<div class="leads-detail-empty">Lead deleted. Select another lead.</div>';
     await window.loadLeads();
   };
+})();
+
+// ===== APPLICATIONS TAB (new-account pre-qualification) =====
+(function () {
+  let APPS_CACHE = [];
+  let APP_SELECTED = null;
+
+  function timeAgo(iso){ if(!iso) return ""; const s=Math.floor((new Date()-new Date(iso))/1000);
+    if(s<60)return"just now"; if(s<3600)return Math.floor(s/60)+"m ago"; if(s<86400)return Math.floor(s/3600)+"h ago";
+    if(s<604800)return Math.floor(s/86400)+"d ago"; return new Date(iso).toLocaleDateString('en-CA'); }
+  function fmtDateTime(iso){ return iso?new Date(iso).toLocaleString([],{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):""; }
+  function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+  function uid(){ return (window._session && window._session.user_id) || null; }
+  async function appsWrite(path, method, bodyObj, prefer){
+    return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      method, headers: { ...headers(), 'Prefer': prefer || 'return=minimal' },
+      body: bodyObj ? JSON.stringify(bodyObj) : undefined });
+  }
+
+  const BIZ = { gas_station:"Gas Station", convenience_store:"Convenience Store", family_fun_centre:"Family Fun Centre",
+    amusement_park:"Amusement Park", movie_theatre:"Movie Theatre", ice_cream_shop:"Ice Cream Shop", other:"Other" };
+  const CUST = { under_200:"Under 200/day", "200_499":"200–499/day", "500_999":"500–999/day",
+    "1000_1499":"1,000–1,499/day", "1500_plus":"1,500+/day" };
+  const PAY = { pad_eft:"Pre-authorized debit / EFT", cheque:"Cheque", cash:"Cash", e_transfer:"e-Transfer", terms:"Invoice terms (Net 30)" };
+  const SEASON = { year_round:"Year-round", seasonal:"Seasonal" };
+
+  const APP_COLS = "id,created_at,status,name,first_name,last_name,email,phone,operating_name,legal_name," +
+    "business_type,city,serviceable,nearest_distance_km,has_freezer_space,wants_ice_cream,wants_sorbet,application_extra,auto_reject_reason";
+
+  function flagsFor(a){
+    const ex = a.application_extra || {};
+    const flags = [];
+    if (a.status === "auto_rejected") flags.push("Auto-declined — no minimum commitment");
+    if (a.business_type === "other") flags.push("Business type: Other" + (ex.business_type_other ? " — " + ex.business_type_other : ""));
+    if (a.nearest_distance_km != null && Number(a.nearest_distance_km) > 100) flags.push(a.nearest_distance_km + " km from depot — possible shipping customer");
+    if (a.has_freezer_space === false) flags.push("No freezer space");
+    if (a.has_freezer_space === null) flags.push("Unsure on freezer space");
+    if (a.nearest_distance_km == null) flags.push("Address could not be geocoded");
+    return flags;
+  }
+
+  function pipelinePill(status){
+    const map = { new:["Needs review","#d29922"], approved:["Approved","#58a6ff"], signed:["Signed","#3fb950"],
+      converted:["Converted","#3fb950"], auto_rejected:["Declined","#9aa7ad"], dead:["Declined","#9aa7ad"] };
+    const m = map[status] || [status, "#9aa7ad"];
+    return '<span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;background:'+m[1]+'22;color:'+m[1]+'">'+esc(m[0])+'</span>';
+  }
+
+  window.loadApplications = async function(){
+    const listEl = document.getElementById("apps-list");
+    if (!listEl) return;
+    const filter = (document.getElementById("apps-status-filter")||{}).value || "review";
+    listEl.innerHTML = '<div class="leads-empty">Loading…</div>';
+    let q = "leads?select=" + APP_COLS + "&source=eq.application&order=created_at.desc";
+    if (filter === "review") q += "&status=eq.new";
+    else if (filter === "approved") q += "&status=eq.approved";
+    else if (filter === "signed") q += "&status=eq.signed";
+    else if (filter === "converted") q += "&status=eq.converted";
+    else if (filter === "declined") q += "&status=in.(auto_rejected,dead)";
+    let data;
+    try { data = await sbFetch(q); } catch(e){ listEl.innerHTML='<div class="leads-empty">Error loading applications.</div>'; return; }
+    APPS_CACHE = Array.isArray(data) ? data : [];
+    renderAppsList();
+    window.updateApplicationsBadge();
+  };
+
+  window.updateApplicationsBadge = async function(){
+    let rows; try { rows = await sbFetch("leads?select=id&source=eq.application&status=eq.new"); } catch(e){ return; }
+    const n = Array.isArray(rows) ? rows.length : 0;
+    const badge = document.getElementById("apps-new-badge");
+    if (!badge) return;
+    if (n>0){ badge.textContent=n; badge.style.display="inline-block"; } else badge.style.display="none";
+  };
+
+  function renderAppsList(){
+    const listEl = document.getElementById("apps-list");
+    if (!listEl) return;
+    if (!APPS_CACHE.length){ listEl.innerHTML='<div class="leads-empty">No applications in this view.</div>'; return; }
+    listEl.innerHTML = APPS_CACHE.map(function(a){
+      const active = a.id === APP_SELECTED ? " active" : "";
+      const nm = a.operating_name || a.legal_name || a.name || "(no name)";
+      const sub = [BIZ[a.business_type]||a.business_type, a.city].filter(Boolean).join(" · ");
+      const programs = [a.wants_ice_cream?"🍦":null, a.wants_sorbet?"🧊":null].filter(Boolean).join(" ");
+      const hasFlags = flagsFor(a).length > 0;
+      return '<div class="lead-row'+active+'" onclick="window.selectApplication(\''+a.id+'\')">'+
+        '<div class="lead-row-top"><span class="lead-row-name">'+esc(nm)+(hasFlags?' <span title="Needs attention" style="color:#f5a623">●</span>':'')+'</span>'+
+        '<span class="lead-row-when">'+timeAgo(a.created_at)+'</span></div>'+
+        '<div class="lead-row-email">'+esc(sub)+(programs?'  '+programs:'')+'</div>'+
+        pipelinePill(a.status)+'</div>';
+    }).join("");
+  }
+
+  let DEPOT_CODES = null;
+  async function ensureDepots(){
+    if (DEPOT_CODES) return;
+    try { const d = await sbFetch("depots?select=id,code"); DEPOT_CODES = {}; (Array.isArray(d)?d:[]).forEach(function(x){ DEPOT_CODES[x.id]=x.code; }); }
+    catch(e){ DEPOT_CODES = {}; }
+  }
+
+  window.selectApplication = async function(id){
+    APP_SELECTED = id;
+    renderAppsList();
+    const detail = document.getElementById("apps-detail");
+    detail.innerHTML = '<div class="leads-detail-empty">Loading…</div>';
+    await ensureDepots();
+    let arr, activity;
+    try {
+      arr = await sbFetch("leads?select=*&id=eq."+id+"&limit=1");
+      activity = await sbFetch("lead_activity?select=*&lead_id=eq."+id+"&order=created_at.desc");
+    } catch(e){ detail.innerHTML='<div class="leads-detail-empty">Could not load application.</div>'; return; }
+    const a = Array.isArray(arr)?arr[0]:null;
+    if (!a){ detail.innerHTML='<div class="leads-detail-empty">Could not load application.</div>'; return; }
+    a.nearest_depot = { code: (DEPOT_CODES && DEPOT_CODES[a.nearest_depot_id]) || null };
+    renderAppDetail(a, Array.isArray(activity)?activity:[]);
+  };
+
+  function row(label, val){
+    return '<div style="display:flex;gap:10px;padding:4px 0;font-size:14px"><div style="min-width:155px;color:#9aa7ad">'+esc(label)+'</div><div style="color:#e6edf3;flex:1">'+(val==null||val===""?"—":val)+'</div></div>';
+  }
+  function yn(v){ return v===true?"Yes":v===false?"No":"Not sure"; }
+
+  function renderEvent(e){
+    let text="";
+    if(e.activity_type==="created") text="Application created — "+esc(e.note||"web form");
+    else if(e.activity_type==="status_change") text="Status: "+esc(e.old_status||"?")+" → "+esc(e.new_status||"?")+(e.note?' — '+esc(e.note):'');
+    else if(e.activity_type==="note") text=esc(e.note||"");
+    else text=esc(e.activity_type);
+    return '<div class="ld-event"><div class="ld-event-dot '+esc(e.activity_type)+'"></div>'+
+      '<div class="ld-event-body"><div class="ld-event-text">'+text+'</div>'+
+      '<div class="ld-event-when">'+fmtDateTime(e.created_at)+'</div></div></div>';
+  }
+
+  function renderAppDetail(a, activity){
+    const detail = document.getElementById("apps-detail");
+    const ex = a.application_extra || {};
+    const nm = esc(a.operating_name || a.legal_name || a.name || "(no name)");
+    const flags = flagsFor(a);
+    const depotCode = (a.nearest_depot && a.nearest_depot.code) ? a.nearest_depot.code : null;
+    const svc = (a.nearest_distance_km != null)
+      ? (depotCode? esc(depotCode)+" · ":"") + a.nearest_distance_km + " km · " + (a.serviceable ? "in area" : "far — possible shipping customer")
+      : "Not determined (address didn’t geocode)";
+    const programs = [a.wants_ice_cream?"Ice cream":null, a.wants_sorbet?"Sorbet":null].filter(Boolean).join(" + ") || "—";
+    const bt = a.business_type==="other" ? "Other — "+esc(ex.business_type_other||"") : esc(BIZ[a.business_type]||a.business_type||"");
+
+    let actions = "";
+    if (a.status === "new") {
+      actions = '<button class="ld-btn primary" onclick="window.appApprove(\''+a.id+'\')">✓ Approve</button>'+
+                '<button class="ld-btn danger" onclick="window.appDecline(\''+a.id+'\')">Decline</button>'+
+                '<button class="ld-btn ghost" onclick="window.appToggleNote(true)">+ Add note</button>';
+    } else if (a.status === "approved") {
+      actions = '<button class="ld-btn primary" onclick="window.appStub(\'Send for signing\')">✍ Send for signing</button>'+
+                '<button class="ld-btn ghost" onclick="window.appToggleNote(true)">+ Add note</button>'+
+                '<button class="ld-btn ghost" onclick="window.appReopen(\''+a.id+'\')">↩ Back to review</button>';
+    } else if (a.status === "signed") {
+      actions = '<button class="ld-btn primary" onclick="window.appStub(\'Set up customer\')">🏪 Set up customer</button>'+
+                '<button class="ld-btn ghost" onclick="window.appToggleNote(true)">+ Add note</button>';
+    } else if (a.status === "auto_rejected" || a.status === "dead") {
+      actions = '<button class="ld-btn ghost" onclick="window.appReopen(\''+a.id+'\')">↩ Move to review</button>'+
+                '<button class="ld-btn ghost" onclick="window.appToggleNote(true)">+ Add note</button>';
+    } else {
+      actions = '<button class="ld-btn ghost" onclick="window.appToggleNote(true)">+ Add note</button>';
+    }
+
+    const flagsHtml = flags.length
+      ? '<div style="background:rgba(245,166,35,0.12);border:1px solid rgba(245,166,35,0.4);border-radius:8px;padding:10px 12px;margin:0 0 16px">'+
+        '<div style="font-weight:600;color:#f5a623;margin-bottom:4px">Needs review</div><ul style="margin:0;padding-left:18px;color:#e6edf3;font-size:14px">'+
+        flags.map(function(f){return '<li>'+esc(f)+'</li>';}).join("")+'</ul></div>'
+      : "";
+
+    detail.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h2 class="ld-name" style="margin:0">'+nm+'</h2>'+pipelinePill(a.status)+'</div>'+
+      '<p class="ld-contact">'+esc(a.legal_name||"")+' · received '+fmtDateTime(a.created_at)+'</p>'+
+      flagsHtml +
+      '<div class="ld-section-label">Contact</div>'+
+      row("Name", esc(a.name||((a.first_name||"")+" "+(a.last_name||"")).trim()) + (a.applicant_title? " ("+esc(a.applicant_title)+")":"")) +
+      row("Email", '<a href="mailto:'+esc(a.email)+'">'+esc(a.email)+'</a>') +
+      row("Phone", esc(a.phone)) +
+      '<div class="ld-section-label">Business</div>'+
+      row("Legal name", esc(a.legal_name)) +
+      row("Operating name", esc(a.operating_name)) +
+      row("Type", bt) +
+      row("Years in business", a.years_in_business) +
+      row("Locations", a.num_locations) +
+      '<div class="ld-section-label">Location</div>'+
+      row("Address", esc([a.addr1,a.city,a.province,a.postal].filter(Boolean).join(", "))) +
+      row("Serviceability", svc) +
+      '<div class="ld-section-label">Fit</div>'+
+      row("Freezer space", yn(a.has_freezer_space)) +
+      row("Power capable", yn(a.has_power_outlet)) +
+      row("Customers/day", esc(CUST[ex.customers_per_day]||ex.customers_per_day||"")) +
+      row("Sells novelties now", ex.sells_novelties===true?("Yes"+(ex.sells_novelties_monthly?" ("+esc(ex.sells_novelties_monthly)+")":"")):ex.sells_novelties===false?"No":"—") +
+      row("Open", esc(SEASON[ex.seasonality]||ex.seasonality||"")) +
+      '<div class="ld-section-label">Program</div>'+
+      row("Interested in", esc(programs)) +
+      row("Commits to minimum", yn(a.commits_to_minimum)) +
+      row("Payment preference", esc(PAY[a.payment_pref]||a.payment_pref||"")) +
+      (a.auto_reject_reason? row("Auto-decline reason", esc(a.auto_reject_reason)) : "") +
+      '<div class="ld-section-label">Status</div>'+
+      '<div class="ld-actions">'+actions+'</div>'+
+      '<div id="app-note-box" class="ld-compose" style="display:none">'+
+        '<div id="app-note-msg"></div>'+
+        '<textarea id="app-note-body" placeholder="Internal note (not emailed)…"></textarea>'+
+        '<button class="ld-btn ghost" onclick="window.appSaveNote(\''+a.id+'\')">Save note</button> '+
+        '<button class="ld-btn ghost" onclick="window.appToggleNote(false)">Cancel</button></div>'+
+      '<div class="ld-section-label">Activity</div>'+
+      '<div class="ld-timeline">'+(activity.length?activity.map(renderEvent).join(""):'<div class="leads-empty">No activity yet.</div>')+'</div>';
+  }
+
+  async function curStatus(id){
+    try{ const a = await sbFetch("leads?select=status&id=eq."+id+"&limit=1"); return Array.isArray(a)&&a[0]?a[0].status:null; }catch(e){ return null; }
+  }
+  async function appSetStatus(id, to, from){
+    const u = uid();
+    const r = await appsWrite("leads?id=eq."+id,"PATCH",{ status:to, last_touched_by:u, last_touched_at:new Date().toISOString() });
+    if(!r.ok){ alert("Update failed."); return; }
+    await appsWrite("lead_activity","POST",{ lead_id:id, actor:u, activity_type:"status_change", old_status:from, new_status:to });
+    await window.selectApplication(id); await window.loadApplications();
+  }
+
+  window.appApprove = async function(id){
+    if(!confirm("Approve this application? It moves to the Approved stage, ready for signing.")) return;
+    await appSetStatus(id, "approved", await curStatus(id));
+  };
+  window.appDecline = async function(id){
+    const reason = prompt("Decline this application. Optional note (shown in the activity log):", "");
+    if (reason === null) return;
+    const u = uid(); const from = await curStatus(id);
+    const r = await appsWrite("leads?id=eq."+id,"PATCH",{ status:"dead", last_touched_by:u, last_touched_at:new Date().toISOString() });
+    if(!r.ok){ alert("Decline failed."); return; }
+    await appsWrite("lead_activity","POST",{ lead_id:id, actor:u, activity_type:"status_change", old_status:from, new_status:"dead", note: (reason||"").trim()||null });
+    await window.selectApplication(id); await window.loadApplications();
+  };
+  window.appReopen = async function(id){ await appSetStatus(id, "new", await curStatus(id)); };
+
+  window.appToggleNote = function(show){ const b=document.getElementById("app-note-box"); if(b) b.style.display=show?"block":"none"; };
+  window.appSaveNote = async function(id){
+    const ta=document.getElementById("app-note-body"); const msg=document.getElementById("app-note-msg");
+    const note=(ta.value||"").trim();
+    if(!note){ msg.innerHTML='<div class="ld-inline-msg err">Note is empty.</div>'; return; }
+    const u=uid();
+    const r=await appsWrite("lead_activity","POST",{ lead_id:id, actor:u, activity_type:"note", note:note });
+    if(!r.ok){ msg.innerHTML='<div class="ld-inline-msg err">Save failed.</div>'; return; }
+    await appsWrite("leads?id=eq."+id,"PATCH",{ last_touched_by:u, last_touched_at:new Date().toISOString() });
+    await window.selectApplication(id);
+  };
+  window.appStub = function(which){ alert(which + " is the next piece we're building — not wired up yet."); };
 })();
 
 // ===== REFUNDS TAB =====
