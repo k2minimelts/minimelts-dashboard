@@ -1556,8 +1556,8 @@
       <div class="filters">
         <div class="filter-group"><label>Search</label><input type="text" id="filter-search" placeholder="Store, driver, receipt..." oninput="applyFilters()" style="min-width:200px"/></div>
         <div class="filter-group"><label>Driver</label><select id="filter-driver" onchange="applyFilters()"><option value="">All Drivers</option></select></div>
-        <div class="filter-group"><label>Payment</label><select id="filter-payment" onchange="applyFilters()"><option value="">All Payments</option><option value="Terms">Terms</option><option value="Cash">Cash</option><option value="Cheque">Cheque</option><option value="E-Transfer">E-Transfer</option></select></div>
-        <div class="filter-group"><label>QB Status</label><select id="filter-qb" onchange="applyFilters()"><option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="exported">Exported</option></select></div>
+        <div class="filter-group"><label>Payment</label><select id="filter-payment" onchange="applyFilters()"><option value="">All Payments</option><option value="Terms">Terms</option><option value="Cash">Cash</option><option value="Cheque">Cheque</option><option value="Mail Cheque">Mail Cheque</option><option value="E-Transfer">E-Transfer</option></select></div>
+        <div class="filter-group"><label>QB Status</label><select id="filter-qb" onchange="applyFilters()"><option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="queued">Queued</option><option value="exported">Exported</option><option value="failed">Failed</option></select></div>
         <div class="filter-group"><label>From</label><input type="date" id="filter-from" onchange="applyFilters()"/></div>
         <div class="filter-group"><label>To</label><input type="date" id="filter-to" onchange="applyFilters()"/></div>
         <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
@@ -3516,6 +3516,7 @@ function qbBadge(s, err) {
   if (err && s !== 'exported') return `<span class="badge" style="background:rgba(248,81,73,0.15);color:#f85149;border:1px solid rgba(248,81,73,0.4)" title="${escapeHtml(String(err))}">❌ Failed</span>`;
   if (s === 'exported') return `<span class="badge badge-exported">✅ Exported</span>`;
   if (s === 'exporting') return `<span class="badge badge-exporting">⏳ Exporting...</span>`;
+  if (s === 'queued') return `<span class="badge badge-exporting">📤 Queued for export</span>`;
   if (s === 'approved') return `<span class="badge badge-etransfer">📤 Approved</span>`;
   return `<span class="badge badge-pending">⏳ Pending</span>`;
 }
@@ -3893,7 +3894,8 @@ window.applyFilters = () => {
     if (search && !`${d.store_name} ${d.driver_name} ${d.receipt_number}`.toLowerCase().includes(search)) return false;
     if (driver && d.driver_name !== driver) return false;
     if (payment && d.payment_type !== payment) return false;
-    if (qb && (d.qb_status||'pending') !== qb) return false;
+    if (qb === 'failed') { if (!hasQbError(d)) return false; }
+    else if (qb && (d.qb_status||'pending') !== qb) return false;
     if (from && d.delivered_at < from) return false;
     if (to && d.delivered_at > to+'T23:59:59') return false;
     return true;
@@ -3915,7 +3917,7 @@ window.batchApprove = async () => {
 
   const alreadyDone = checked.filter(id => {
     const status = allDeliveries.find(d=>d.id===id)?.qb_status||'pending';
-    return status === 'approved' || status === 'exported' || status === 'exporting';
+    return status === 'approved' || status === 'queued' || status === 'exported' || status === 'exporting';
   });
   const toApprove = checked.filter(id => {
     const status = allDeliveries.find(d=>d.id===id)?.qb_status||'pending';
@@ -3935,69 +3937,100 @@ window.batchApprove = async () => {
     if (d) d.qb_status = 'approved';
   }
   renderTable(filteredDeliveries, 'table-body', 'delivery-count');
-  alert(`✅ ${toApprove.length} deliveries approved and ready for QB export.`);
+  alert(`✅ ${toApprove.length} deliveries approved. Select them and click "📤 Export Selected to QB" to send them to QuickBooks.`);
 };
 
 window.exportToQB = async () => {
   const checked = [...document.querySelectorAll('.delivery-cb:checked')].map(c => c.dataset.id);
   if (!checked.length) { alert('Select at least one delivery to export to QuickBooks.'); return; }
 
-  const notApproved = checked.filter(id => (allDeliveries.find(d=>d.id===id)?.qb_status||'pending') !== 'approved');
-  const alreadyExported = checked.filter(id => (allDeliveries.find(d=>d.id===id)?.qb_status||'pending') === 'exported');
+  const statusOf = (id) => (allDeliveries.find(d => d.id === id)?.qb_status || 'pending');
+  const alreadyExported = checked.filter(id => statusOf(id) === 'exported');
+  const alreadyQueued   = checked.filter(id => statusOf(id) === 'queued');
+  const toQueue         = checked.filter(id => statusOf(id) === 'approved');
+  const notApproved     = checked.filter(id => {
+    const s = statusOf(id);
+    return s !== 'approved' && s !== 'queued' && s !== 'exported';
+  });
 
   if (alreadyExported.length) { alert(`${alreadyExported.length} selected deliveries are already exported. Please deselect them.`); return; }
-  if (notApproved.length) { alert(`${notApproved.length} selected deliveries are not yet approved.\n\nPlease click the "📤 Approve" button on each delivery first before exporting to QuickBooks.`); return; }
+  if (notApproved.length) { alert(`${notApproved.length} selected deliveries are not yet approved.\n\nClick "📤 Approve" on each one first, then export.`); return; }
+  if (!toQueue.length) {
+    if (alreadyQueued.length) alert(`${alreadyQueued.length} selected ${alreadyQueued.length === 1 ? 'delivery is' : 'deliveries are'} already queued — the QuickBooks Web Connector will export them on its next run.`);
+    return;
+  }
 
-  if (!confirm(`Export ${checked.length} approved deliveries to QuickBooks?`)) return;
+  if (!confirm(`Queue ${toQueue.length} approved ${toQueue.length === 1 ? 'delivery' : 'deliveries'} for QuickBooks export?${alreadyQueued.length ? `\n(${alreadyQueued.length} already queued will be skipped.)` : ''}`)) return;
 
-  // Show exporting badge immediately
-  for (const id of checked) {
-    const d = allDeliveries.find(x => x.id === id);
-    if (d) d.qb_status = 'exporting';
+  // Persist the queue state. This is what actually hands the invoices to the
+  // Web Connector — approval alone no longer exports anything. Only invoices in
+  // 'queued' get picked up by server.js.
+  let queuedCount = 0;
+  for (const id of toQueue) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=eq.${id}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ qb_status: 'queued', qb_export_error: null })
+    });
+    if (res.ok) {
+      const d = allDeliveries.find(x => x.id === id);
+      if (d) { d.qb_status = 'queued'; d.qb_export_error = null; }
+      queuedCount++;
+    }
   }
   renderTable(filteredDeliveries, 'table-body', 'delivery-count');
+  if (queuedCount === 0) { alert('Could not queue the selected deliveries. Please try again.'); return; }
 
-  // Poll every 5 seconds until all checked IDs are exported (max 10 minutes)
-  const exportingIds = new Set(checked);
+  // Watch the queued invoices flip to exported (success) or back to approved+error
+  // (server.js reverts on a QB rejection). On timeout we do NOT revert — they stay
+  // queued and the Web Connector will export them whenever it next runs.
+  const watchIds = new Set([...toQueue, ...alreadyQueued]);
   let attempts = 0;
   const maxAttempts = 120; // 10 minutes at 5s intervals
 
+  const refresh = async () => {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=in.(${[...watchIds].join(',')})&select=id,qb_status,qb_export_error`, { headers: headers() });
+    return res.json();
+  };
+
   const poll = setInterval(async () => {
     attempts++;
-    if (attempts > maxAttempts || exportingIds.size === 0) {
+    if (attempts > maxAttempts || watchIds.size === 0) {
       clearInterval(poll);
-      if (exportingIds.size > 0) {
-        // Timed out - reset to approved so QB connector can retry
-        for (const id of exportingIds) {
-          const d = allDeliveries.find(x => x.id === id);
-          if (d) d.qb_status = 'approved';
-        }
-        renderTable(filteredDeliveries, 'table-body', 'delivery-count');
-        alert('QB export timed out. The QB Web Connector may not be running. Please check QuickBooks and try again.');
+      if (watchIds.size > 0) {
+        try {
+          const rows = await refresh();
+          for (const row of rows) {
+            const d = allDeliveries.find(x => x.id === row.id);
+            if (d) { d.qb_status = row.qb_status; d.qb_export_error = row.qb_export_error; }
+          }
+          renderTable(filteredDeliveries, 'table-body', 'delivery-count');
+        } catch (e) { /* ignore */ }
+        alert('Still queued. The QuickBooks Web Connector hasn\'t exported these yet — they\'ll go through on its next run. (Make sure QuickBooks and the Web Connector are running.)');
       }
       return;
     }
 
-    // Check current status of exporting deliveries
-    const ids = [...exportingIds].join(',');
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=in.(${ids})&select=id,qb_status`, { headers: headers() });
-      const rows = await res.json();
+      const rows = await refresh();
       let anyChanged = false;
       for (const row of rows) {
         if (row.qb_status === 'exported') {
-          exportingIds.delete(row.id);
+          watchIds.delete(row.id);
           const d = allDeliveries.find(x => x.id === row.id);
-          if (d) d.qb_status = 'exported';
+          if (d) { d.qb_status = 'exported'; d.qb_export_error = null; }
+          anyChanged = true;
+        } else if (row.qb_status === 'approved' && row.qb_export_error) {
+          // server.js reverted this one on a QB error — surface it and stop watching.
+          watchIds.delete(row.id);
+          const d = allDeliveries.find(x => x.id === row.id);
+          if (d) { d.qb_status = 'approved'; d.qb_export_error = row.qb_export_error; }
           anyChanged = true;
         }
       }
       if (anyChanged) renderTable(filteredDeliveries, 'table-body', 'delivery-count');
-      if (exportingIds.size === 0) {
-        clearInterval(poll);
-        // Brief success flash already visible from badge change
-      }
-    } catch(e) { /* network hiccup — keep polling */ }
+      if (watchIds.size === 0) clearInterval(poll);
+    } catch (e) { /* network hiccup — keep polling */ }
   }, 5000);
 };
 
