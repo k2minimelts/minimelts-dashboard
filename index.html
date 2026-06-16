@@ -1764,7 +1764,7 @@
             <div style="font-size:11px;letter-spacing:1.5px;color:var(--muted);font-weight:700;margin-bottom:10px">FILTERS</div>
             <div style="margin-bottom:14px;position:relative">
               <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;letter-spacing:0.5px">Search</label>
-              <input id="map-search" type="text" autocomplete="off" placeholder="Type name, store number (e.g. 1234), or city..." oninput="window.onMapSearchInput()" onfocus="window.onMapSearchInput()" onblur="setTimeout(()=>{const d=document.getElementById('map-search-results');if(d)d.style.display='none';},200)" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-size:13px;outline:none"/>
+              <input id="map-search" type="text" autocomplete="off" placeholder="Type a store or vending machine name, number, or city..." oninput="window.onMapSearchInput()" onfocus="window.onMapSearchInput()" onblur="setTimeout(()=>{const d=document.getElementById('map-search-results');if(d)d.style.display='none';},200)" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-size:13px;outline:none"/>
               <div id="map-search-results" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;max-height:300px;overflow-y:auto;z-index:1000;box-shadow:0 4px 12px rgba(0,0,0,0.4)"></div>
             </div>
             <div style="margin-bottom:14px">
@@ -8887,14 +8887,15 @@ window.onMapSearchInput = () => {
     return;
   }
 
-  // Find matching stores (max 10), prioritized: exact ST-code match > prefix match > substring match
+  // Find matching stores AND vending machines (max 10 combined),
+  // prioritized: exact ST-code match > prefix match > substring match.
   const matches = [];
   const seen = new Set();
   // If user typed only digits, also try matching against st-NNNN
   const qAlt = /^\d+$/.test(q) ? `st-${q}` : null;
 
   for (const s of _mapStores) {
-    if (seen.has(s.id)) continue;
+    if (seen.has('s:' + s.id)) continue;
     const name = (s.name || '').toLowerCase();
     const qbName = (s.qb_name || '').toLowerCase();
     const code = (s.public_code || '').toLowerCase();
@@ -8907,11 +8908,31 @@ window.onMapSearchInput = () => {
     else if (code.includes(q) || (qAlt && code.includes(qAlt))) score = 40;
     else if (city.includes(q)) score = 20;
     if (score > 0) {
-      matches.push({ store: s, score });
-      seen.add(s.id);
+      matches.push({ type: 'store', store: s, score, label: s.name || '' });
+      seen.add('s:' + s.id);
     }
   }
-  matches.sort((a, b) => b.score - a.score || a.store.name.localeCompare(b.store.name));
+
+  // Vending machines — match the machine's descriptive name, its venue, address,
+  // and city (the same fields the vending pins themselves filter on).
+  for (const m of _mapMachines) {
+    if (seen.has('m:' + m.id)) continue;
+    const mname = (m.machine_name || '').toLowerCase();
+    const vname = (m.venue_name || '').toLowerCase();
+    const city = (m.city || '').toLowerCase();
+    const addr = (m.address || '').toLowerCase();
+    let score = 0;
+    if (mname.startsWith(q) || vname.startsWith(q)) score = 78;
+    else if (mname.includes(q) || vname.includes(q)) score = 48;
+    else if (addr.includes(q)) score = 30;
+    else if (city.includes(q)) score = 18;
+    if (score > 0) {
+      matches.push({ type: 'machine', machine: m, score, label: m.machine_name || m.venue_name || 'Vending' });
+      seen.add('m:' + m.id);
+    }
+  }
+
+  matches.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
   const top = matches.slice(0, 10);
 
   if (top.length === 0) {
@@ -8920,7 +8941,24 @@ window.onMapSearchInput = () => {
     return;
   }
 
-  dropdown.innerHTML = top.map(({ store: s }) => {
+  dropdown.innerHTML = top.map((item) => {
+    if (item.type === 'machine') {
+      const m = item.machine;
+      const sub = [
+        (m.venue_name && m.venue_name !== m.machine_name) ? m.venue_name : '',
+        [m.city, m.province].filter(Boolean).join(', '),
+        m.depot_code || ''
+      ].filter(Boolean).join(' · ');
+      return `<div onmousedown="window.flyToMapMachine('${m.id}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="width:9px;height:9px;background:var(--mm-pink);display:inline-block;flex-shrink:0;transform:rotate(45deg)"></span>
+          <span style="color:var(--text);font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtmlMap(item.label)}</span>
+          <span style="background:rgba(236,90,156,0.15);color:var(--mm-pink);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600">VENDING</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;margin-left:15px">${escapeHtmlMap(sub)}</div>
+      </div>`;
+    }
+    const s = item.store;
     const depotColor = DEPOT_COLORS[s.depot_code] || DEFAULT_PIN_COLOR;
     const inactive = !s.active;
     return `<div onmousedown="window.flyToMapStore('${s.id}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background=''">
@@ -8987,6 +9025,50 @@ window.flyToMapStore = (storeId) => {
         </div>
       </div>`;
     new mapboxgl.Popup({ closeButton: true, offset: 10 }).setLngLat([parseFloat(s.lng), parseFloat(s.lat)]).setHTML(html).addTo(_map);
+  }, 700);
+};
+
+// Click handler from the autocomplete: fly to a vending machine and open its popup
+window.flyToMapMachine = (machineId) => {
+  const m = _mapMachines.find(x => x.id === machineId);
+  if (!m || m.lng == null || m.lat == null) return;
+  const dropdown = document.getElementById('map-search-results');
+  if (dropdown) dropdown.style.display = 'none';
+
+  // Make sure vending pins are visible, and that depot/province filters won't
+  // hide this machine — mirror the store fly-to behavior.
+  let needsRefilter = false;
+  const showVenues = document.getElementById('map-show-venues');
+  if (showVenues && !showVenues.checked) { showVenues.checked = true; needsRefilter = true; }
+  const provSel = document.getElementById('map-province-filter');
+  if (provSel && provSel.value && provSel.value !== m.province) { provSel.value = ''; needsRefilter = true; }
+  const depotSel = document.getElementById('map-depot-filter');
+  if (depotSel && depotSel.value && depotSel.value !== m.depot_id) { depotSel.value = ''; needsRefilter = true; }
+  if (needsRefilter) {
+    rebuildStoreFilterOptions && rebuildStoreFilterOptions();
+    applyMapFiltersInternal();
+  }
+
+  _map.flyTo({ center: [parseFloat(m.lng), parseFloat(m.lat)], zoom: 14, speed: 1.2 });
+  setTimeout(() => {
+    const title = escapeHtmlMap(m.machine_name || m.venue_name || 'Vending machine');
+    const venueLine = (m.venue_name && m.venue_name !== m.machine_name)
+      ? `<div style="font-size:12px;color:#555;margin-bottom:6px">${escapeHtmlMap(m.venue_name)}</div>` : '';
+    const html = `
+      <div style="font-family:inherit;color:#0d1117;min-width:220px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:4px">${title}</div>
+        ${venueLine}
+        <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
+          <span style="background:#fce7f3;color:#9d174d;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">VENDING</span>
+          ${m.depot_code ? `<span style="background:${DEPOT_COLORS[m.depot_code]||'#888'};color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">${escapeHtmlMap(m.depot_code)}</span>`:''}
+          ${m.pct_sold != null ? `<span style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:4px;font-size:11px">${Math.round(m.pct_sold)}% sold</span>`:''}
+        </div>
+        <div style="font-size:12px;color:#444;line-height:1.5">
+          ${m.address ? escapeHtmlMap(m.address) + '<br>' : ''}
+          ${[m.city, m.province].filter(Boolean).map(escapeHtmlMap).join(', ')}
+        </div>
+      </div>`;
+    new mapboxgl.Popup({ closeButton: true, offset: 10 }).setLngLat([parseFloat(m.lng), parseFloat(m.lat)]).setHTML(html).addTo(_map);
   }, 700);
 };
 
