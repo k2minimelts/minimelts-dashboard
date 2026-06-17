@@ -8117,6 +8117,43 @@ let _mapRoutes = [];
 let _mapPendingOrders = [];
 let _mapInitialized = false;
 
+// ── Vending machine service notes (persistent, machine-level) ─────────────
+// Loaded straight from vending_machines (authenticated read) rather than the
+// public vending_machines_map view, so the notes never reach an anon surface.
+// Shared by the Map tab popup (edit) and the scheduler vending popup (display).
+let _machineNotes = new Map();  // vending_machines.id -> persistent service note
+async function loadMachineNotes() {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/vending_machines?select=id,notes&notes=not.is.null&limit=5000`, { headers: headers() });
+    if (!r.ok) return;
+    const rows = await r.json();
+    if (Array.isArray(rows)) _machineNotes = new Map(rows.map(x => [x.id, x.notes]));
+  } catch (e) { console.warn('[machine notes] load failed', e); }
+}
+
+// Save a machine's service note via the SECURITY DEFINER RPC (admins + depot
+// managers of that machine's depot). Called from the Map tab vending popup.
+window.saveMachineNote = async function(machineId) {
+  const ta = document.getElementById('mnote-' + machineId);
+  const status = document.getElementById('mnote-status-' + machineId);
+  if (!ta) return;
+  if (status) { status.textContent = 'Saving…'; status.style.color = '#6b7280'; }
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/set_vending_machine_notes`, {
+      method: 'POST',
+      headers: { ...headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_machine_id: machineId, p_notes: ta.value }),
+    });
+    if (!r.ok) throw new Error((await r.text()) || ('HTTP ' + r.status));
+    const saved = await r.json(); // cleaned note text, or null if cleared
+    if (saved == null) _machineNotes.delete(machineId); else _machineNotes.set(machineId, saved);
+    const m = _mapMachines.find(x => x.id === machineId); if (m) m.notes = saved;
+    if (status) { status.textContent = saved == null ? '✓ Cleared' : '✓ Saved'; status.style.color = '#15803d'; }
+  } catch (e) {
+    if (status) { status.textContent = '✗ ' + (e.message || 'Failed'); status.style.color = '#b91c1c'; }
+  }
+};
+
 // ── Per-store route reassignment (admin-only) ─────────────────────────────
 // Called from the store popup's "Change route" link. Renders an inline
 // dropdown + save controls into the editor div under the popup's route line.
@@ -8350,6 +8387,7 @@ async function loadMapData() {
   _mapDepots = depots;
   _mapRoutes = routes;
   _mapPendingOrders = pendingOrders;
+  await loadMachineNotes();
 }
 
 function populateMapFilterDropdowns() {
@@ -8811,6 +8849,17 @@ async function initMapboxGL() {
     const machineName = p.machine_name && p.machine_name !== '' ? p.machine_name : '(unnamed machine)';
     const venueName = p.venue_name && p.venue_name !== '' ? p.venue_name : '';
 
+    const curNote = _machineNotes.get(p.id) || '';
+    const noteEditor = `
+        <div style="border-top:1px solid #e5e7eb;margin-top:8px;padding-top:8px">
+          <div style="font-size:11px;color:#6b7280;font-weight:700;margin-bottom:4px">🔧 SERVICE NOTE</div>
+          <textarea id="mnote-${escapeHtmlMap(p.id)}" rows="2" placeholder="e.g. replace bill acceptor, needs new bulb…" style="width:100%;box-sizing:border-box;font-family:inherit;font-size:12px;border:1px solid #d1d5db;border-radius:6px;padding:6px;resize:vertical;color:#0d1117">${escapeHtmlMap(curNote)}</textarea>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+            <button onclick="saveMachineNote('${escapeHtmlMap(p.id)}')" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer">Save note</button>
+            <span id="mnote-status-${escapeHtmlMap(p.id)}" style="font-size:11px"></span>
+          </div>
+        </div>`;
+
     const html = `
       <div style="font-family:inherit;color:#0d1117;min-width:240px;max-width:300px">
         <div style="font-weight:700;font-size:14px;margin-bottom:2px">${escapeHtmlMap(machineName)}</div>
@@ -8830,6 +8879,7 @@ async function initMapboxGL() {
           ${daysSinceVisit != null ? `<div>Last visit: <strong>${daysSinceVisit === 0 ? 'today' : daysSinceVisit + 'd ago'}</strong></div>` : ''}
           ${p.address ? `<div style="color:#6b7280;margin-top:4px">${escapeHtmlMap(p.address)}, ${escapeHtmlMap(p.city || '')}</div>` : ''}
         </div>
+        ${noteEditor}
       </div>`;
     new mapboxgl.Popup({ closeButton: true, offset: 10 }).setLngLat(coords).setHTML(html).addTo(_map);
   });
@@ -10372,6 +10422,7 @@ async function schedLoadOrdersAndOverdue() {
   let overdueRows = [], orderRows = [], vendingRows = [], routesLite = [], skippedRows = [];
   try {
     [overdueRows, orderRows, vendingRows, routesLite, skippedRows] = await Promise.all([overduePromise, ordersPromise, vendingPromise, routesLitePromise, skippedPromise]);
+    await loadMachineNotes();
     if (!Array.isArray(overdueRows)) overdueRows = [];
     if (!Array.isArray(orderRows)) orderRows = [];
     if (!Array.isArray(vendingRows)) vendingRows = [];
@@ -10843,6 +10894,7 @@ function schedInitMap() {
       const online = p.mqtt_online === true || p.mqtt_online === 'true';
       const assigned = p.assigned === true || p.assigned === 'true';
       const needsScheduling = p.needs_scheduling === true || p.needs_scheduling === 'true';
+      const schedNote = (p.machine_id && _machineNotes.get(p.machine_id)) || '';
 
       // % sold colour-coded pill (green/yellow/red gradient — same thresholds as Map tab)
       let pctColor = '#888', pctBg = '#f3f4f6';
@@ -10881,6 +10933,7 @@ function schedInitMap() {
             ${daysSinceVisit != null ? `<div>Last visit: <strong>${daysSinceVisit === 0 ? 'today' : daysSinceVisit + 'd ago'}</strong></div>` : ''}
             ${p.address ? `<div style="color:#6b7280;margin-top:4px">${schedEscapeHtml(p.address)}${p.city ? ', ' + schedEscapeHtml(p.city) : ''}</div>` : ''}
           </div>
+          ${schedNote ? `<div style="border-top:1px solid #e5e7eb;margin-top:6px;padding-top:6px"><div style="font-size:11px;color:#9d174d;font-weight:700;margin-bottom:2px">🔧 SERVICE NOTE</div><div style="font-size:12px;color:#374151;background:#fff4ec;border-left:3px solid #ff7a3a;border-radius:3px;padding:6px 8px">${schedEscapeHtml(schedNote)}</div></div>` : ''}
           ${assigned ? '' : `<div style="font-size:11px;color:#9ca3af;margin-top:6px">↪ Right-click to ${needsScheduling ? 'remove the scheduling flag' : 'flag “needs scheduling”'}</div>`}
         </div>`;
 
