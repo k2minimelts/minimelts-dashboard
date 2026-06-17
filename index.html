@@ -1571,6 +1571,7 @@
         <div class="table-header">
           <span class="table-title">Deliveries</span>
           <span class="table-count" id="delivery-count">Loading...</span>
+          <button class="btn-sm" onclick="window.refreshDeliveriesTab(this)" style="margin-left:auto" title="Refetch data from server">🔄 Refresh</button>
         </div>
         <div id="table-body"><div class="loading">Loading deliveries...</div></div>
       </div>
@@ -1610,7 +1611,7 @@
            Shipping rows have no dollar total (invoice amount lives in QB) and
            age from shipped_at; DSD rows age from delivered_at. -->
       <div class="table-wrap">
-        <div class="table-header"><span class="table-title">⚠️ Awaiting Payment</span><span class="table-count" id="unpaid-count">Loading...</span></div>
+        <div class="table-header"><span class="table-title">⚠️ Awaiting Payment</span><span class="table-count" id="unpaid-count">Loading...</span><button class="btn-sm" onclick="window.refreshUnpaidTab(this)" style="margin-left:auto" title="Refetch data from server">🔄 Refresh</button></div>
         <div id="unpaid-body"><div class="loading">Loading...</div></div>
       </div>
     </div>
@@ -1667,6 +1668,7 @@
         <div class="table-header">
           <span class="table-title">📦 Orders</span>
           <span class="table-count" id="orders-count">Loading...</span>
+          <button class="btn-sm" onclick="window.refreshOrdersTab(this)" style="margin-left:auto" title="Refetch data from server">🔄 Refresh</button>
         </div>
         <div id="orders-body"><div class="loading">Loading orders...</div></div>
         <div style="padding:10px 16px;display:flex;align-items:center;justify-content:flex-end;gap:8px">
@@ -8242,6 +8244,44 @@ async function refreshMapData() {
   }
 }
 window.refreshMapData = refreshMapData;
+
+// ── Per-tab refresh buttons ──────────────────────────────────────────────
+// Re-fetch a single tab's data without a full browser reload (mirrors the map
+// tab's 🔄 Refresh). Exposed on window so the inline onclick handlers can reach
+// them — top-level fns in a <script type="module"> are NOT global by default.
+// Deliveries and Unpaid both derive from the deliveries dataset (allDeliveries)
+// loaded by loadAll(), which also re-renders the unpaid view (renderUnpaid +
+// loadShippingUnpaid), so both use loadAll(). Orders has its own loadOrders().
+async function _tabRefresh(btn, loader) {
+  if (btn && btn.dataset.busy === '1') return;
+  let orig;
+  if (btn) {
+    btn.dataset.busy = '1';
+    orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+    btn.innerHTML = '⏳ Refreshing…';
+  }
+  try {
+    await loader();
+  } catch (e) {
+    console.error('Tab refresh failed:', e);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.style.opacity = '';
+      btn.innerHTML = orig;
+      btn.dataset.busy = '0';
+    }
+  }
+}
+// Deliveries: reload the dataset, then re-apply the tab's active filters so a
+// refresh doesn't silently clear the user's search/driver/payment/date picks.
+window.refreshDeliveriesTab = (btn) => _tabRefresh(btn, async () => { await loadAll(); window.applyFilters(); });
+// Unpaid: loadAll() re-renders the unpaid view and reads its filter inputs fresh.
+window.refreshUnpaidTab = (btn) => _tabRefresh(btn, loadAll);
+// Orders: loadOrders() reads the orders filter selects when building its query.
+window.refreshOrdersTab = (btn) => _tabRefresh(btn, loadOrders);
 
 function fitMapToAllData() {
   if (!_map) return;
