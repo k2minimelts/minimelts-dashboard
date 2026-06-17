@@ -1670,7 +1670,7 @@
           <span class="table-count" id="orders-count">Loading...</span>
           <button class="btn-sm" onclick="window.refreshOrdersTab(this)" style="margin-left:auto" title="Refetch data from server">🔄 Refresh</button>
         </div>
-        <div id="orders-body"><div class="loading">Loading orders...</div></div>
+        <div id="orders-body" style="overflow-x:auto"><div class="loading">Loading orders...</div></div>
         <div style="padding:10px 16px;display:flex;align-items:center;justify-content:flex-end;gap:8px">
           <button id="orders-prev-btn" onclick="window.ordersPrevPage()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer">← Prev</button>
           <span id="orders-page-label" style="color:var(--muted);font-size:12px;min-width:90px;text-align:center">Page 1</span>
