@@ -3534,10 +3534,10 @@ window.resetExportError = async (id) => {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=eq.${id}`, {
     method: 'PATCH',
     headers: { ...headers(), 'Prefer': 'return=minimal' },
-    body: JSON.stringify({ qb_status: 'pending', qb_export_error: null })
+    body: JSON.stringify({ qb_status: 'pending', qb_export_error: null, export_requested: false })
   });
   if (!res.ok) { alert('Reset failed: ' + (await res.text())); return; }
-  if (d) { d.qb_status = 'pending'; d.qb_export_error = null; }
+  if (d) { d.qb_status = 'pending'; d.qb_export_error = null; d.export_requested = false; }
   applyFilters();
 };
 
@@ -3952,6 +3952,17 @@ window.exportToQB = async () => {
   if (notApproved.length) { alert(`${notApproved.length} selected deliveries are not yet approved.\n\nPlease click the "📤 Approve" button on each delivery first before exporting to QuickBooks.`); return; }
 
   if (!confirm(`Export ${checked.length} approved deliveries to QuickBooks?`)) return;
+
+  // Request export. The QBWC exports only approved deliveries with
+  // export_requested=true, so THIS write — not approval — is what actually
+  // queues an invoice for QuickBooks. (Only export_requested changes here, so
+  // the lock trigger permits it on an approved row.)
+  const reqRes = await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=in.(${checked.join(',')})`, {
+    method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ export_requested: true })
+  });
+  if (!reqRes.ok) { alert('Could not queue for export: ' + (await reqRes.text())); return; }
+  for (const id of checked) { const d = allDeliveries.find(x => x.id === id); if (d) d.export_requested = true; }
 
   // Show exporting badge immediately
   for (const id of checked) {
@@ -4406,8 +4417,8 @@ window.unapproveQB = async (id) => {
   const d = allDeliveries.find(x => x.id === id);
   if (!d || d.qb_status === 'exported') { alert('Cannot unapprove an exported delivery.'); return; }
   if (!confirm('Reset this delivery back to Pending?')) return;
-  await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ qb_status: 'pending' }) });
-  d.qb_status = 'pending';
+  await fetch(`${SUPABASE_URL}/rest/v1/deliveries?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ qb_status: 'pending', export_requested: false }) });
+  d.qb_status = 'pending'; d.export_requested = false;
   renderTable(filteredDeliveries, 'table-body', 'delivery-count');
 };
 
