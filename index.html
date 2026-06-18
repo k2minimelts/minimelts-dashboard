@@ -1663,6 +1663,7 @@
           <button class="btn-export" onclick="showNewOrderModal('phone')">📞 New Phone Order</button>
           <button class="btn-export" style="background:var(--mm-cyan)" onclick="showNewOrderModal('staples_po')">📋 New Staples PO</button>
           <button class="btn-export" style="background:var(--mm-pink)" onclick="showRecurringModal()" data-admin-only>🔄 Recurring Weekly</button>
+          <button class="btn-export" style="background:#a855f7" onclick="showBiweeklyModal()" data-admin-only>🔁 Recurring Bi-Weekly</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -2614,6 +2615,49 @@
 
       <div style="display:flex;gap:12px;margin-top:20px">
         <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeRecurringModal()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Recurring Bi-Weekly Modal ──────────────────────────────────────────
+     Mirror of the weekly modal, toggling stores.recurring_biweekly. The cron
+     job recurring-biweekly-orders runs every Saturday but the generator only
+     creates orders on alternating ("on") Saturdays, so enrolled stores get an
+     order every other Saturday (synced). A store cannot be in both programs. -->
+<div class="modal-overlay" id="biweekly-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">🔁 Recurring Bi-Weekly Customers</span>
+      <button class="modal-close" onclick="closeBiweeklyModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.25);border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--text);line-height:1.5">
+        Customers enrolled here get a <strong>pending order auto-generated every other Saturday at midnight (Pacific)</strong>, ready for the depot manager to schedule. The next bi-weekly drop is <strong>Sat Jun 20</strong>, then every second Saturday after. Stores with an existing pending or scheduled order are skipped that round.
+      </div>
+
+      <div class="field">
+        <label>Add a customer to bi-weekly schedule</label>
+        <div style="position:relative">
+          <input type="text" id="biweekly-store-search" placeholder="Type store name or MM-code..." oninput="searchBiweeklyStore()" autocomplete="off" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
+          <div id="biweekly-store-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--bg2);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:240px;overflow-y:auto;z-index:10"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:20px">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+          <label style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Currently enrolled</label>
+          <span id="biweekly-count" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+        <div id="biweekly-list" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;max-height:300px;overflow-y:auto">
+          <div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Loading...</div>
+        </div>
+      </div>
+
+      <div id="biweekly-modal-error" style="display:none;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:6px;padding:10px 14px;color:#f85149;font-size:13px;margin-top:12px"></div>
+
+      <div style="display:flex;gap:12px;margin-top:20px">
+        <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeBiweeklyModal()">Close</button>
       </div>
     </div>
   </div>
@@ -7522,7 +7566,7 @@ window.searchRecurringStore = () => {
     const upperQ = q.toUpperCase();
     let data;
     if (/^MM-\d+$/i.test(q)) {
-      data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true&recurring_weekly=eq.false&select=id,public_code,qb_name,ship_city,province&limit=10`);
+      data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true&recurring_weekly=eq.false&recurring_biweekly=eq.false&select=id,public_code,qb_name,ship_city,province&limit=10`);
     } else {
       const tokens = q.split(/\s+/).filter(Boolean);
       const tokenClauses = tokens.map(tok => {
@@ -7530,7 +7574,7 @@ window.searchRecurringStore = () => {
         return `or(qb_name.ilike.${enc},ship_city.ilike.${enc},public_code.ilike.${enc})`;
       });
       const filter = tokenClauses.length > 0 ? `&and=(${tokenClauses.join(',')})` : '';
-      data = await sbFetch(`stores?active=eq.true&recurring_weekly=eq.false${filter}&select=id,public_code,qb_name,ship_city,province&order=qb_name.asc&limit=15`);
+      data = await sbFetch(`stores?active=eq.true&recurring_weekly=eq.false&recurring_biweekly=eq.false${filter}&select=id,public_code,qb_name,ship_city,province&order=qb_name.asc&limit=15`);
     }
     const stores = Array.isArray(data) ? data : [];
     if (!stores.length) {
@@ -7554,7 +7598,7 @@ window.addRecurringStore = async (storeId, qbName) => {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${storeId}`, {
       method: 'PATCH',
       headers: { ...headers(), 'Prefer': 'return=representation' },
-      body: JSON.stringify({ recurring_weekly: true })
+      body: JSON.stringify({ recurring_weekly: true, recurring_biweekly: false })
     });
     if (!r.ok) {
       const t = await r.text();
@@ -7584,6 +7628,135 @@ window.removeRecurringStore = async (storeId, qbName) => {
       throw new Error(`Failed to remove: ${r.status} ${t}`);
     }
     await loadRecurringList();
+  } catch (e) {
+    errEl.textContent = e.message || String(e);
+    errEl.style.display = 'block';
+  }
+};
+
+// ── Recurring Bi-Weekly Customers ────────────────────────────────────────
+// Mirror of the weekly handlers, toggling stores.recurring_biweekly. The cron
+// job recurring-biweekly-orders fires every Saturday but generate_recurring_
+// biweekly_orders() only creates orders on alternating "on" Saturdays, so each
+// enrolled store gets a pending order every other Saturday (synced). A DB CHECK
+// (stores_recurring_mutually_exclusive) guarantees no store is in both programs;
+// the search filters and the add-handler clearing the other flag keep the UI in
+// step with that guard.
+window.showBiweeklyModal = async () => {
+  document.getElementById('biweekly-modal-error').style.display = 'none';
+  document.getElementById('biweekly-store-search').value = '';
+  document.getElementById('biweekly-store-results').style.display = 'none';
+  document.getElementById('biweekly-modal').classList.add('open');
+  await loadBiweeklyList();
+};
+window.closeBiweeklyModal = () => {
+  document.getElementById('biweekly-modal').classList.remove('open');
+  document.getElementById('biweekly-store-results').style.display = 'none';
+};
+document.getElementById('biweekly-modal').addEventListener('click', e => { if (e.target===e.currentTarget) closeBiweeklyModal(); });
+
+async function loadBiweeklyList() {
+  const listEl = document.getElementById('biweekly-list');
+  const countEl = document.getElementById('biweekly-count');
+  listEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Loading...</div>`;
+  try {
+    const data = await sbFetch('stores?recurring_biweekly=eq.true&active=eq.true&select=id,public_code,qb_name,ship_city,province&order=qb_name.asc');
+    const stores = Array.isArray(data) ? data : [];
+    countEl.textContent = stores.length === 1 ? '1 customer' : `${stores.length} customers`;
+    if (stores.length === 0) {
+      listEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">No customers enrolled yet. Use the search above to add one.</div>`;
+      return;
+    }
+    listEl.innerHTML = stores.map(s => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);gap:12px">
+        <div style="min-width:0;flex:1">
+          <div style="font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(s.qb_name)}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">
+            <span style="font-family:monospace;color:var(--gold)">${s.public_code||''}</span>
+            ${s.ship_city ? ' · ' + escapeHtml([s.ship_city, s.province].filter(Boolean).join(', ')) : ''}
+          </div>
+        </div>
+        <button onclick="window.removeBiweeklyStore('${s.id}', '${escapeHtml(s.qb_name).replace(/'/g, '&apos;')}')" style="background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);color:#f85149;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap">Remove</button>
+      </div>`).join('');
+  } catch (e) {
+    listEl.innerHTML = `<div style="padding:20px;text-align:center;color:#f85149;font-size:13px">Failed to load: ${escapeHtml(e.message || String(e))}</div>`;
+  }
+}
+
+let biweeklyStoreSearchTimer = null;
+window.searchBiweeklyStore = () => {
+  clearTimeout(biweeklyStoreSearchTimer);
+  const q = document.getElementById('biweekly-store-search').value.trim();
+  const resultsEl = document.getElementById('biweekly-store-results');
+  if (q.length < 2) { resultsEl.style.display = 'none'; return; }
+  biweeklyStoreSearchTimer = setTimeout(async () => {
+    // Exclude stores already in EITHER program so a store can't end up in both
+    // (the DB CHECK would otherwise reject the enroll).
+    const upperQ = q.toUpperCase();
+    let data;
+    if (/^MM-\d+$/i.test(q)) {
+      data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true&recurring_weekly=eq.false&recurring_biweekly=eq.false&select=id,public_code,qb_name,ship_city,province&limit=10`);
+    } else {
+      const tokens = q.split(/\s+/).filter(Boolean);
+      const tokenClauses = tokens.map(tok => {
+        const enc = encodeURIComponent(`*${tok}*`);
+        return `or(qb_name.ilike.${enc},ship_city.ilike.${enc},public_code.ilike.${enc})`;
+      });
+      const filter = tokenClauses.length > 0 ? `&and=(${tokenClauses.join(',')})` : '';
+      data = await sbFetch(`stores?active=eq.true&recurring_weekly=eq.false&recurring_biweekly=eq.false${filter}&select=id,public_code,qb_name,ship_city,province&order=qb_name.asc&limit=15`);
+    }
+    const stores = Array.isArray(data) ? data : [];
+    if (!stores.length) {
+      resultsEl.innerHTML = `<div style="padding:10px 12px;color:var(--muted);font-size:13px">No matches (customers already on a weekly or bi-weekly schedule are hidden).</div>`;
+      resultsEl.style.display = 'block';
+      return;
+    }
+    resultsEl.innerHTML = stores.map(s => `
+      <div style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background=''" onclick="window.addBiweeklyStore('${s.id}', '${escapeHtml(s.qb_name).replace(/'/g, '&apos;')}')">
+        <div style="font-weight:600">${escapeHtml(s.qb_name)}</div>
+        <div style="font-size:12px;color:var(--muted)"><span style="font-family:monospace;color:var(--gold)">${s.public_code||''}</span> · ${escapeHtml([s.ship_city, s.province].filter(Boolean).join(', '))}</div>
+      </div>`).join('');
+    resultsEl.style.display = 'block';
+  }, 250);
+};
+
+window.addBiweeklyStore = async (storeId, qbName) => {
+  const errEl = document.getElementById('biweekly-modal-error');
+  errEl.style.display = 'none';
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${storeId}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=representation' },
+      body: JSON.stringify({ recurring_biweekly: true, recurring_weekly: false })
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Failed to enroll: ${r.status} ${t}`);
+    }
+    document.getElementById('biweekly-store-search').value = '';
+    document.getElementById('biweekly-store-results').style.display = 'none';
+    await loadBiweeklyList();
+  } catch (e) {
+    errEl.textContent = e.message || String(e);
+    errEl.style.display = 'block';
+  }
+};
+
+window.removeBiweeklyStore = async (storeId, qbName) => {
+  if (!confirm(`Stop generating bi-weekly recurring orders for "${qbName}"?\n\nExisting orders will not be affected.`)) return;
+  const errEl = document.getElementById('biweekly-modal-error');
+  errEl.style.display = 'none';
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${storeId}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=representation' },
+      body: JSON.stringify({ recurring_biweekly: false })
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`Failed to remove: ${r.status} ${t}`);
+    }
+    await loadBiweeklyList();
   } catch (e) {
     errEl.textContent = e.message || String(e);
     errEl.style.display = 'block';
