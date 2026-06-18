@@ -1507,7 +1507,7 @@
   <div class="main">
     <div class="tabs">
       <button class="tab active" onclick="switchTab('overview')" data-hide-from-depot-manager>Overview</button>
-      <button class="tab" onclick="switchTab('deliveries')" data-hide-from-depot-manager>Deliveries</button>
+      <button class="tab" onclick="switchTab('deliveries')">Deliveries</button>
       <button class="tab" onclick="switchTab('unpaid')" data-hide-from-depot-manager>Unpaid</button>
       <button class="tab" onclick="switchTab('orders')" id="tab-btn-orders">📦 Orders</button>
       <button class="tab" onclick="switchTab('missed')" id="tab-btn-missed">⏱️ Missed</button>
@@ -5115,6 +5115,11 @@ window.switchTab = (tab) => {
     const banner = document.getElementById('unreconciled-prints-banner');
     const subtitle = document.getElementById('unreconciled-prints-subtitle');
     if (!banner) return;
+    // Admin-only office workflow. The banner is data-admin-only, but its success
+    // path below force-shows it (display:block) — so guard here too, otherwise a
+    // depot manager (who can now see the Deliveries tab) could have the admin
+    // banner re-surfaced. Also avoids a needless delivery_prints fetch for them.
+    if (!window._role || window._role.role !== 'admin') { banner.style.display = 'none'; return; }
     let rows;
     try {
       // 2-hour grace so legitimate in-progress deliveries don't show.
