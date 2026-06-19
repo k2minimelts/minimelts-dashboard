@@ -3021,6 +3021,12 @@ async function sbUpdatePassword(newPassword, accessToken) {
 }
 
 let allDeliveries = [], filteredDeliveries = [], storeChart, driverChart;
+// Stamp-compliance indicators for the Deliveries tab. Populated by id-only
+// fetches (no base64 shipped): which deliveries already have a stamped-receipt
+// photo, and which stores require a stamp. Lets each row show 📋 (stamp on file)
+// or ⚠️ (stamp required but missing) without bloating the list payload.
+let stampPhotoDeliveryIds = new Set();
+let stampRequiredStoreIds = new Set();
 
 // ── Auth ──
 // Lookup current user's role from admins / depot_managers tables.
@@ -3424,6 +3430,13 @@ async function loadAll() {
   const data = await sbFetch(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc&limit=10000`);
   allDeliveries = Array.isArray(data) ? data : [];
   filteredDeliveries = [...allDeliveries];
+  // Stamp indicators — id-only fetches (RLS-scoped), no photo payload.
+  try {
+    const sp = await sbFetch('deliveries?select=id&stamp_photo_base64=not.is.null&limit=100000');
+    stampPhotoDeliveryIds = new Set((Array.isArray(sp) ? sp : []).map(x => x.id));
+    const sr = await sbFetch('stores?select=id&is_stamp_required=eq.true&limit=100000');
+    stampRequiredStoreIds = new Set((Array.isArray(sr) ? sr : []).map(x => x.id));
+  } catch (e) { /* indicators are best-effort; never block the tab */ }
   populateDriverFilter(); renderStats(); await ensureStoreDepotMap(); renderCharts();
   renderTable(filteredDeliveries, 'table-body', 'delivery-count');
   renderUnpaid();
@@ -3586,6 +3599,18 @@ window.resetExportError = async (id) => {
   applyFilters();
 };
 
+function stampBadge(d) {
+  // 📋 when a stamped-receipt photo is on file (click to open the detail/photo);
+  // ⚠️ when the store requires a stamp but no photo was captured.
+  if (stampPhotoDeliveryIds.has(d.id)) {
+    return ` <span title="Stamped receipt on file — click to view" style="cursor:pointer;font-size:12px" onclick="event.stopPropagation();window.showDetail('${d.id}')">📋</span>`;
+  }
+  if (stampRequiredStoreIds.has(d.store_id)) {
+    return ` <span title="Stamp required — no stamped-receipt photo captured" style="color:#f85149;font-size:11px;font-weight:600;white-space:nowrap">⚠️ stamp</span>`;
+  }
+  return '';
+}
+
 function renderTable(deliveries, bodyId, countId) {
   document.getElementById(countId).textContent = `${deliveries.length} records`;
   if (!deliveries.length) { document.getElementById(bodyId).innerHTML = '<div class="empty">No deliveries found.</div>'; return; }
@@ -3593,7 +3618,7 @@ function renderTable(deliveries, bodyId, countId) {
     <td><input type="checkbox" class="delivery-cb" data-id="${d.id}" ${d.qb_status==='exported'?'disabled':''}></td>
     <td style="color:var(--muted);font-size:12px">${d.receipt_number}</td>
     <td>${new Date(d.delivered_at).toLocaleDateString('en-CA')}</td>
-    <td>${d.store_name}</td>
+    <td>${d.store_name}${stampBadge(d)}</td>
     <td style="color:var(--muted);font-size:12px">${d.po_number ? `<span style="color:var(--text);font-weight:600">${d.po_number}</span>` : '—'}</td>
     <td>${d.driver_name}</td>
     <td>${payBadge(d.payment_type)}</td>
@@ -4282,6 +4307,7 @@ window.showDetail = async (id) => {
     ${d.freezer_photo_base64 ? `<div class="section-title">Freezer Photo${d.freezer_photo_2_base64 ? ' (1 of 2)' : ''}</div><img class="modal-photo" src="data:image/jpeg;base64,${d.freezer_photo_base64}" alt="Freezer"/>` : ''}
     ${d.freezer_photo_2_base64 ? `<div class="section-title">Freezer Photo (2 of 2)</div><img class="modal-photo" src="data:image/jpeg;base64,${d.freezer_photo_2_base64}" alt="Freezer 2"/>` : ''}
     ${d.payment_photo_base64 ? `<div class="section-title">Payment Photo${d.payment_type ? ` — ${d.payment_type}` : ''}</div><img class="modal-photo" src="data:image/jpeg;base64,${d.payment_photo_base64}" alt="Payment proof"/>` : ''}
+    ${d.stamp_photo_base64 ? `<div class="section-title">Stamped Receipt</div><img class="modal-photo" src="data:image/jpeg;base64,${d.stamp_photo_base64.includes(',') ? d.stamp_photo_base64.split(',')[1] : d.stamp_photo_base64}" alt="Stamped receipt"/>` : ''}
     ${sigHtml}
     ${(d.qb_status && d.qb_status !== 'pending') ? `<div class="section-title">QuickBooks IIF (backup)</div><button class="btn-modal" style="background:var(--bg3);width:100%;margin-bottom:8px" onclick="window.previewIIF('${d.id}')">Generate IIF preview</button><pre id="iif-preview-${d.id}" class="iif-preview" style="display:none;white-space:pre-wrap;word-break:break-word"></pre>` : ''}
     ${editSection}
