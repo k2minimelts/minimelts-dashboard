@@ -4266,18 +4266,21 @@ window.showDetail = async (id) => {
       </div>
       <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">NOTES</label><input id="edit-notes" type="text" value="${d.notes||''}" placeholder="Optional notes..." style="width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-size:14px"/></div>
     </div>`;
+  const receiptBtn = `<button class="btn-modal btn-modal-outline" onclick="window.downloadReceipt('${d.id}')">🧾 Receipt PDF</button>`;
   const resendBtn = `<button class="btn-modal btn-modal-outline" style="border-color:var(--mm-cyan);color:var(--mm-cyan)" onclick="window.resendDeliveryReceipt('${d.id}')">✉️ Resend Receipt</button>`;
   const correctedBtn = `<button class="btn-modal btn-modal-outline" style="border-color:var(--gold);color:var(--gold)" onclick="window.sendCorrectedReceipt('${d.id}')">✏️ Send Corrected Receipt</button>`;
   const resetBtn = hasQbError(d) ? `<button class="btn-modal" style="background:rgba(248,81,73,0.15);border:1px solid rgba(248,81,73,0.4);color:#f85149;cursor:pointer;border-radius:8px;padding:12px;font-size:14px;font-weight:700" onclick="window.resetExportError('${d.id}');closeModal();">↺ Reset to Pending</button>` : '';
   const actions = isLocked
     ? `<div class="modal-actions">
         ${resetBtn}
+        ${receiptBtn}
         ${resendBtn}
         ${correctedBtn}
         <button class="btn-modal btn-modal-outline" style="flex:1" onclick="closeModal()">Close</button>
       </div>`
     : `<div class="modal-actions">
         <button class="btn-modal btn-modal-primary" style="background:var(--mm-cyan);flex:2" onclick="window.saveCorrection('${d.id}')">💾 Save Corrections</button>
+        ${receiptBtn}
         ${resendBtn}
         ${correctedBtn}
         <button class="btn-modal" style="background:rgba(248,81,73,0.15);border:1px solid rgba(248,81,73,0.4);color:#f85149;cursor:pointer;border-radius:8px;padding:12px;font-size:14px;font-weight:700" onclick="window.deleteDelivery('${d.id}')">🗑 Delete</button>
@@ -4314,6 +4317,81 @@ window.showDetail = async (id) => {
     ${actions}`;
   document.getElementById('detail-modal').classList.add('open');
 };
+
+// Reissue a receipt for any delivery. Prefers the PDF the app generated at
+// submit (stored on the row); if that's absent — e.g. a delivery rebuilt from a
+// print, or one where in-app PDF generation failed — it builds a clean printable
+// receipt from the stored delivery data and opens the browser print dialog
+// (Save as PDF). Read-only: no DB writes, so it's safe for any role that can
+// already see the delivery.
+window.downloadReceipt = async (id) => {
+  const d = allDeliveries.find(x => x.id === id);
+  if (!d) return;
+  try {
+    let pdf = d.receipt_pdf_base64;
+    if (pdf === undefined) {
+      const r = await sbFetch(`deliveries?id=eq.${id}&select=receipt_pdf_base64&limit=1`);
+      pdf = (Array.isArray(r) && r[0]) ? r[0].receipt_pdf_base64 : null;
+      d.receipt_pdf_base64 = pdf;
+    }
+    if (pdf) {
+      const clean = pdf.includes(',') ? pdf.split(',')[1] : pdf;
+      const bytes = Uint8Array.from(atob(clean), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${d.receipt_number || 'receipt'}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+    } else {
+      const w = window.open('', '_blank');
+      if (!w) { alert('Allow pop-ups for this site to generate the receipt.'); return; }
+      w.document.write(buildReceiptHtmlFromDelivery(d));
+      w.document.close(); w.focus();
+      setTimeout(() => { try { w.print(); } catch (e) {} }, 400);
+    }
+  } catch (e) {
+    alert('Could not produce the receipt: ' + (e && e.message ? e.message : e));
+  }
+};
+
+// Fallback receipt renderer — used only when no stored PDF exists. Builds a
+// standalone HTML receipt from the delivery row (same figures the app printed).
+function buildReceiptHtmlFromDelivery(d) {
+  const BIG = ['BIG Cherry', 'BIG Mango', 'BIG Kiwi'];
+  const items = Array.isArray(d.items) ? d.items.filter(i => parseInt(i.qtyDelivered) > 0) : [];
+  const rows = items.map(i => {
+    const lp = BIG.includes(i.product)
+      ? parseFloat(d.big_unit_price != null ? d.big_unit_price : d.unit_price)
+      : parseFloat(d.unit_price);
+    const amt = (parseInt(i.qtyDelivered) * lp).toFixed(2);
+    return `<tr><td>${escapeHtml(i.product || '')}</td><td style="text-align:center">${escapeHtml(i.lotBatch || '—')}</td><td style="text-align:center">${i.qtyDelivered}</td><td style="text-align:right">$${amt}</td></tr>`;
+  }).join('');
+  const dt = d.delivered_at ? new Date(d.delivered_at).toLocaleString('en-CA') : '';
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(d.receipt_number || 'Receipt')}</title>
+<style>body{font-family:Arial,Helvetica,sans-serif;color:#111;max-width:430px;margin:24px auto;padding:0 16px}
+h1{font-size:18px;margin:0 0 2px}.muted{color:#666;font-size:12px}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}
+th,td{padding:4px 2px;border-bottom:1px solid #eee}th{text-align:left;font-size:11px;color:#666}
+.tot{display:flex;justify-content:space-between;font-size:13px;padding:2px 0}
+.grand{font-weight:700;font-size:16px;border-top:2px solid #111;margin-top:6px;padding-top:6px}
+.hdr{border-bottom:2px solid #111;padding-bottom:8px;margin-bottom:8px}
+@media print{body{margin:0}}</style></head>
+<body>
+<div class="hdr"><h1>Mini Melts Canada</h1><div class="muted">Delivery Receipt</div></div>
+<div class="muted">Receipt&nbsp;<b style="color:#111">${escapeHtml(d.receipt_number || '')}</b></div>
+<div class="muted">${dt}</div>
+<div style="margin-top:8px;font-weight:700">${escapeHtml(d.store_name || '')}</div>
+${d.po_number ? `<div class="muted">PO: ${escapeHtml(d.po_number)}</div>` : ''}
+<div class="muted">Driver: ${escapeHtml(d.driver_name || '')}</div>
+<table><thead><tr><th>Product</th><th style="text-align:center">Lot</th><th style="text-align:center">Qty</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="tot"><span>Delivery Fee</span><span>$${parseFloat(d.delivery_fee || 0).toFixed(2)}</span></div>
+<div class="tot"><span>Subtotal</span><span>$${parseFloat(d.subtotal || 0).toFixed(2)}</span></div>
+<div class="tot"><span>GST/HST</span><span>$${parseFloat(d.tax || 0).toFixed(2)}</span></div>
+<div class="tot grand"><span>TOTAL</span><span>$${parseFloat(d.total || 0).toFixed(2)}</span></div>
+<div class="tot" style="margin-top:8px"><span>Payment</span><span>${escapeHtml(d.payment_type || '')}</span></div>
+<div class="muted" style="margin-top:28px;text-align:center">Reissued copy — ${new Date().toLocaleDateString('en-CA')}</div>
+</body></html>`;
+}
 window.closeModal = () => document.getElementById('detail-modal').classList.remove('open');
 document.getElementById('detail-modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
 
