@@ -1535,12 +1535,12 @@
       </div>
       <div class="charts-grid" id="sales-perf-grid" data-hide-from-depot-manager>
         <div class="chart-card">
-          <div class="chart-title">Sales Performance <span style="color:var(--muted);font-weight:400;font-size:11px">· DSD + Vending, tax incl.</span></div>
-          <div id="sales-perf-table"><div style="color:var(--muted);padding:8px 0">Loading…</div></div>
-        </div>
-        <div class="chart-card">
           <div class="chart-title">This Month vs Last Month</div>
           <canvas id="chart-salesperf" height="200"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Sales Performance <span style="color:var(--muted);font-weight:400;font-size:11px">· DSD + Vending, tax incl.</span></div>
+          <div id="sales-perf-table"><div style="color:var(--muted);padding:8px 0">Loading…</div></div>
         </div>
       </div>
       <div class="charts-grid">
@@ -3677,6 +3677,29 @@ async function renderSalesPerformance() {
   const vend = isAdmin ? await fetchVendingSummary() : null;
   renderSalesPerfTable(dsd, vend, false);
   renderSalesPerfChart(dsd, vend);
+  applyVendingToStatCards(vend);
+}
+// Fold vending into the Today / This Week / This Month stat cards once the Nayax
+// figures are in. DSD-only values stay as renderStats() set them when vend is
+// null (Nayax unavailable, or caller not an admin). Window note: Today and This
+// Month align with Nayax; "This Week" mixes DSD's rolling 7 days with Nayax's
+// calendar week, so treat that card as approximate.
+function applyVendingToStatCards(vend) {
+  if (!vend) return;
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  const weekAgo = new Date(now - 7 * 86400000).toISOString();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const sum = arr => arr.reduce((s, d) => s + parseFloat(d.total || 0), 0);
+  const fmt = n => `$${n.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const setCard = (valId, subId, dsdArr, v) => {
+    const el = document.getElementById(valId), se = document.getElementById(subId);
+    if (el) el.textContent = fmt(sum(dsdArr) + (v && v.sales ? v.sales : 0));
+    if (se) se.textContent = `${dsdArr.length} del · ${((v && v.txns) || 0).toLocaleString('en-CA')} vend`;
+  };
+  setCard('stat-today', 'stat-today-count', allDeliveries.filter(d => d.delivered_at?.startsWith(todayStr)), vend.today);
+  setCard('stat-week', 'stat-week-count', allDeliveries.filter(d => d.delivered_at >= weekAgo), vend.this_week);
+  setCard('stat-month', 'stat-month-count', allDeliveries.filter(d => d.delivered_at >= monthStart), vend.this_month);
 }
 
 // ── Table ──
