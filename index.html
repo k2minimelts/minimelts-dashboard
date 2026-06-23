@@ -1977,6 +1977,11 @@
               <span class="num" id="sched-count-vending">—</span>
               <span class="lbl">vending</span>
             </div>
+            <div class="sched-counter active" data-filter="skipped">
+              <span class="sw" style="background:#a371f7"></span>
+              <span class="num" id="sched-count-skipped">—</span>
+              <span class="lbl">missed</span>
+            </div>
             <div class="sched-counter" data-filter="scheduled">
               <span class="sw" style="background:var(--muted)"></span>
               <span class="num" id="sched-count-scheduled">0</span>
@@ -10439,7 +10444,7 @@ window.removeDepotManagerRow = async (depot_manager_id, email, depot_code) => {
 const schedState = {
   userDepots: [],          // [{id, code, name, lat, lng}] in user's scope
   activeDepots: new Set(), // depot codes currently filtered ON
-  filters: { orders: true, overdue: true, vending: true, scheduled: false },
+  filters: { orders: true, overdue: true, vending: true, scheduled: false, skipped: true },
   weekStart: null,         // ISO Monday
   weekEnd: null,           // ISO Sunday (= weekStart + 6)
   storesIndex: new Map(),  // store_id → store object
@@ -11874,7 +11879,7 @@ function schedIsFiltered(store) {
     return !schedState.filters.scheduled;
   }
   if (schedState.highlightedDriver) return true;
-  if (store.skipped) return false;  // unresolved skips always show until rescheduled/serviced
+  if (store.skipped) return !schedState.filters.skipped;  // governed by the "missed" chip
   if (store.type === 'order' && !schedState.filters.orders) return true;
   if (store.type === 'overdue' && !schedState.filters.overdue) return true;
   if (store.type === 'vending' && !schedState.filters.vending) return true;
@@ -11957,10 +11962,14 @@ function schedLassoEnd(e) {
       }
       continue;
     }
-    // Normal lasso: skip orders/overdue/vending if their filters are off (but allow selection)
-    if (store.type === 'order' && !schedState.filters.orders) continue;
-    if (store.type === 'overdue' && !schedState.filters.overdue) continue;
-    if (store.type === 'vending' && !schedState.filters.vending) continue;
+    // Normal lasso: skip pins whose filter is off (but allow selection of visible
+    // ones). Skipped pins are governed by the "missed" filter, not their type.
+    if (store.skipped) { if (!schedState.filters.skipped) continue; }
+    else {
+      if (store.type === 'order' && !schedState.filters.orders) continue;
+      if (store.type === 'overdue' && !schedState.filters.overdue) continue;
+      if (store.type === 'vending' && !schedState.filters.vending) continue;
+    }
     if (hitLng >= minLng && hitLng <= maxLng && hitLat >= minLat && hitLat <= maxLat) {
       if (!schedState.selected.has(store.id)) { schedState.selected.add(store.id); added++; }
     }
@@ -12201,9 +12210,10 @@ function schedToggleDriverHighlight(driverId) {
 // COUNTERS
 // ════════════════════════════════════════════════════════════════════
 function schedRenderCounters() {
-  let orderCount = 0, overdueCount = 0, vendingCount = 0, scheduledCount = 0;
+  let orderCount = 0, overdueCount = 0, vendingCount = 0, scheduledCount = 0, skippedCount = 0;
   for (const s of schedState.storesIndex.values()) {
     if (s.assigned) { scheduledCount++; continue; }
+    if (s.skipped) { skippedCount++; continue; }  // purple "missed" — its own category, not double-counted
     if (s.type === 'order') orderCount++;
     else if (s.type === 'overdue') overdueCount++;
     else if (s.type === 'vending') vendingCount++;
@@ -12213,6 +12223,7 @@ function schedRenderCounters() {
   set('sched-count-overdue', overdueCount);
   set('sched-count-vending', vendingCount);
   set('sched-count-scheduled', scheduledCount);
+  set('sched-count-skipped', skippedCount);
   const pubBtn = document.getElementById('sched-publish-btn');
   if (pubBtn) pubBtn.textContent = `Publish 0 plans →`;
   if (typeof schedUpdatePublishButton === 'function') schedUpdatePublishButton();
