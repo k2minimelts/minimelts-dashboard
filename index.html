@@ -1265,6 +1265,25 @@
     opacity: 0.25;
     cursor: not-allowed;
   }
+  /* Move-to-day picker — sits left of ⬆/⬇, same height/feel as the buttons */
+  .sched-stop-movetoday {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    height: 22px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+    flex-shrink: 0;
+    padding: 0 2px;
+    outline: none;
+    transition: all 0.1s;
+  }
+  .sched-stop-movetoday:hover {
+    border-color: var(--mm-cyan);
+    color: var(--mm-cyan);
+  }
   .sched-stop-controls {
     display: flex;
     gap: 4px;
@@ -12732,6 +12751,50 @@ async function schedRemoveStopFromCell(tripStopId) {
   }
 }
 
+// Move a single stop to another day of the same trip. Re-parents the stop's
+// trip_day_id and appends it to the end of the target day's sequence. Mirrors
+// schedMoveStops' guards (11-stop optimizer cap) and the manual-recalc model:
+// both affected days' drive times go stale until the manager recalculates
+// (or auto-reoptimize runs, which only happens on published trips).
+async function schedMoveStopToDay(tripStopId, targetDayId) {
+  const cell = schedState.editingCell;
+  if (!cell || !tripStopId || !targetDayId) return;
+  const sourceDayId = cell.trip_day_id;
+  if (targetDayId === sourceDayId) return;
+
+  // Locate the target day (the dropdown only lists days within this trip).
+  let targetDay = null;
+  for (const t of schedState.trips) {
+    const d = (t.days || []).find(x => x.id === targetDayId);
+    if (d) { targetDay = d; break; }
+  }
+  if (!targetDay) { schedToast('⚠ Target day not found'); return; }
+
+  const targetStops = targetDay.stops || [];
+  if (targetStops.length >= 11) {
+    schedToast('⚠ Target day already at 11 stops (optimizer limit). Move something off it first.');
+    return;
+  }
+  const nextSeq = targetStops.reduce((m, s) => Math.max(m, s.sequence || 0), 0) + 10;
+
+  try {
+    schedToast('Moving stop…');
+    await schedUpdate('trip_stops', `id=eq.${tripStopId}`, { trip_day_id: targetDayId, sequence: nextSeq });
+    await schedRefreshData();
+    schedToast('✓ Stop moved — recalculate drive time when ready');
+    // Both days' routes changed; published trips re-optimize in the background,
+    // drafts wait for the manager to hit Calculate (manual, as requested).
+    schedMaybeReoptimizeDay(sourceDayId);
+    schedMaybeReoptimizeDay(targetDayId);
+    // Stay on the day the manager was editing.
+    schedReopenEditingCell(sourceDayId);
+  } catch (e) {
+    console.error('[sched] move stop to day failed:', e);
+    schedToast(`⚠ Move failed: ${e.message}`);
+    await schedRefreshData();
+  }
+}
+
 // ════════════════════════════════════════════════════════════════════
 // MOVE one stop UP/DOWN within the same day (manual reorder)
 // ════════════════════════════════════════════════════════════════════
@@ -13200,6 +13263,25 @@ function schedRenderCellEditSidebar(container) {
       </div>`;
   }
 
+  // Per-stop "move to another day" — only meaningful on multi-day trips, so the
+  // control is omitted on single-day trips. The option list is identical for
+  // every row, so build it once. Dates are parsed locally to avoid a UTC
+  // off-by-one, and days already at the 11-stop optimizer cap show disabled.
+  const moveDayOpts = (trip && (trip.days || []).length > 1)
+    ? (trip.days || [])
+        .filter(d => d.id !== cell.trip_day_id)
+        .sort((a, b) => a.day_index - b.day_index)
+        .map(d => {
+          const [y, m, dd] = String(d.day_date).split('-').map(Number);
+          const lbl = new Date(y, (m || 1) - 1, dd || 1).toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' });
+          const full = ((d.stops || []).length >= 11);
+          return `<option value="${schedEscapeHtml(d.id)}"${full ? ' disabled' : ''}>Day ${d.day_index + 1} · ${lbl}${full ? ' (full)' : ''}</option>`;
+        }).join('')
+    : '';
+  const moveToDaySelect = moveDayOpts
+    ? `<select class="sched-stop-movetoday" title="Move this stop to another day"><option value="">⇄</option>${moveDayOpts}</select>`
+    : '';
+
   const stopsHtml = (cell.stops || []).map((stop, idx, arr) => {
     // Custom stops (dry-ice pickups, etc.) carry a route_location, not a store/vm.
     const isCustom = (stop.source === 'custom' || !!stop.location_id);
@@ -13238,6 +13320,7 @@ function schedRenderCellEditSidebar(container) {
         </div>
       </div>
       <div class="sched-stop-controls">
+        ${moveToDaySelect}
         <button class="sched-stop-move sched-stop-move-up" title="Move up"${isFirst ? ' disabled' : ''}>⬆</button>
         <button class="sched-stop-move sched-stop-move-down" title="Move down"${isLast ? ' disabled' : ''}>⬇</button>
         <button class="sched-stop-remove" title="Remove from this day">×</button>
@@ -13378,6 +13461,20 @@ function schedRenderCellEditSidebar(container) {
     });
   });
 
+  // Move a stop to another day of the trip (multi-day only). The <select> only
+  // renders when other days exist; on change, re-parent the stop and reset the
+  // control so it's ready for the next pick.
+  container.querySelectorAll('.sched-stop-movetoday').forEach(sel => {
+    sel.addEventListener('click', (e) => e.stopPropagation());
+    sel.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const row = sel.closest('.sched-cell-edit-stop');
+      const targetDayId = sel.value;
+      sel.value = '';
+      if (row && targetDayId) schedMoveStopToDay(row.dataset.tripStopId, targetDayId);
+    });
+  });
+
   // Click stop name → fly map to it.
   // Ignore clicks on any of the action buttons (remove, move-up, move-down)
   // so they don't double-trigger flying the map alongside their own action.
@@ -13387,6 +13484,7 @@ function schedRenderCellEditSidebar(container) {
       if (e.target.classList.contains('sched-stop-move')) return;
       if (e.target.classList.contains('sched-stop-move-up')) return;
       if (e.target.classList.contains('sched-stop-move-down')) return;
+      if (e.target.classList.contains('sched-stop-movetoday')) return;
       const storeId = row.dataset.storeId;
       const store = schedState.storesIndex.get(storeId);
       if (store && schedState.map && store.lat != null) {
