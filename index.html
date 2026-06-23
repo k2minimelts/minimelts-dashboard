@@ -11566,8 +11566,11 @@ function schedRenderMarkers() {
     // submitted date, source, stock level, contact, and notes — info a depot
     // manager needs to triage scheduling. Vending is handled by the layer above.
     let popupHtml;
+    const skipCancelBtn = (store.skipped && store.order_id)
+      ? `<button onclick="window.schedCancelSkippedStore('${schedEscapeHtml(store.id)}')" style="width:100%;background:#f85149;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;margin-bottom:6px">✕ Cancel order — not needed</button>`
+      : '';
     const skipBanner = store.skipped
-      ? `<div style="background:#a371f7;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.4px;margin-bottom:6px;text-align:center">⚠ SKIPPED${store.skipped_on ? ' · ' + new Date(store.skipped_on).toLocaleDateString('en-CA',{month:'short',day:'numeric'}) : ''} — RESCHEDULE</div>${store.skip_reason ? `<div style="font-size:11px;color:#6b21a8;background:#f3e8ff;border-radius:4px;padding:5px 8px;margin-bottom:6px">${schedEscapeHtml(store.skip_reason)}</div>` : ''}`
+      ? `<div style="background:#a371f7;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.4px;margin-bottom:6px;text-align:center">⚠ SKIPPED${store.skipped_on ? ' · ' + new Date(store.skipped_on).toLocaleDateString('en-CA',{month:'short',day:'numeric'}) : ''} — RESCHEDULE</div>${store.skip_reason ? `<div style="font-size:11px;color:#6b21a8;background:#f3e8ff;border-radius:4px;padding:5px 8px;margin-bottom:6px">${schedEscapeHtml(store.skip_reason)}</div>` : ''}${skipCancelBtn}`
       : '';
     if (store.type === 'order') {
       const submittedDate = store.order_submitted_at
@@ -11645,8 +11648,15 @@ function schedRenderMarkers() {
       .setPopup(new mapboxgl.Popup({ offset: 14, closeButton: false, closeOnClick: false, maxWidth: '340px' })
         .setHTML(popupHtml))
       .addTo(schedState.map);
-    el.addEventListener('mouseenter', () => marker.togglePopup());
-    el.addEventListener('mouseleave', () => marker.togglePopup());
+    if (store.skipped) {
+      // Skipped popups carry an action button, so keep them open while the
+      // cursor is over the popup itself (not just the pin) — otherwise leaving
+      // the pin to click the button would close it.
+      schedWireStickyPopup(el, marker);
+    } else {
+      el.addEventListener('mouseenter', () => marker.togglePopup());
+      el.addEventListener('mouseleave', () => marker.togglePopup());
+    }
     schedState.markers.set(store.id, marker);
     visibleCount++;
   }
@@ -12326,6 +12336,61 @@ async function schedDelete(table, filter) {
     throw new Error(`Delete ${table} failed: ${res.status} ${detail}`);
   }
 }
+
+// Sticky hover for pins whose popup contains an action button (skipped pins).
+// Keeps the popup open while the cursor is over the pin OR the popup, with a
+// short grace delay, so the user can move onto the popup and click without it
+// closing out from under them.
+function schedWireStickyPopup(el, marker) {
+  const popup = marker.getPopup();
+  let closeT = null, popupWired = false;
+  const cancelClose = () => { if (closeT) { clearTimeout(closeT); closeT = null; } };
+  const armClose = () => { cancelClose(); closeT = setTimeout(() => { if (popup.isOpen()) marker.togglePopup(); }, 240); };
+  const wirePopupEl = () => {
+    if (popupWired) return;
+    const pe = popup.getElement();
+    if (!pe) return;
+    popupWired = true;
+    pe.addEventListener('mouseenter', cancelClose);
+    pe.addEventListener('mouseleave', armClose);
+  };
+  el.addEventListener('mouseenter', () => { cancelClose(); if (!popup.isOpen()) marker.togglePopup(); wirePopupEl(); });
+  el.addEventListener('mouseleave', armClose);
+}
+
+// "Cancel order — not needed" on a skipped pin's popup. Looks up the store's
+// pending order(s), confirms, then cancels them (status='cancelled').
+// fn_order_cancel_cascade removes the linked stop and blocks the pending-revert;
+// the sched_skipped_unresolved view then drops the order-sourced skip (no active
+// order remains), so the purple pin clears itself on the next refresh.
+window.schedCancelSkippedStore = async function(storeId) {
+  if (!storeId) return;
+  const store = schedState.storesIndex.get(storeId);
+  const name = store ? store.qb_name : 'this store';
+  let orders;
+  try {
+    orders = await sbFetch(`orders?select=id&store_id=eq.${storeId}&status=eq.pending`);
+  } catch (e) {
+    schedToast('⚠ Could not look up the order — ' + ((e && e.message) || 'error'));
+    return;
+  }
+  if (!Array.isArray(orders) || orders.length === 0) {
+    schedToast('No active order to cancel for this stop.');
+    return;
+  }
+  const n = orders.length;
+  if (!confirm(`Cancel ${n > 1 ? `${n} pending orders` : 'the pending order'} for "${name}"?\n\nThe stop drops off the map and will NOT be rescheduled. No customer email is sent.`)) return;
+  try {
+    schedToast('Cancelling…');
+    for (const o of orders) await schedUpdate('orders', `id=eq.${o.id}`, { status: 'cancelled' });
+    await schedRefreshData();
+    schedToast(`✓ Cancelled — "${name}" removed from the map`);
+    if (typeof updateOrdersBadge === 'function') updateOrdersBadge();
+  } catch (e) {
+    schedToast('⚠ Cancel failed — ' + ((e && e.message) || 'error'));
+    await schedRefreshData();
+  }
+};
 
 // ════════════════════════════════════════════════════════════════════
 // ASSIGN: create a trip from the current selection
