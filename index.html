@@ -1533,6 +1533,16 @@
         <div class="stat-card"><div class="stat-label">This Month</div><div class="stat-value" id="stat-month">—</div><div class="stat-sub" id="stat-month-count">—</div></div>
         <div class="stat-card"><div class="stat-label">Unpaid Balance</div><div class="stat-value" id="stat-unpaid">—</div><div class="stat-sub" id="stat-unpaid-count">—</div></div>
       </div>
+      <div class="charts-grid" id="sales-perf-grid" data-hide-from-depot-manager>
+        <div class="chart-card">
+          <div class="chart-title">Sales Performance <span style="color:var(--muted);font-weight:400;font-size:11px">· DSD + Vending, tax incl.</span></div>
+          <div id="sales-perf-table"><div style="color:var(--muted);padding:8px 0">Loading…</div></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">This Month vs Last Month</div>
+          <canvas id="chart-salesperf" height="200"></canvas>
+        </div>
+      </div>
       <div class="charts-grid">
         <div class="chart-card"><div class="chart-title">Revenue by Depot (This Month)</div><canvas id="chart-stores" height="200"></canvas></div>
         <div class="chart-card"><div class="chart-title">Revenue by Driver (This Month)</div><canvas id="chart-drivers" height="200"></canvas></div>
@@ -3438,6 +3448,7 @@ async function loadAll() {
     stampRequiredStoreIds = new Set((Array.isArray(sr) ? sr : []).map(x => x.id));
   } catch (e) { /* indicators are best-effort; never block the tab */ }
   populateDriverFilter(); renderStats(); await ensureStoreDepotMap(); renderCharts();
+  renderSalesPerformance();
   renderTable(filteredDeliveries, 'table-body', 'delivery-count');
   renderUnpaid();
   loadShippingUnpaid();
@@ -3558,6 +3569,114 @@ function renderCharts() {
   const colors = ['#e2b04a','#4fc3d4','#3fb950','#f85149','#e87bb5','#bc8cff'];
   if (driverChart) driverChart.destroy();
   driverChart = new Chart(document.getElementById('chart-drivers'), { type: 'doughnut', data: { labels: driverEntries.map(e=>e[0]), datasets: [{ data: driverEntries.map(e=>e[1]), backgroundColor: colors, borderWidth: 0 }] }, options: { plugins: { legend: { position: 'bottom', labels: { color: '#8b949e', font: { size: 11 }, padding: 16 } } } } });
+}
+
+// ── Sales Performance (DSD + Vending) ──
+// Overview panel: this-month-to-date vs last-month (full), DSD vs Vending with a
+// combined total. DSD is summed from in-memory deliveries (same month logic as
+// renderStats). Vending is gross, tax-inclusive, operator-wide sales from Nayax
+// widget #53 via the nayax-sales-summary edge function (admin-gated). The vending
+// fetch is cached 5 min and degrades gracefully — if Nayax is unreachable the
+// panel shows DSD only rather than blocking the Overview.
+let salesPerfChart = null;
+let _vendSummaryCache = { at: 0, data: null };
+async function fetchVendingSummary() {
+  if (_vendSummaryCache.data && (Date.now() - _vendSummaryCache.at) < 300000) return _vendSummaryCache.data;
+  const session = window._session;
+  if (!session?.access_token) return null;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/nayax-sales-summary`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${session.access_token}`, 'apikey': SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const j = await r.json().catch(() => null);
+    if (j && j.ok) { _vendSummaryCache = { at: Date.now(), data: j }; return j; }
+  } catch (e) { /* unreachable -> null -> DSD-only */ }
+  return null;
+}
+function _spMoney(n) { return `$${(Number(n) || 0).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
+function renderSalesPerfTable(dsd, vend, pending) {
+  const el = document.getElementById('sales-perf-table');
+  if (!el) return;
+  const vThis = vend ? vend.this_month.sales : null;
+  const vLast = vend ? vend.last_month.sales : null;
+  const totThis = dsd.thisM.sales + (vThis || 0);
+  const totLast = dsd.lastM.sales + (vLast || 0);
+  const sub = t => `<div style="color:var(--muted);font-size:11px">${t}</div>`;
+  const vendCell = (sales, txns) => pending
+    ? `<span style="color:var(--muted)">…</span>`
+    : (vend ? `${_spMoney(sales)}${sub((txns || 0).toLocaleString('en-CA') + ' txn')}` : `<span style="color:var(--muted)">unavailable</span>`);
+  el.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr>
+        <th style="text-align:left;padding:6px 4px"></th>
+        <th style="text-align:right;color:var(--muted);font-weight:600;font-size:11px;padding:6px 4px;letter-spacing:0.5px">THIS MONTH<div style="font-weight:400;text-transform:none;letter-spacing:0">to date</div></th>
+        <th style="text-align:right;color:var(--muted);font-weight:600;font-size:11px;padding:6px 4px;letter-spacing:0.5px">LAST MONTH</th>
+      </tr></thead>
+      <tbody>
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:8px 4px;color:var(--mm-cyan);font-weight:700">DSD</td>
+          <td style="padding:8px 4px;text-align:right">${_spMoney(dsd.thisM.sales)}${sub(dsd.thisM.n + ' del')}</td>
+          <td style="padding:8px 4px;text-align:right">${_spMoney(dsd.lastM.sales)}${sub(dsd.lastM.n + ' del')}</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 4px;color:var(--mm-pink);font-weight:700">Vending</td>
+          <td style="padding:8px 4px;text-align:right">${vendCell(vThis, vend ? vend.this_month.txns : 0)}</td>
+          <td style="padding:8px 4px;text-align:right">${vendCell(vLast, vend ? vend.last_month.txns : 0)}</td>
+        </tr>
+        <tr style="border-top:2px solid var(--border)">
+          <td style="padding:8px 4px;color:var(--gold);font-weight:700">Total</td>
+          <td style="padding:8px 4px;text-align:right;color:var(--gold);font-weight:700;font-size:15px">${_spMoney(totThis)}</td>
+          <td style="padding:8px 4px;text-align:right;color:var(--gold);font-weight:700;font-size:15px">${_spMoney(totLast)}</td>
+        </tr>
+      </tbody>
+    </table>
+    ${(!pending && !vend) ? `<div style="color:var(--muted);font-size:11px;margin-top:8px">Vending couldn’t be loaded from Nayax just now — totals show DSD only.</div>` : ''}`;
+}
+function renderSalesPerfChart(dsd, vend) {
+  const cv = document.getElementById('chart-salesperf');
+  if (!cv || typeof Chart === 'undefined') return;
+  const vThis = vend ? vend.this_month.sales : 0;
+  const vLast = vend ? vend.last_month.sales : 0;
+  if (salesPerfChart) salesPerfChart.destroy();
+  salesPerfChart = new Chart(cv, {
+    type: 'bar',
+    data: {
+      labels: ['Last Month', 'This Month (to date)'],
+      datasets: [
+        { label: 'DSD', data: [dsd.lastM.sales, dsd.thisM.sales], backgroundColor: '#4fc3d4', borderRadius: 4, stack: 's' },
+        { label: 'Vending', data: [vLast, vThis], backgroundColor: '#e87bb5', borderRadius: 4, stack: 's' },
+      ],
+    },
+    options: {
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#8b949e', font: { size: 11 }, padding: 16 } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${_spMoney(c.parsed.y)}` } },
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        y: { stacked: true, ticks: { color: '#8b949e', callback: v => '$' + v.toLocaleString('en-CA') }, grid: { color: 'rgba(255,255,255,0.05)' } },
+      },
+    },
+  });
+}
+async function renderSalesPerformance() {
+  if (!document.getElementById('sales-perf-table')) return;
+  const now = new Date();
+  const thisStartISO = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const lastStartISO = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString();
+  const sum = arr => arr.reduce((a, d) => a + parseFloat(d.total || 0), 0);
+  const dsdThis = allDeliveries.filter(d => d.delivered_at >= thisStartISO);
+  const dsdLast = allDeliveries.filter(d => d.delivered_at >= lastStartISO && d.delivered_at < thisStartISO);
+  const dsd = { thisM: { sales: sum(dsdThis), n: dsdThis.length }, lastM: { sales: sum(dsdLast), n: dsdLast.length } };
+  // Paint DSD immediately; vending fills in when the fetch resolves.
+  renderSalesPerfTable(dsd, null, true);
+  renderSalesPerfChart(dsd, null);
+  const isAdmin = window._role && window._role.role === 'admin';
+  const vend = isAdmin ? await fetchVendingSummary() : null;
+  renderSalesPerfTable(dsd, vend, false);
+  renderSalesPerfChart(dsd, vend);
 }
 
 // ── Table ──
