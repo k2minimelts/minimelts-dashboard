@@ -4482,6 +4482,13 @@ window.showDetail = async (id) => {
     const LABELS = { 'G': 'GST (5%)', 'H13': 'HST (13%)', 'H14': 'HST (14%)', 'H15': 'HST (15%)', 'E': 'Tax (exempt)' };
     return row(LABELS[tc] || 'GST/HST', tax);
   })();
+  // Melted-cup credit row — display only. deliveries.credits is an integer count
+  // of cups at $1/cup, already subtracted from the stored subtotal (matches the
+  // IIF builder's Melted Cup Credit line). Hidden when there is no credit.
+  const creditQty = parseInt(d.credits) || 0;
+  const creditRow = creditQty > 0
+    ? `<div class="detail-row"><span class="detail-label">Melted cup credit (${creditQty} cup${creditQty === 1 ? '' : 's'} @ $1)</span><span class="detail-value" style="color:var(--success)">−$${creditQty.toFixed(2)}</span></div>`
+    : '';
   document.getElementById('modal-title').textContent = `${d.receipt_number} — ${d.store_name}`;
   document.getElementById('modal-body').innerHTML = `
     ${errBanner}
@@ -4500,6 +4507,7 @@ window.showDetail = async (id) => {
     <div class="detail-row" style="border-top:1px dashed var(--border);margin-top:4px;padding-top:8px"><span class="detail-label" style="font-weight:700">Total Units Delivered</span><span class="detail-value" style="font-weight:700">${items.reduce((s,i)=>s+(parseInt(i.qtyDelivered)||0),0)}</span></div>
     <div class="section-title">Financials</div>
     <div class="detail-row"><span class="detail-label">Delivery Fee</span><span class="detail-value">$${parseFloat(d.delivery_fee||0).toFixed(2)}</span></div>
+    ${creditRow}
     <div class="detail-row"><span class="detail-label">Subtotal</span><span class="detail-value">$${parseFloat(d.subtotal).toFixed(2)}</span></div>
     ${taxRows}
     <div class="detail-row"><span class="detail-label" style="font-weight:700;color:var(--gold)">TOTAL DUE</span><span class="detail-value" style="font-size:18px;color:var(--gold)">$${parseFloat(d.total).toFixed(2)}</span></div>
