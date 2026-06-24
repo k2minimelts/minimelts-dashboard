@@ -2094,6 +2094,10 @@
 
     <!-- Drivers Tab -->
     <div id="tab-drivers" style="display:none">
+      <div class="charts-grid" style="margin-bottom:16px">
+        <div class="chart-card"><div class="chart-title">DSD Revenue by Depot (This Month)</div><canvas id="chart-stores-tab" height="200"></canvas></div>
+        <div class="chart-card"><div class="chart-title">Revenue by Driver (This Month)</div><canvas id="chart-drivers-tab" height="200"></canvas></div>
+      </div>
       <div class="table-wrap" style="margin-bottom:16px">
         <div class="table-header">
           <span class="table-title">👤 Driver Management</span>
@@ -3054,7 +3058,7 @@ async function sbUpdatePassword(newPassword, accessToken) {
   return r.json();
 }
 
-let allDeliveries = [], filteredDeliveries = [], storeChart, driverChart;
+let allDeliveries = [], filteredDeliveries = [], storeChart, driverChart, driverTabChart, depotTabChart;
 // Stamp-compliance indicators for the Deliveries tab. Populated by id-only
 // fetches (no base64 shipped): which deliveries already have a stamped-receipt
 // photo, and which stores require a stamp. Lets each row show 📋 (stamp on file)
@@ -6579,6 +6583,45 @@ async function loadDrivers() {
   const data = await sbFetch('drivers?select=*&order=created_at.desc');
   allDriversData = Array.isArray(data) ? data : [];
   renderDriversTable(allDriversData);
+  renderDriverTabCharts();
+}
+
+// Revenue-by-depot (bar) and revenue-by-driver (doughnut) for the Drivers tab —
+// mirrors the two Overview charts so depot managers (who don't see the Overview
+// tab) still get the breakdown. Uses the same in-memory deliveries, this calendar
+// month, scoped to whatever the user's role/RLS allows. The depot map comes from
+// the stores_map view (security_invoker), so a manager only buckets their own
+// depots. Re-renders each time the tab opens, so it self-heals if deliveries
+// weren't loaded yet on first visit.
+async function renderDriverTabCharts() {
+  if (typeof Chart === 'undefined') return;
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const month = (allDeliveries || []).filter(d => d.delivered_at >= monthStart);
+  const colors = ['#e2b04a', '#4fc3d4', '#3fb950', '#f85149', '#e87bb5', '#bc8cff'];
+
+  // Revenue by Driver (doughnut)
+  const driverCanvas = document.getElementById('chart-drivers-tab');
+  if (driverCanvas) {
+    const driverMap = {};
+    month.forEach(d => { driverMap[d.driver_name] = (driverMap[d.driver_name] || 0) + parseFloat(d.total || 0); });
+    const driverEntries = Object.entries(driverMap).sort((a, b) => b[1] - a[1]);
+    if (driverTabChart) driverTabChart.destroy();
+    driverTabChart = new Chart(driverCanvas, { type: 'doughnut', data: { labels: driverEntries.map(e => e[0]), datasets: [{ data: driverEntries.map(e => e[1]), backgroundColor: colors, borderWidth: 0 }] }, options: { plugins: { legend: { position: 'bottom', labels: { color: '#8b949e', font: { size: 11 }, padding: 16 } } } } });
+  }
+
+  // Revenue by Depot (bar) — needs the store→depot map. Seed every visible depot
+  // at 0 so they all appear even with no sales this month.
+  const depotCanvas = document.getElementById('chart-stores-tab');
+  if (depotCanvas) {
+    await ensureStoreDepotMap();
+    const depotRev = {};
+    if (_depotByStoreId) { for (const label of Object.values(_depotByStoreId)) { if (label) depotRev[label] = 0; } }
+    month.forEach(d => { const depot = (_depotByStoreId && _depotByStoreId[d.store_id]) || 'Unassigned'; depotRev[depot] = (depotRev[depot] || 0) + parseFloat(d.total || 0); });
+    const depotEntries = Object.entries(depotRev).sort((a, b) => b[1] - a[1]);
+    if (depotTabChart) depotTabChart.destroy();
+    depotTabChart = new Chart(depotCanvas, { type: 'bar', data: { labels: depotEntries.map(e => e[0]), datasets: [{ data: depotEntries.map(e => e[1]), backgroundColor: '#4fc3d4', borderRadius: 6 }] }, options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }, y: { ticks: { color: '#8b949e', callback: v => '$' + v.toFixed(0) }, grid: { color: 'rgba(255,255,255,0.05)' } } } } });
+  }
 }
 
 function renderDriversTable(drivers) {
