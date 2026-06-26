@@ -1937,6 +1937,11 @@
           <span class="table-count" id="refills-count">Loading...</span>
         </div>
         <div id="refills-body"><div class="loading">Loading refills...</div></div>
+        <div style="padding:10px 16px;display:flex;align-items:center;justify-content:flex-end;gap:8px">
+          <button id="refills-prev-btn" onclick="window.refillsPrevPage()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer">← Prev</button>
+          <span id="refills-page-label" style="color:var(--muted);font-size:12px;min-width:90px;text-align:center">Page 1</span>
+          <button id="refills-next-btn" onclick="window.refillsNextPage()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer">Next →</button>
+        </div>
       </div>
     </div>
 
@@ -8222,6 +8227,8 @@ window.saveOrder = async () => {
 let _allRefills = [];           // raw rows from the DB
 let _filteredRefills = [];      // after filters applied
 let _expandedRefillId = null;   // currently-expanded row id (null = none)
+let _refillPage = 0;            // 0-indexed current page (refills pagination)
+const REFILL_PAGE_SIZE = 100;
 
 const VENDING_FLAVORS_DASH = [
   { key: 'lot_cotton_candy',   label: 'Cotton Candy' },
@@ -8246,6 +8253,7 @@ async function loadRefills() {
   );
   _allRefills = Array.isArray(data) ? data : [];
   _filteredRefills = [..._allRefills];
+  _refillPage = 0;
   populateRefillDriverFilter();
   renderRefillsTable();
 }
@@ -8286,6 +8294,7 @@ window.applyRefillFilters = () => {
     }
     return true;
   });
+  _refillPage = 0;
   renderRefillsTable();
 };
 
@@ -8295,12 +8304,22 @@ function renderRefillsTable() {
   if (!body) return;
   count.textContent = `${_filteredRefills.length} of ${_allRefills.length}`;
 
+  // Client-side pagination (rows already in memory) — keeps the DOM small so a
+  // large refill history renders instantly. Mirrors the Orders tab.
+  const totalPages = Math.max(1, Math.ceil(_filteredRefills.length / REFILL_PAGE_SIZE));
+  if (_refillPage > totalPages - 1) _refillPage = totalPages - 1;
+  if (_refillPage < 0) _refillPage = 0;
+  updateRefillPager(totalPages);
+
   if (_filteredRefills.length === 0) {
     body.innerHTML = '<div class="loading" style="color:var(--muted)">No refills match the current filters.</div>';
     return;
   }
 
-  const rows = _filteredRefills.map(r => {
+  const startIdx = _refillPage * REFILL_PAGE_SIZE;
+  const pageRefills = _filteredRefills.slice(startIdx, startIdx + REFILL_PAGE_SIZE);
+
+  const rows = pageRefills.map(r => {
     const date = r.serviced_at ? new Date(r.serviced_at).toLocaleString('en-CA', { dateStyle: 'short', timeStyle: 'short' }) : '—';
     // Per Nayax UI convention, swap labels: nayax_machine_number = descriptive name, nayax_machine_name = serial
     const venue = r.machine?.venue?.name || '—';
@@ -8352,6 +8371,23 @@ function renderRefillsTable() {
     </table>
   `;
 }
+
+// Enable/disable the prev/next buttons and update the page label. Pulled out so
+// it also runs on the empty-list early return (buttons disable correctly).
+function updateRefillPager(totalPages) {
+  const prevBtn = document.getElementById('refills-prev-btn');
+  const nextBtn = document.getElementById('refills-next-btn');
+  const pageLabel = document.getElementById('refills-page-label');
+  const hasPrev = _refillPage > 0;
+  const hasNext = _refillPage < totalPages - 1;
+  if (prevBtn) { prevBtn.disabled = !hasPrev; prevBtn.style.opacity = hasPrev ? '1' : '0.4'; prevBtn.style.cursor = hasPrev ? 'pointer' : 'not-allowed'; }
+  if (nextBtn) { nextBtn.disabled = !hasNext; nextBtn.style.opacity = hasNext ? '1' : '0.4'; nextBtn.style.cursor = hasNext ? 'pointer' : 'not-allowed'; }
+  if (pageLabel) pageLabel.textContent = _filteredRefills.length === 0 ? 'Page 0 of 0' : `Page ${_refillPage + 1} of ${totalPages}`;
+}
+
+// Pagination handlers (client-side — data already in memory).
+window.refillsNextPage = () => { _refillPage += 1; renderRefillsTable(); };
+window.refillsPrevPage = () => { if (_refillPage > 0) { _refillPage -= 1; renderRefillsTable(); } };
 
 function renderRefillDetail(r) {
   // Lot codes block — display raw 8-digit MMDDYYYY (matches DB / driver app / receipt)
