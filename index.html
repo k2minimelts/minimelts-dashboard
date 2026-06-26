@@ -9921,7 +9921,7 @@ function applyMapFiltersInternal() {
         no_cash_sales_7d: m.no_cash_sales_7d === true,
         no_card_sales_7d: m.no_card_sales_7d === true,
         // Single boolean the ring layer's filter reads
-        needs_attention: (m.needs_restock === true) || (m.no_sales_3d === true),
+        needs_attention: (m.needs_restock === true) || (m.no_sales_3d === true) || (m.no_cash_sales_7d === true) || (m.no_card_sales_7d === true),
       }
     }));
   }
@@ -11861,7 +11861,7 @@ function schedRenderVendingLayer() {
         lat += radius * Math.sin(angle);
       }
       const isHighlight = schedState.highlightedDriver && schedIsStoreOnDriver(store.id, schedState.highlightedDriver);
-      const needsAttention = (store.needs_restock || store.no_sales_3d) && !store.assigned;
+      const needsAttention = (store.needs_restock || store.no_sales_3d || store.no_cash_sales_7d || store.no_card_sales_7d) && !store.assigned;
       features.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [lng, lat] },
