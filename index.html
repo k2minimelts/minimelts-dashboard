@@ -9918,6 +9918,8 @@ function applyMapFiltersInternal() {
         // Pre-computed booleans for the ring filter and popup logic
         needs_restock: m.needs_restock === true,
         no_sales_3d: m.no_sales_3d === true,
+        no_cash_sales_7d: m.no_cash_sales_7d === true,
+        no_card_sales_7d: m.no_card_sales_7d === true,
         // Single boolean the ring layer's filter reads
         needs_attention: (m.needs_restock === true) || (m.no_sales_3d === true),
       }
@@ -11100,6 +11102,8 @@ async function schedLoadOrdersAndOverdue() {
       capacity_units: m.capacity_units,
       needs_restock: m.needs_restock === true,
       no_sales_3d: m.no_sales_3d === true,
+      no_cash_sales_7d: m.no_cash_sales_7d === true,
+      no_card_sales_7d: m.no_card_sales_7d === true,
       days_since_last_sale: m.days_since_last_sale,
       days_since_last_visit: m.days_since_last_visit,
       mqtt_online: m.mqtt_online === true,
@@ -11874,6 +11878,8 @@ function schedRenderVendingLayer() {
           capacity_units: store.capacity_units,
           needs_restock: store.needs_restock === true,
           no_sales_3d: store.no_sales_3d === true,
+          no_cash_sales_7d: store.no_cash_sales_7d === true,
+          no_card_sales_7d: store.no_card_sales_7d === true,
           days_since_last_sale: store.days_since_last_sale,
           days_since_last_visit: store.days_since_last_visit,
           mqtt_online: store.mqtt_online === true,
