@@ -8945,7 +8945,7 @@ async function loadMapData() {
   }
   const [stores, venues, depots, routes, pendingOrders] = await Promise.all([
     fetchAll('stores_map?select=id,public_code,name,qb_name,address,city,province,lat,lng,active,depot_id,depot_code,depot_name,route_id,route_code,route_name,route_color,route_delivery_method'),
-    fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit,depot_id,depot_code'),
+    fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,no_cash_sales_7d,no_card_sales_7d,days_since_last_sale,days_since_last_visit,depot_id,depot_code'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
     fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,is_freezer_pickup,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level&order=submitted_at.desc'),
@@ -9400,6 +9400,8 @@ async function initMapboxGL() {
     const needsRestock = p.needs_restock === true || p.needs_restock === 'true';
     const noSales3d = p.no_sales_3d === true || p.no_sales_3d === 'true';
     const online = p.mqtt_online === true || p.mqtt_online === 'true';
+    const noCashSales7d = p.no_cash_sales_7d === true || p.no_cash_sales_7d === 'true';
+    const noCardSales7d = p.no_card_sales_7d === true || p.no_card_sales_7d === 'true';
 
     // Format pct as a colored badge — green/yellow/red gradient
     let pctColor = '#888', pctBg = '#f3f4f6';
@@ -9413,6 +9415,8 @@ async function initMapboxGL() {
     if (needsRestock) alertBadges.push(`<span style="background:#fee2e2;color:#9b1c1c;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ Needs restock</span>`);
     if (noSales3d) alertBadges.push(`<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ No sales ${daysSinceSale}d</span>`);
     if (!online) alertBadges.push(`<span style="background:#e5e7eb;color:#374151;padding:2px 6px;border-radius:4px;font-size:11px">📵 Offline</span>`);
+    if (noCashSales7d) alertBadges.push(`<span style="background:#ffedd5;color:#9a3412;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">💵 No cash sales</span>`);
+    if (noCardSales7d) alertBadges.push(`<span style="background:#fae8ff;color:#86198f;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">💳 No card sales</span>`);
 
     const machineName = p.machine_name && p.machine_name !== '' ? p.machine_name : '(unnamed machine)';
     const venueName = p.venue_name && p.venue_name !== '' ? p.venue_name : '';
@@ -10967,7 +10971,7 @@ async function schedLoadOrdersAndOverdue() {
   // (seeded by nearest-depot geography). Filtered to the active depots just like
   // overdue stores, so depot managers no longer see vending from depots they don't manage.
   const vendingPromise = sbFetch(
-    `vending_machines_map?select=id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_visit_at,needs_restock,no_sales_3d,days_since_last_sale,days_since_last_visit,mqtt_online,needs_scheduling,scheduling_flagged_at,depot_id,depot_code` +
+    `vending_machines_map?select=id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,pct_sold,qty_sold_since_visit,capacity_units,last_sale_at,last_visit_at,needs_restock,no_sales_3d,no_cash_sales_7d,no_card_sales_7d,days_since_last_sale,days_since_last_visit,mqtt_online,needs_scheduling,scheduling_flagged_at,depot_id,depot_code` +
     `&depot_id=in.(${depotIdList})` +
     `&limit=5000`  // explicit high cap so growth never silently truncates the vending set (PostgREST default ~1000)
   );
@@ -11462,6 +11466,8 @@ function schedInitMap() {
       const online = p.mqtt_online === true || p.mqtt_online === 'true';
       const assigned = p.assigned === true || p.assigned === 'true';
       const needsScheduling = p.needs_scheduling === true || p.needs_scheduling === 'true';
+      const noCashSales7d = p.no_cash_sales_7d === true || p.no_cash_sales_7d === 'true';
+      const noCardSales7d = p.no_card_sales_7d === true || p.no_card_sales_7d === 'true';
       const schedNote = (p.machine_id && _machineNotes.get(p.machine_id)) || '';
 
       // % sold colour-coded pill (green/yellow/red gradient — same thresholds as Map tab)
@@ -11478,6 +11484,8 @@ function schedInitMap() {
       if (!online) alertBadges.push(`<span style="background:#e5e7eb;color:#374151;padding:2px 6px;border-radius:4px;font-size:11px">📵 Offline</span>`);
       if (assigned) alertBadges.push(`<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">📅 Scheduled</span>`);
       if (needsScheduling && !assigned) alertBadges.push(`<span style="background:#eef2ff;color:#4338ca;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;border:1px solid #c7d2fe">🔵 Needs scheduling</span>`);
+      if (noCashSales7d) alertBadges.push(`<span style="background:#ffedd5;color:#9a3412;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">💵 No cash sales</span>`);
+      if (noCardSales7d) alertBadges.push(`<span style="background:#fae8ff;color:#86198f;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">💳 No card sales</span>`);
 
       const machineName = p.name && p.name !== '' ? p.name : '(unnamed machine)';
       const venueName = p.venue_name && p.venue_name !== '' && p.venue_name !== machineName ? p.venue_name : '';
