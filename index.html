@@ -5501,11 +5501,15 @@ window.switchTab = (tab) => {
       const when = p.created_at ? new Date(p.created_at).toLocaleString() : '';
       const total = (p.total != null) ? ('$' + Number(p.total).toFixed(2)) : '—';
       const stamp = p.is_stamp_receipt ? ' · 🏷️ stamp' : '';
+      // Stamp receipts aren't deliveries, so only offer Re-create for real ones.
+      const recreateBtn = p.is_stamp_receipt ? '' :
+        ' <button class="btn-export" style="margin-left:8px;padding:2px 8px;font-size:12px;background:var(--gold,#d29922);border-color:var(--gold,#d29922);color:#1a1a1a;font-weight:600" onclick="window.recreateDeliveryFromPrint(\'' + p.id + '\')">Re-create delivery</button>';
       return '<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;flex-wrap:wrap">' +
         '<div><span style="font-family:monospace;color:var(--gold)">' + escapeHtml(p.receipt_number||'') + '</span> · ' +
         '<strong>' + escapeHtml(p.store_name||'—') + '</strong> · ' +
         escapeHtml(p.driver_name||'—') + stamp + '</div>' +
         '<div style="color:var(--muted)">' + escapeHtml(when) + ' · ' + total + ' · ' + escapeHtml(p.payment_type||'') +
+        recreateBtn +
         ' <button class="btn-export" style="margin-left:8px;padding:2px 8px;font-size:12px" onclick="window.dismissUnreconciledPrint(\'' + p.id + '\')">Dismiss</button></div>' +
         '</div>';
     }).join('');
@@ -5571,6 +5575,137 @@ window.switchTab = (tab) => {
     if (!UP_CACHE.length) { banner.style.display = 'none'; return; }
     subtitle.textContent = `${UP_CACHE.length} receipt${UP_CACHE.length===1?'':'s'} printed but never submitted. The customer has paper proof — these likely need to be re-entered.`;
     renderUnreconciledPrints();
+  };
+
+  // ---- Re-create a delivery from an unreconciled print -----------------
+  // The print row holds the exact receipt the customer already has on paper,
+  // so rebuild the delivery from it 1:1 and PRESERVE the receipt number so it
+  // matches their copy. The AFTER-INSERT triggers then reconcile every print
+  // sharing that number, complete the trip stop, and email the invoice — the
+  // same path a normal driver submission takes.
+  const LOT_COL = {
+    'Cotton Candy':'lot_cotton_candy', 'Cookies & Cream':'lot_cookies_cream',
+    'Cookie Dough':'lot_cookie_dough', 'Banana Split':'lot_banana_split',
+    'Mint Chocolate':'lot_mint_choc', 'Rainbow':'lot_rainbow', 'Orange':'lot_orange',
+    'BIG Cherry':'lot_big_cherry', 'BIG Mango':'lot_big_mango', 'BIG Kiwi':'lot_big_kiwi'
+  };
+
+  window.recreateDeliveryFromPrint = async function (id) {
+    const summary = UP_CACHE.find(function(p){ return p.id === id; });
+    if (!summary) return;
+    if (summary.is_stamp_receipt) {
+      alert('This is a stamp receipt, not a delivery — it can’t be re-created. Use Dismiss instead.');
+      return;
+    }
+    const rn = summary.receipt_number || '';
+    if (!rn) { alert('This print has no receipt number; re-enter it manually.'); return; }
+
+    // Guard against double-billing: never re-create if a delivery already
+    // exists for this receipt number (submitted late, or a duplicate print of
+    // the same receipt was already re-created).
+    try {
+      const existing = await sbFetch('deliveries?select=id&receipt_number=eq.' + encodeURIComponent(rn) + '&limit=1');
+      if (Array.isArray(existing) && existing.length) {
+        alert('A delivery already exists for ' + rn + ', so this print is already covered. Re-creating would double-bill — Dismiss it instead.');
+        await window.loadUnreconciledPrints();
+        return;
+      }
+    } catch (e) { alert('Could not verify whether ' + rn + ' already exists — try again.'); return; }
+
+    // UP_CACHE is a trimmed projection; pull the full print for items/totals.
+    let print;
+    try {
+      const arr = await sbFetch('delivery_prints?select=*&id=eq.' + encodeURIComponent(id) + '&limit=1');
+      print = Array.isArray(arr) ? arr[0] : null;
+    } catch (e) { alert('Could not load the printed receipt.'); return; }
+    if (!print) { alert('Could not load the printed receipt.'); return; }
+
+    // The print stores totals but not unit price; take the prices in effect for
+    // the store, plus its email so the auto-sent invoice reaches the customer.
+    let store = null;
+    try {
+      const s = await sbFetch('stores?select=email,unit_price,big_unit_price&id=eq.' + encodeURIComponent(print.store_id) + '&limit=1');
+      store = Array.isArray(s) ? s[0] : null;
+    } catch (e) {}
+    const unitPrice = (store && store.unit_price != null) ? Number(store.unit_price) : null;
+    if (unitPrice == null) {
+      alert('Could not determine the unit price for ' + (print.store_name || 'this store') + '. Set it in the Stores tab, then retry (or re-enter manually).');
+      return;
+    }
+    const storeEmail = (store && store.email) ? store.email : null;
+    const bigUnitPrice = (store && store.big_unit_price != null) ? Number(store.big_unit_price) : null;
+
+    // Stamp a lot only on flavours that actually moved, mirroring the app.
+    const lots = {};
+    (Array.isArray(print.items) ? print.items : []).forEach(function(it){
+      const col = LOT_COL[it && it.product];
+      const qty = (it && it.qtyDelivered != null) ? String(it.qtyDelivered).trim() : '';
+      if (col && qty) lots[col] = (it.lotBatch ? String(it.lotBatch).trim() : '') || null;
+    });
+
+    const totalLabel = (print.total != null) ? ('$' + Number(print.total).toFixed(2)) : '—';
+    if (!window.confirm(
+      'Re-create this delivery from the printed receipt?\n\n' +
+      rn + ' · ' + (print.store_name || '—') + '\n' +
+      totalLabel + ' · ' + (print.payment_type || '') + '\n\n' +
+      'This creates the invoice (receipt number kept as ' + rn + '), exports it to QuickBooks, and emails it to the customer' +
+      (storeEmail ? (' at ' + storeEmail) : ' (no email on file — invoice won’t send)') + '.'
+    )) return;
+
+    const isETransfer = (print.payment_type || '') === 'E-Transfer';
+    const deliveredAt = print.created_at || new Date().toISOString();
+    const payload = Object.assign({
+      receipt_number: rn,
+      store_id: print.store_id,
+      store_name: print.store_name,
+      store_email: storeEmail,
+      driver_id: print.driver_id || null,
+      driver_name: print.driver_name || '—',
+      items: print.items,
+      unit_price: unitPrice,
+      big_unit_price: bigUnitPrice,
+      delivery_fee: print.delivery_fee,
+      subtotal: print.subtotal,
+      tax: print.tax,
+      total: print.total,
+      payment_type: print.payment_type,
+      paid: false,
+      credits: 0,
+      needs_correction: false,
+      notes: print.notes || null,
+      trip_stop_id: print.trip_stop_id || null,
+      delivered_at: deliveredAt,
+      e_transfer_date: isETransfer ? String(deliveredAt).slice(0, 10) : null,
+    }, lots);
+
+    try {
+      const resp = await fetch(SUPABASE_URL + '/rest/v1/deliveries', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + (window._session && window._session.access_token),
+          'Prefer': 'return=representation',
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(function(){ return ''; });
+        alert('Could not re-create the delivery: ' + resp.status + (text ? ' — ' + text : ''));
+        return;
+      }
+      let created = null; try { const j = await resp.json(); created = Array.isArray(j) ? j[0] : j; } catch (e) {}
+      const keptRn = (created && created.receipt_number) || rn;
+      alert('✅ Delivery re-created as ' + keptRn + '.' +
+        (storeEmail ? ' The invoice has been emailed to ' + storeEmail + '.' : '') +
+        ' It will export to QuickBooks on the next cycle.');
+    } catch (e) {
+      alert('Could not re-create the delivery: ' + (e && e.message ? e.message : 'network error'));
+      return;
+    }
+    // The reconcile trigger links every print with this receipt number, so a
+    // reload drops them all (including any duplicate prints of the same one).
+    await window.loadUnreconciledPrints();
   };
 })();
 
