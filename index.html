@@ -1677,8 +1677,13 @@
             <option value="shipped">📦 Shipped</option>
           </select>
         </div>
+        <div class="filter-group"><label>Depot</label>
+          <select id="orders-filter-depot" onchange="searchOrders()">
+            <option value="">All Depots</option>
+          </select>
+        </div>
         <div class="filter-group"><label>Province</label>
-          <select id="orders-filter-province" onchange="loadOrders()">
+          <select id="orders-filter-province" onchange="searchOrders()">
             <option value="">All provinces</option>
             <option value="AB">Alberta</option><option value="BC">British Columbia</option>
             <option value="MB">Manitoba</option><option value="SK">Saskatchewan</option>
@@ -7079,11 +7084,25 @@ async function updateMissedBadge() {
 }
 window.updateMissedBadge = updateMissedBadge;
 
+let _ordersFiltersInit = false;
 async function loadOrders() {
   _orderPage = 0;  // any filter change / reload returns to the first page
+  // First open of the Orders tab: build the depot dropdown (linked to province
+  // and role-scoped) and default a depot manager to their own depot. Done once
+  // so it never clobbers the user's later selections.
+  if (!_ordersFiltersInit) {
+    _ordersFiltersInit = true;
+    try {
+      await rebuildOrdersFilterOptions();
+      applyOrdersDepotDefault();
+      await rebuildOrdersFilterOptions();
+    } catch (e) { /* non-fatal: fall back to All Depots */ }
+  }
   const status = document.getElementById('orders-filter-status').value;
   const source = document.getElementById('orders-filter-source').value;
   const province = document.getElementById('orders-filter-province').value;
+  const depotEl = document.getElementById('orders-filter-depot');
+  const depot = depotEl ? depotEl.value : '';
   // Delivery filter: 'driven' / 'shipped' / '' (all). Applied client-side
   // because route.delivery_method lives on a nested embed (store→route),
   // same pattern as the province filter.
@@ -7100,7 +7119,7 @@ async function loadOrders() {
   params.set('select',
     'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,shipped_at,invoiced_at,paid_at,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
-    'store:stores!store_id(id,public_code,qb_name,ship_city,province,phone,email,route:routes(delivery_method))'
+    'store:stores!store_id(id,public_code,qb_name,ship_city,province,depot_id,phone,email,route:routes(delivery_method))'
   );
   params.set('order', 'submitted_at.desc');
 
@@ -7126,6 +7145,7 @@ async function loadOrders() {
 
   // Client-side filters (these live on the joined embed, not directly on orders)
   if (province) orders = orders.filter(o => o.store && o.store.province === province);
+  if (depot) orders = orders.filter(o => o.store && o.store.depot_id === depot);
   if (delivery === 'shipped') {
     orders = orders.filter(o => o.store && o.store.route && o.store.route.delivery_method === 'shipped');
   } else if (delivery === 'driven') {
@@ -7139,6 +7159,82 @@ async function loadOrders() {
 // Expose on window so inline HTML onchange/oninput handlers (which run in
 // global scope, not module scope) can find them.
 window.loadOrders = loadOrders;
+
+// Depot ⇄ province linked filters for the Orders tab (mirrors the Stores tab).
+// Picking a depot narrows the province list and vice-versa. For depot managers
+// the depot list is limited to the depots they manage.
+async function rebuildOrdersFilterOptions() {
+  const depotSelect = document.getElementById('orders-filter-depot');
+  const provSelect = document.getElementById('orders-filter-province');
+  if (!depotSelect || !provSelect) return;
+  const combos = await loadStoreFilterCombos();
+
+  const role = window._role || {};
+  const roleDepotIds = (role.role === 'depot_manager')
+    ? new Set((role.depots || []).filter(Boolean))
+    : null; // null = admin / all depots
+
+  const currentDepot = depotSelect.value;
+  const currentProv = provSelect.value;
+
+  // Depot universe (role-limited for managers)
+  let depotUniverse = combos.depots;
+  if (roleDepotIds) depotUniverse = depotUniverse.filter(d => roleDepotIds.has(d.id));
+
+  // Allowed depot ids given the current province selection
+  let allowedDepotIds;
+  if (currentProv) {
+    const set = combos.provinceToDepots[currentProv] ? Array.from(combos.provinceToDepots[currentProv]) : [];
+    allowedDepotIds = roleDepotIds ? set.filter(id => roleDepotIds.has(id)) : set;
+  } else {
+    allowedDepotIds = depotUniverse.map(d => d.id);
+  }
+
+  // Allowed provinces given the current depot (or the manager's depots if none picked)
+  let allowedProvs;
+  if (currentDepot) {
+    allowedProvs = combos.depotToProvinces[currentDepot] ? Array.from(combos.depotToProvinces[currentDepot]) : [];
+  } else if (roleDepotIds) {
+    const s = new Set();
+    depotUniverse.forEach(d => (combos.depotToProvinces[d.id] || new Set()).forEach(p => s.add(p)));
+    allowedProvs = Array.from(s);
+  } else {
+    allowedProvs = Object.keys(combos.provinceToDepots);
+  }
+
+  depotSelect.innerHTML = '<option value="">All Depots</option>' + depotUniverse
+    .filter(d => allowedDepotIds.includes(d.id))
+    .map(d => `<option value="${d.id}"${d.id===currentDepot?' selected':''}>${d.code} — ${d.name}</option>`)
+    .join('');
+
+  const provOrder = ['AB','BC','MB','SK','ON','QC','NS','NB','PE','NL'];
+  provSelect.innerHTML = '<option value="">All provinces</option>' + provOrder
+    .filter(p => allowedProvs.includes(p))
+    .map(p => `<option value="${p}"${p===currentProv?' selected':''}>${PROVINCE_LABELS[p]||p}</option>`)
+    .join('');
+}
+window.rebuildOrdersFilterOptions = rebuildOrdersFilterOptions;
+
+// Default a depot manager to their own depot. A single-depot manager gets that
+// depot pre-selected; a multi-depot manager keeps "All Depots" (already limited
+// to just their depots), so none of their depots are hidden by default.
+function applyOrdersDepotDefault() {
+  const sel = document.getElementById('orders-filter-depot');
+  if (!sel) return;
+  const role = window._role || {};
+  if (role.role !== 'depot_manager') return;
+  const depots = (role.depots || []).filter(Boolean);
+  if (depots.length === 1 && sel.querySelector('option[value="' + depots[0] + '"]')) {
+    sel.value = depots[0];
+  }
+}
+window.applyOrdersDepotDefault = applyOrdersDepotDefault;
+
+// Depot/province onchange: relink the two dropdowns, then reload.
+window.searchOrders = async function searchOrders() {
+  await rebuildOrdersFilterOptions();
+  loadOrders();
+};
 
 function renderOrdersFiltered() {
   const search = (document.getElementById('orders-filter-search').value || '').toLowerCase().trim();
