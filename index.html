@@ -1771,6 +1771,12 @@
             <option value="PE">Prince Edward Island</option>
             <option value="NL">Newfoundland</option>
           </select>
+          <select id="store-qbsync-filter" onchange="searchStores()" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px">
+            <option value="">All QB Sync</option>
+            <option value="error">❌ Error</option>
+            <option value="pending">⏳ Pending</option>
+            <option value="synced">✅ Synced</option>
+          </select>
           <label style="display:flex;align-items:center;gap:6px;color:var(--text);font-size:13px;padding:8px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;cursor:pointer;user-select:none">
             <input id="store-hide-inactive" type="checkbox" checked onchange="searchStores()" style="accent-color:var(--gold);cursor:pointer"/>
             Hide Inactive
@@ -5048,14 +5054,14 @@ let allStoresData = [];
 let _storePage = 0;                  // 0-indexed current page
 const STORE_PAGE_SIZE = 100;
 let _storeLastFilters = { search:'', province:'', hideInactive:true, depotId:'' };
-async function loadStores(search, province, hideInactive, depotId) {
+async function loadStores(search, province, hideInactive, depotId, qbSync) {
   // If called with no args (e.g. after a save/toggle), reuse the last-used
   // filters and stay on the current page, so the user's view is preserved.
   if (search === undefined) {
-    ({ search, province, hideInactive, depotId } = _storeLastFilters);
+    ({ search, province, hideInactive, depotId, qbSync } = _storeLastFilters);
   }
   // Remember the active filters so prev/next can re-query the same set
-  _storeLastFilters = { search, province, hideInactive, depotId };
+  _storeLastFilters = { search, province, hideInactive, depotId, qbSync };
   const offset = _storePage * STORE_PAGE_SIZE;
   let query = `stores?select=*,depot:depots(code,name)&order=name.asc&limit=${STORE_PAGE_SIZE}&offset=${offset}`;
   if (search) {
@@ -5094,6 +5100,7 @@ async function loadStores(search, province, hideInactive, depotId) {
   }
   if (province) query += `&province=eq.${encodeURIComponent(province)}`;
   if (depotId) query += `&depot_id=eq.${encodeURIComponent(depotId)}`;
+  if (qbSync) query += `&qb_sync_status=eq.${encodeURIComponent(qbSync)}`;
   if (hideInactive) query += `&active=eq.true`;
   const data = await sbFetch(query);
   allStoresData = Array.isArray(data) ? data : [];
@@ -5120,12 +5127,12 @@ async function loadStores(search, province, hideInactive, depotId) {
 window.storesNextPage = () => {
   if (allStoresData.length < STORE_PAGE_SIZE) return; // already on last page
   _storePage += 1;
-  loadStores(_storeLastFilters.search, _storeLastFilters.province, _storeLastFilters.hideInactive, _storeLastFilters.depotId);
+  loadStores(_storeLastFilters.search, _storeLastFilters.province, _storeLastFilters.hideInactive, _storeLastFilters.depotId, _storeLastFilters.qbSync);
 };
 window.storesPrevPage = () => {
   if (_storePage === 0) return;
   _storePage -= 1;
-  loadStores(_storeLastFilters.search, _storeLastFilters.province, _storeLastFilters.hideInactive, _storeLastFilters.depotId);
+  loadStores(_storeLastFilters.search, _storeLastFilters.province, _storeLastFilters.hideInactive, _storeLastFilters.depotId, _storeLastFilters.qbSync);
 };
 
 // Cache of all depot/province combinations from active stores.
@@ -5214,7 +5221,7 @@ function renderStoresTable(stores) {
     <td>
       <button class="btn-sm" onclick="window.editStore('${s.id}')">Edit</button>
       <button class="btn-sm" onclick="window.toggleStore('${s.id}',${s.active})">${s.active?'Deactivate':'Activate'}</button>
-      ${s.qb_sync_status==='error'?`<button class="btn-sm" onclick="window.retrySync('${s.id}')">Retry</button>`:''}
+      ${s.qb_sync_status==='error'?`<button class="btn-sm" onclick="window.retrySync('${s.id}')">Retry</button> <button class="btn-sm" style="border-color:rgba(63,185,80,0.5);color:#3fb950" onclick="window.markStoreSynced('${s.id}')">Mark Synced</button>`:''}
     </td>
   </tr>`).join('');
   document.getElementById('stores-body').innerHTML = `<table><thead><tr><th>Store Name</th><th>QB Customer</th><th>Store Number</th><th>Depot</th><th>Province</th><th>Unit Price</th><th>BIG Price</th><th>Del. Fee</th><th>EDI</th><th>Status</th><th>QB Sync</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
@@ -5228,7 +5235,8 @@ window.searchStores = async () => {
     document.getElementById('store-search').value,
     document.getElementById('store-province-filter').value,
     document.getElementById('store-hide-inactive').checked,
-    document.getElementById('store-depot-filter').value
+    document.getElementById('store-depot-filter').value,
+    (document.getElementById('store-qbsync-filter')||{}).value || ''
   );
 };
 
@@ -5428,6 +5436,16 @@ window.saveStore = async () => {
 
 window.toggleStore = async (id, currentActive) => { await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ active: !currentActive }) }); loadStores(); };
 window.retrySync = async (id) => { await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ qb_sync_status: 'pending', qb_sync_error: null }) }); alert('Store queued for retry.'); loadStores(); };
+// Manual override: mark a store synced WITHOUT re-sending to QuickBooks. For the
+// "already in use" (QB 3100) case where the customer is confirmed to exist in QB.
+window.markStoreSynced = async (id) => {
+  const s = (allStoresData || []).find(x => x.id === id);
+  const label = s ? (s.name || s.qb_name || s.public_code || 'this store') : 'this store';
+  if (!confirm(`Mark "${label}" as Synced?\n\nThis clears the QB sync error and marks the store synced WITHOUT sending it to QuickBooks. Only use this if you've confirmed the customer already exists in QuickBooks (e.g. a "name already in use" error).\n\nIf the customer is NOT actually in QB, its future invoices will fail to export.`)) return;
+  const resp = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ qb_sync_status: 'synced', qb_sync_error: null, qb_synced_at: new Date().toISOString() }) });
+  if (!resp.ok) { const t = await resp.text().catch(()=> ''); alert('Could not mark synced: ' + resp.status + (t ? ' — ' + t : '')); return; }
+  loadStores();
+};
 window.syncShipTo = () => { document.getElementById('store-ship-addr1').value = document.getElementById('store-addr1').value; document.getElementById('store-ship-city').value = document.getElementById('store-city').value; document.getElementById('store-ship-postal').value = document.getElementById('store-postal').value; };
 window.autoSetTaxCode = () => { const m = { 'AB':'G','BC':'G','MB':'G','SK':'G','ON':'H13','QC':'Q-S','NS':'H14','NB':'H15','NL':'H15','PE':'H15','WA':'E' }; const tc = document.getElementById('store-taxcode'); if (tc) tc.value = m[document.getElementById('store-province').value]||'G'; };
 window.closeStoreModal = () => document.getElementById('store-modal').classList.remove('open');
