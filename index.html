@@ -1660,6 +1660,14 @@
             <option value="">All</option>
           </select>
         </div>
+        <div class="filter-group"><label>Freezer</label>
+          <select id="orders-filter-product" onchange="loadOrders()">
+            <option value="">All</option>
+            <option value="ice_cream">🍦 Ice Cream</option>
+            <option value="sorbet">🍧 Sorbet</option>
+            <option value="both">🍦+🍧 Both</option>
+          </select>
+        </div>
         <div class="filter-group"><label>Source</label>
           <select id="orders-filter-source" onchange="loadOrders()">
             <option value="">All sources</option>
@@ -7134,6 +7142,8 @@ async function loadOrders() {
   // same pattern as the province filter.
   const deliveryEl = document.getElementById('orders-filter-delivery');
   const delivery = deliveryEl ? deliveryEl.value : '';
+  const productEl = document.getElementById('orders-filter-product');
+  const productType = productEl ? productEl.value : '';
 
   const bodyEl = document.getElementById('orders-body');
   bodyEl.innerHTML = '<div class="loading">Loading orders...</div>';
@@ -7143,7 +7153,7 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,shipped_at,invoiced_at,paid_at,' +
+    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,product_type,shipped_at,invoiced_at,paid_at,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
     'store:stores!store_id(id,public_code,qb_name,ship_city,province,depot_id,phone,email,route:routes(delivery_method))'
   );
@@ -7165,6 +7175,7 @@ async function loadOrders() {
     params.append('status', `eq.${status}`);
   }
   if (source) params.append('source', `eq.${source}`);
+  if (productType) params.append('product_type', `eq.${productType}`);
 
   const data = await sbFetch(`orders_with_schedule?${params.toString()}`);
   let orders = Array.isArray(data) ? data : [];
@@ -7536,7 +7547,7 @@ function renderOrdersTable(orders, totalCount, alreadySorted) {
         <span style="font-family:monospace;font-weight:600;color:var(--gold);font-size:13px">#${o.id.replace(/-/g,'').slice(-8).toUpperCase()}</span>
       </td>
       <td>
-        <div style="font-weight:600">${escapeHtml(storeName)}${o.is_new_install ? ' <span style="background:rgba(232,123,181,0.18);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px;white-space:nowrap;display:inline-block">🆕 NEW INSTALL</span>' : ''}${o.is_freezer_pickup ? ' <span style="background:rgba(245,166,35,0.18);color:#f5a623;border:1px solid rgba(245,166,35,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px;white-space:nowrap;display:inline-block">📦 FREEZER PICKUP</span>' : ''}${shippingBadge}</div>
+        <div style="font-weight:600">${escapeHtml(storeName)}${o.is_new_install ? ` <span style="background:rgba(232,123,181,0.18);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px;white-space:nowrap;display:inline-block">🆕 NEW INSTALL${(() => { const pt = o.product_type || (o.includes_sorbet ? 'both' : 'ice_cream'); return pt === 'both' ? ' · 🍦+🍧' : pt === 'sorbet' ? ' · 🍧' : ' · 🍦'; })()}</span>` : ''}${o.is_freezer_pickup ? ' <span style="background:rgba(245,166,35,0.18);color:#f5a623;border:1px solid rgba(245,166,35,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px;white-space:nowrap;display:inline-block">📦 FREEZER PICKUP</span>' : ''}${shippingBadge}</div>
         <div style="font-size:12px;color:var(--muted)">${storeCode ? `<span style="font-family:monospace;color:var(--gold)">${storeCode}</span> · ` : ''}${escapeHtml(cityProv)}</div>
       </td>
       <td>${sourceBadge(o.source)}</td>
