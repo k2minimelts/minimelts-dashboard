@@ -2535,6 +2535,14 @@
         </div>
       </div>
 
+      <!-- Sorbet gate (soft): shown when Sorbet/Both is picked for a store that
+           isn't sorbet-enrolled. Office discretion — enroll & continue. -->
+      <div id="order-sorbet-gate" style="display:none;margin-bottom:14px;background:rgba(232,123,181,0.08);border:1px solid rgba(232,123,181,0.4);border-radius:8px;padding:12px 14px">
+        <div style="font-size:13px;color:var(--text);font-weight:600;margin-bottom:4px">⚠️ <span id="order-sorbet-gate-store"></span> isn't set up for sorbet</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:10px">Sorbet needs the separate <strong>-18°C</strong> sorbet freezer — it can't go in the <strong>-35°C</strong> Mini Melts freezer. Confirm they have the sorbet freezer before adding it.</div>
+        <button type="button" onclick="window.enrollSelectedStoreSorbet()" style="background:var(--mm-pink);color:#fff;border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer">✓ They have the sorbet freezer — enroll &amp; continue</button>
+      </div>
+
       <!-- Ice Cream Stock Level (shown when product type is ice_cream or both) -->
       <div class="field" id="order-stock-level-row">
         <label>Ice Cream Stock Level</label>
@@ -7843,6 +7851,7 @@ window.showNewOrderModal = (source) => {
   document.getElementById('order-total-units-row').style.display = isStaples ? 'block' : 'none';
   document.getElementById('order-store-search').value = '';
   document.getElementById('order-store-id').value = '';
+  window._selectedOrderStore = null;
   document.getElementById('order-store-selected').style.display = 'none';
   document.getElementById('order-po-number').value = '';
   document.getElementById('order-stock-level').value = '';
@@ -7885,6 +7894,42 @@ window.onOrderProductTypeChange = () => {
   // Clear any stale value in a hidden field so it doesn't leak into the payload.
   if (!showIce) document.getElementById('order-stock-level').value = '';
   if (!showSorbet) document.getElementById('order-sorbet-stock-level').value = '';
+  if (window.updateSorbetGate) window.updateSorbetGate();
+};
+
+// Sorbet gate (admin phone order): when Sorbet/Both is chosen for a store that
+// isn't sorbet-enrolled, surface a freezer explainer + one-click enroll. Soft
+// gate — office keeps discretion; enrolling flips stores.sorbet_enrolled so the
+// store is never gated again (here or on the customer order form).
+window.updateSorbetGate = () => {
+  const gate = document.getElementById('order-sorbet-gate');
+  if (!gate) return;
+  const checked = document.querySelector('input[name="order-product-type"]:checked');
+  const value = checked ? checked.value : 'ice_cream';
+  const wantsSorbet = value === 'sorbet' || value === 'both';
+  const store = window._selectedOrderStore;
+  const pickupEl = document.getElementById('order-is-pickup');
+  const isPickup = pickupEl && pickupEl.checked;
+  if (wantsSorbet && store && !store.sorbet_enrolled && !isPickup) {
+    document.getElementById('order-sorbet-gate-store').textContent = store.qb_name || store.public_code || 'This store';
+    gate.style.display = 'block';
+  } else {
+    gate.style.display = 'none';
+  }
+};
+
+// Office-discretion enroll: mark the selected store sorbet-enrolled without an
+// agreement (same grandfathering spirit as existing sorbet customers).
+window.enrollSelectedStoreSorbet = async () => {
+  const store = window._selectedOrderStore;
+  if (!store || !store.id) return;
+  const resp = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${store.id}`, {
+    method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ sorbet_enrolled: true })
+  });
+  if (!resp.ok) { alert('Could not enroll the store for sorbet: ' + resp.status); return; }
+  store.sorbet_enrolled = true;
+  window.updateSorbetGate();
 };
 
 // Freezer pickup carries no product. When on, hide the product/stock/units rows
@@ -7909,6 +7954,7 @@ window.onOrderPickupToggle = () => {
       window.onOrderProductTypeChange();
     }
   }
+  if (window.updateSorbetGate) window.updateSorbetGate();
 };
 
 window.closeOrderModal = () => {
@@ -7940,7 +7986,7 @@ window.searchOrderStore = () => {
     let data;
     let tokens = [];
     if (/^MM-\d+$/i.test(q)) {
-      data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1&limit=10`);
+      data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1,sorbet_enrolled&limit=10`);
     } else {
       tokens = q.split(/\s+/).filter(Boolean);
       const tokenClauses = tokens.map(tok => {
@@ -7948,7 +7994,7 @@ window.searchOrderStore = () => {
         return `or(qb_name.ilike.${enc},ship_city.ilike.${enc},public_code.ilike.${enc})`;
       });
       const filter = tokenClauses.length > 0 ? `&and=(${tokenClauses.join(',')})` : '';
-      data = await sbFetch(`stores?active=eq.true${filter}${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1&order=qb_name.asc&limit=25`);
+      data = await sbFetch(`stores?active=eq.true${filter}${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1,sorbet_enrolled&order=qb_name.asc&limit=25`);
     }
     let stores = Array.isArray(data) ? data : [];
     // Client-side relevance boost. Stores where a numeric token appears at a
@@ -7988,6 +8034,7 @@ window.searchOrderStore = () => {
 
 window.selectOrderStore = (id, storeJson) => {
   const s = typeof storeJson === 'string' ? JSON.parse(storeJson.replace(/&quot;/g,'"')) : storeJson;
+  window._selectedOrderStore = s;
   document.getElementById('order-store-id').value = id;
   document.getElementById('order-store-search').value = '';
   document.getElementById('order-store-results').style.display = 'none';
@@ -8000,10 +8047,11 @@ window.selectOrderStore = (id, storeJson) => {
       ${s.ship_city ? ' · ' + escapeHtml(s.ship_city) : ''}
       ${s.province ? ', ' + escapeHtml(s.province) : ''}
     </div>
-    <button type="button" onclick="document.getElementById('order-store-id').value='';document.getElementById('order-store-selected').style.display='none';document.getElementById('order-store-search').focus()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;margin-top:6px">Change</button>`;
+    <button type="button" onclick="window._selectedOrderStore=null;document.getElementById('order-store-id').value='';document.getElementById('order-store-selected').style.display='none';document.getElementById('order-store-search').focus();window.updateSorbetGate&&window.updateSorbetGate()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;margin-top:6px">Change</button>`;
   // Prefill contact from the store record if empty
   if (!document.getElementById('order-contact-phone').value && s.phone) document.getElementById('order-contact-phone').value = s.phone;
   if (!document.getElementById('order-contact-email').value && s.email) document.getElementById('order-contact-email').value = s.email;
+  if (window.updateSorbetGate) window.updateSorbetGate();
 };
 
 // ── Recurring Weekly Customers ───────────────────────────────────────────
@@ -8406,6 +8454,15 @@ window.saveOrder = async () => {
     }
   } catch (e) { /* non-fatal: if the check fails, fall through and let the insert proceed */ }
 
+  // Soft sorbet gate (office discretion): if the order includes sorbet for a
+  // store that isn't sorbet-enrolled (and wasn't just enrolled via the inline
+  // banner), make the office consciously confirm before saving.
+  if (includesSorbet && !isFreezerPickup && window._selectedOrderStore && !window._selectedOrderStore.sorbet_enrolled) {
+    if (!confirm(`${window._selectedOrderStore.qb_name || 'This store'} isn't set up for sorbet — it needs the separate -18°C freezer (not the -35°C Mini Melts freezer).\n\nSave the sorbet order anyway without enrolling them?`)) {
+      return;
+    }
+  }
+
   if (source === 'staples_po') {
     if (!poNumber) { errEl.textContent = 'PO number is required for Staples orders.'; errEl.style.display = 'block'; return; }
     if (totalUnits === null || isNaN(totalUnits) || totalUnits < 1) {
@@ -8442,6 +8499,7 @@ window.saveOrder = async () => {
     status: 'pending',
     is_new_install: isFreezerPickup ? false : isNewInstall,
     includes_sorbet: isFreezerPickup ? false : includesSorbet,
+    product_type: isFreezerPickup ? null : productType,
     sorbet_stock_level: isFreezerPickup ? null : (includesSorbet ? sorbetStockLevel : null),
     is_freezer_pickup: isFreezerPickup,
     deactivate_store_on_pickup: deactivateStore,
@@ -9197,7 +9255,7 @@ async function loadMapData() {
     fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,no_cash_sales_7d,no_card_sales_7d,days_since_last_sale,days_since_last_visit,depot_id,depot_code'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
-    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,is_freezer_pickup,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level&order=submitted_at.desc'),
+    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,is_freezer_pickup,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level,product_type&order=submitted_at.desc'),
   ]);
   _mapStores = stores;
   _mapMachines = venues;
@@ -9747,8 +9805,10 @@ async function initMapboxGL() {
       const pickupLabel = o.is_freezer_pickup
         ? '<span style="background:#f5a623;color:#1a1a1a;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px">📦 PICKUP</span>'
         : '';
+      const _instPt = o.product_type || (o.includes_sorbet ? 'both' : 'ice_cream');
+      const _instPtLabel = _instPt === 'both' ? '🍦+🍧 Both' : _instPt === 'sorbet' ? '🍧 Sorbet' : '🍦 Ice Cream';
       const installLabel = o.is_new_install
-        ? '<span style="background:#ff4d9d;color:#fff;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px">🆕 INSTALL</span>'
+        ? `<span style="background:#ff4d9d;color:#fff;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px">🆕 INSTALL · ${_instPtLabel}</span>`
         : '';
       // Compact sorbet pill — pink so depot manager spots it at a glance.
       const sorbetLabel = o.includes_sorbet
@@ -11213,7 +11273,7 @@ async function schedLoadOrdersAndOverdue() {
   // source, stock level, total units, contact, install flag) so the order
   // pin's hover popup can show the depot manager useful context for scheduling.
   const ordersPromise = sbFetch(
-    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,includes_sorbet,sorbet_stock_level,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,route_id)` +
+    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,includes_sorbet,sorbet_stock_level,product_type,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,route_id)` +
     `&status=eq.pending&trip_stop_id=is.null` +
     `&limit=500`
   );
@@ -11316,6 +11376,7 @@ async function schedLoadOrdersAndOverdue() {
       order_submitted_by_phone: o.submitted_by_phone || null,
       order_includes_sorbet: !!o.includes_sorbet,
       order_sorbet_stock_level: o.sorbet_stock_level || null,
+      order_product_type: o.product_type || null,
       route_delivery_method: s.route_id ? (_routeMethodById[s.route_id] || null) : null,
       is_new_install: !!o.is_new_install,
     });
@@ -11963,7 +12024,7 @@ function schedRenderMarkers() {
       popupHtml = `<div style="color:#1d2230;font-size:12px;line-height:1.4;min-width:240px;max-width:300px">
         ${skipBanner}
         ${shippingBanner}
-        ${store.is_new_install ? '<div style="background:#ff4d9d;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.5px;margin-bottom:6px;text-align:center">🆕 NEW FREEZER INSTALL</div>' : ''}
+        ${store.is_new_install ? `<div style="background:#ff4d9d;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.5px;margin-bottom:6px;text-align:center">🆕 NEW FREEZER INSTALL · ${(() => { const pt = store.order_product_type || (store.order_includes_sorbet ? 'both' : 'ice_cream'); return pt === 'both' ? '🍦+🍧 BOTH' : pt === 'sorbet' ? '🍧 SORBET' : '🍦 ICE CREAM'; })()}</div>` : ''}
         <div style="font-weight:700;font-size:13px">${schedEscapeHtml(store.qb_name)}</div>
         <div style="opacity:0.8;font-size:11px;margin-top:1px">${schedEscapeHtml([store.ship_city, store.province].filter(Boolean).join(', '))}</div>
         <div style="margin-top:6px;font-size:11px;color:#444">
