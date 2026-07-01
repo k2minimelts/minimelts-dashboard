@@ -1651,21 +1651,16 @@
         <div class="filter-group"><label>Status</label>
           <select id="orders-filter-status" onchange="loadOrders()">
             <option value="active" selected>Active (Pending + Scheduled + Shipped)</option>
-            <option value="new_installs">🆕 New Installs (active only)</option>
+            <option value="new_installs">🆕 New Installs — all (active)</option>
+            <option value="new_installs_ice_cream">&nbsp;&nbsp;↳ 🍦 Ice Cream freezer</option>
+            <option value="new_installs_sorbet">&nbsp;&nbsp;↳ 🍧 Sorbet freezer</option>
+            <option value="new_installs_both">&nbsp;&nbsp;↳ 🍦+🍧 Both freezers</option>
             <option value="pending">Pending only</option>
             <option value="scheduled">Scheduled only</option>
             <option value="shipped">Shipped (awaiting invoice/payment)</option>
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
             <option value="">All</option>
-          </select>
-        </div>
-        <div class="filter-group"><label>Freezer</label>
-          <select id="orders-filter-product" onchange="loadOrders()">
-            <option value="">All</option>
-            <option value="ice_cream">🍦 Ice Cream</option>
-            <option value="sorbet">🍧 Sorbet</option>
-            <option value="both">🍦+🍧 Both</option>
           </select>
         </div>
         <div class="filter-group"><label>Source</label>
@@ -7142,8 +7137,6 @@ async function loadOrders() {
   // same pattern as the province filter.
   const deliveryEl = document.getElementById('orders-filter-delivery');
   const delivery = deliveryEl ? deliveryEl.value : '';
-  const productEl = document.getElementById('orders-filter-product');
-  const productType = productEl ? productEl.value : '';
 
   const bodyEl = document.getElementById('orders-body');
   bodyEl.innerHTML = '<div class="loading">Loading orders...</div>';
@@ -7171,11 +7164,17 @@ async function loadOrders() {
     // orders_with_schedule view so this filters server-side.
     params.append('status', 'in.(pending,scheduled,shipped)');
     params.append('is_new_install', 'eq.true');
+  } else if (status === 'new_installs_ice_cream' || status === 'new_installs_sorbet' || status === 'new_installs_both') {
+    // New installs narrowed to a single freezer type so a depot manager can see
+    // at a glance how many of each freezer they need to bring. Same active
+    // working-queue scope as "New Installs — all".
+    params.append('status', 'in.(pending,scheduled,shipped)');
+    params.append('is_new_install', 'eq.true');
+    params.append('product_type', `eq.${status.replace('new_installs_', '')}`);
   } else if (status) {
     params.append('status', `eq.${status}`);
   }
   if (source) params.append('source', `eq.${source}`);
-  if (productType) params.append('product_type', `eq.${productType}`);
 
   const data = await sbFetch(`orders_with_schedule?${params.toString()}`);
   let orders = Array.isArray(data) ? data : [];
