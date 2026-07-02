@@ -2543,7 +2543,10 @@
       <div id="order-sorbet-gate" style="display:none;margin-bottom:14px;background:rgba(232,123,181,0.08);border:1px solid rgba(232,123,181,0.4);border-radius:8px;padding:12px 14px">
         <div style="font-size:13px;color:var(--text);font-weight:600;margin-bottom:4px">⚠️ <span id="order-sorbet-gate-store"></span> isn't set up for sorbet</div>
         <div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:10px">Sorbet needs the separate <strong>-18°C</strong> sorbet freezer — it can't go in the <strong>-35°C</strong> Mini Melts freezer. Confirm they have the sorbet freezer before adding it.</div>
-        <button type="button" onclick="window.enrollSelectedStoreSorbet()" style="background:var(--mm-pink);color:#fff;border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer">✓ They have the sorbet freezer — enroll &amp; continue</button>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <button type="button" onclick="window.enrollSelectedStoreSorbet(false)" style="background:var(--mm-pink);color:#fff;border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer">✓ Mini Melts sorbet freezer — enroll &amp; continue</button>
+          <button type="button" onclick="window.enrollSelectedStoreSorbet(true)" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer">🧊 Their own freezer — enroll (no freezer, no contract)</button>
+        </div>
       </div>
 
       <!-- Ice Cream Stock Level (shown when product type is ice_cream or both) -->
@@ -7930,15 +7933,22 @@ window.updateSorbetGate = () => {
 
 // Office-discretion enroll: mark the selected store sorbet-enrolled without an
 // agreement (same grandfathering spirit as existing sorbet customers).
-window.enrollSelectedStoreSorbet = async () => {
+// byo=true => customer uses their OWN -18°C freezer: no Mini Melts freezer is
+// delivered, no agreement is signed, and it must never count as a freezer install.
+window.enrollSelectedStoreSorbet = async (byo = false) => {
   const store = window._selectedOrderStore;
   if (!store || !store.id) return;
+  if (byo && !confirm(`Enroll ${store.qb_name || 'this store'} for sorbet in THEIR OWN freezer?\n\n• No Mini Melts freezer is delivered and no agreement is signed.\n• Their freezer must hold -18°C.\n• Sorbet must NOT go in the -35°C Mini Melts freezer.`)) {
+    return;
+  }
+  const patch = byo ? { sorbet_enrolled: true, sorbet_own_freezer: true } : { sorbet_enrolled: true };
   const resp = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${store.id}`, {
     method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' },
-    body: JSON.stringify({ sorbet_enrolled: true })
+    body: JSON.stringify(patch)
   });
   if (!resp.ok) { alert('Could not enroll the store for sorbet: ' + resp.status); return; }
   store.sorbet_enrolled = true;
+  if (byo) store.sorbet_own_freezer = true;
   window.updateSorbetGate();
 };
 
@@ -7996,7 +8006,7 @@ window.searchOrderStore = () => {
     let data;
     let tokens = [];
     if (/^MM-\d+$/i.test(q)) {
-      data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1,sorbet_enrolled&limit=10`);
+      data = await sbFetch(`stores?public_code=eq.${upperQ}&active=eq.true${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1,sorbet_enrolled,sorbet_own_freezer&limit=10`);
     } else {
       tokens = q.split(/\s+/).filter(Boolean);
       const tokenClauses = tokens.map(tok => {
@@ -8004,7 +8014,7 @@ window.searchOrderStore = () => {
         return `or(qb_name.ilike.${enc},ship_city.ilike.${enc},public_code.ilike.${enc})`;
       });
       const filter = tokenClauses.length > 0 ? `&and=(${tokenClauses.join(',')})` : '';
-      data = await sbFetch(`stores?active=eq.true${filter}${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1,sorbet_enrolled&order=qb_name.asc&limit=25`);
+      data = await sbFetch(`stores?active=eq.true${filter}${staplesFilter}&select=id,public_code,qb_name,ship_city,province,phone,email,ship_addr1,sorbet_enrolled,sorbet_own_freezer&order=qb_name.asc&limit=25`);
     }
     let stores = Array.isArray(data) ? data : [];
     // Client-side relevance boost. Stores where a numeric token appears at a
@@ -8473,6 +8483,15 @@ window.saveOrder = async () => {
     }
   }
 
+  // BYO sorbet: a store using their own -18°C freezer never needs a Mini Melts
+  // freezer install for a sorbet-only order. Force the install flag off so no
+  // depot is dispatched with a freezer, and let the office know.
+  let effectiveNewInstall = isNewInstall;
+  if (window._selectedOrderStore && window._selectedOrderStore.sorbet_own_freezer && productType === 'sorbet' && isNewInstall) {
+    alert(`${window._selectedOrderStore.qb_name || 'This store'} uses their own sorbet freezer — no Mini Melts freezer is installed, so this can't be a new install. Saving as a regular sorbet order.`);
+    effectiveNewInstall = false;
+  }
+
   if (source === 'staples_po') {
     if (!poNumber) { errEl.textContent = 'PO number is required for Staples orders.'; errEl.style.display = 'block'; return; }
     if (totalUnits === null || isNaN(totalUnits) || totalUnits < 1) {
@@ -8507,7 +8526,7 @@ window.saveOrder = async () => {
     submitted_by_email: contactEmail,
     po_number: isStaples ? poNumber : null,
     status: 'pending',
-    is_new_install: isFreezerPickup ? false : isNewInstall,
+    is_new_install: isFreezerPickup ? false : effectiveNewInstall,
     includes_sorbet: isFreezerPickup ? false : includesSorbet,
     product_type: isFreezerPickup ? null : productType,
     sorbet_stock_level: isFreezerPickup ? null : (includesSorbet ? sorbetStockLevel : null),
