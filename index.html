@@ -2461,7 +2461,7 @@
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
             <div class="field"><label>Payment Terms</label>
               <select id="store-terms" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px">
-                <option value="Net 30">Net 30</option><option value="Net 25">Net 25</option>
+                <option value="EFT">EFT</option><option value="Net 30">Net 30</option><option value="Net 25">Net 25</option>
                 <option value="Net 60">Net 60</option><option value="Due on receipt">Due on receipt</option><option value="COD">COD</option>
               </select></div>
             <div class="field"><label>Rep</label>
@@ -5261,7 +5261,7 @@ window.showAddStore = () => {
   document.getElementById('store-fee').value = '20.00';
   document.getElementById('store-edi').value = 'false';
   document.getElementById('store-taxcode').value = 'G';
-  document.getElementById('store-terms').value = 'COD';
+  document.getElementById('store-terms').value = 'EFT';
   document.getElementById('store-rep').value = 'DM';
   // Clear any prior auto-detect hint from a previous open
   const hintEl = document.getElementById('store-chain-hint');
@@ -5274,7 +5274,7 @@ window.showAddStore = () => {
 //   * Staples → Net 60
 //   * Safeway / Sobeys family → Net 30, is_edi=true
 //   * Co-op chain → Net 30, $0 delivery fee
-//   * Everyone else → COD
+//   * Everyone else → EFT
 // `chainLabel` is shown as a small hint under the name field so the user
 // knows why their defaults changed. Returns null if no chain matches (so
 // the caller can leave fields alone or restore the COD default).
@@ -5286,7 +5286,7 @@ window.inferStoreDefaults = (qbName) => {
   // independents, not the Co-op chain. They should fall through to COD.
   const COOP_FALSE_POSITIVES = ["mrs cooper's convenience store", "scoops & things", "what's the scoop"];
   if (COOP_FALSE_POSITIVES.includes(n)) {
-    return { terms: 'COD', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (COD)' };
+    return { terms: 'EFT', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (EFT)' };
   }
 
   if (n.includes('staples')) {
@@ -5305,7 +5305,7 @@ window.inferStoreDefaults = (qbName) => {
   if (n.includes('co-op') || n.includes('coop')) {
     return { terms: 'Net 30', isEdi: false, deliveryFee: 0, unitPrice: 2.97, chainLabel: 'Co-op → Net 30, $0 delivery, $2.97' };
   }
-  return { terms: 'COD', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (COD)' };
+  return { terms: 'EFT', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (EFT)' };
 };
 
 // Apply inferred defaults to the Add Store form. Only runs for new stores
