@@ -2811,6 +2811,18 @@
       <div id="cancel-order-context" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:var(--muted);line-height:1.5"></div>
       <p style="font-size:13px;color:var(--muted);margin:0 0 14px">If this order is currently scheduled on a trip, the trip stop will be removed automatically.</p>
 
+      <div class="field" style="margin-bottom:16px">
+        <label>Reason for cancellation <span style="color:#f85149">*</span></label>
+        <select id="cancel-audit-reason" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none;font-family:inherit">
+          <option value="">Select a reason…</option>
+          <option value="Duplicate order">Duplicate order</option>
+          <option value="Delinquent account">Delinquent account</option>
+          <option value="Store closed">Store closed</option>
+          <option value="Customer Cancelled">Customer Cancelled</option>
+        </select>
+        <p style="font-size:12px;color:var(--muted);margin:6px 0 0">Recorded for the audit log — not shown to the customer.</p>
+      </div>
+
       <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px;color:var(--text);margin-bottom:12px">
         <input type="checkbox" id="cancel-notify-customer" onchange="window.onCancelNotifyToggle()" style="width:18px;height:18px"/>
         ✉ Notify the customer by email
@@ -2822,7 +2834,7 @@
       </label>
 
       <div id="cancel-reason-row" class="field" style="display:none">
-        <label>Reason <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(shown to the customer)</span></label>
+        <label>Message to customer <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(shown in the email)</span></label>
         <textarea id="cancel-reason" rows="3" placeholder="e.g. Out of stock this cycle — we'll reach out when it's back." style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none;resize:vertical;font-family:inherit"></textarea>
       </div>
 
@@ -7149,7 +7161,7 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,product_type,shipped_at,invoiced_at,paid_at,' +
+    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,product_type,shipped_at,invoiced_at,paid_at,cancel_reason,cancelled_at,cancelled_by_email,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
     'store:stores!store_id(id,public_code,qb_name,ship_city,province,depot_id,phone,email,route:routes(delivery_method))'
   );
@@ -7469,6 +7481,15 @@ function renderOrdersTable(orders, totalCount, alreadySorted) {
     const notesPieces = [];
     if (o.po_number) notesPieces.push(`<span style="color:var(--gold);font-weight:600">PO ${escapeHtml(o.po_number)}</span>`);
     if (o.notes) notesPieces.push(escapeHtml(o.notes));
+    // Cancelled orders: surface the audit trail (reason · who · when) inline.
+    if (o.status === 'cancelled' && (o.cancel_reason || o.cancelled_by_email)) {
+      const who = o.cancelled_by_email ? ` · ${escapeHtml(o.cancelled_by_email)}` : '';
+      const when = o.cancelled_at
+        ? ` · ${new Date(o.cancelled_at).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}`
+        : '';
+      const reasonTxt = o.cancel_reason ? escapeHtml(o.cancel_reason) : 'Cancelled';
+      notesPieces.push(`<span style="color:#f85149;font-weight:600">🚫 ${reasonTxt}</span><span style="color:var(--muted);font-size:11px">${who}${when}</span>`);
+    }
     const notesHtml = notesPieces.join('<br>') || '<span style="color:var(--muted)">—</span>';
 
     // Actions: scheduling happens on the map. The orders tab only owns Cancel
@@ -7589,6 +7610,7 @@ window.cancelOrder = (id) => {
   // which either notifies the customer (via edge function) or cancels silently.
   const o = (typeof allOrders !== 'undefined' ? allOrders : []).find(x => x.id === id);
   document.getElementById('cancel-order-id').value = id;
+  document.getElementById('cancel-audit-reason').value = '';
   document.getElementById('cancel-notify-customer').checked = false;
   document.getElementById('cancel-reason').value = '';
   document.getElementById('cancel-reason-row').style.display = 'none';
@@ -7637,14 +7659,22 @@ window.confirmCancelOrder = async () => {
   const errEl = document.getElementById('cancel-order-error');
   errEl.style.display = 'none';
   const id = document.getElementById('cancel-order-id').value;
+  const auditReason = document.getElementById('cancel-audit-reason').value;
   const notify = document.getElementById('cancel-notify-customer').checked;
   const reason = document.getElementById('cancel-reason').value.trim();
   const btn = document.getElementById('cancel-order-confirm-btn');
   // Capture the resend choice NOW, before any async work or modal reset.
   const resendCheckedAtConfirm = document.getElementById('cancel-resend-driver').checked;
 
+  // Audit reason is mandatory for every cancellation (both silent and notify).
+  if (!auditReason) {
+    errEl.textContent = 'Please select a reason for cancellation.';
+    errEl.style.display = 'block';
+    return;
+  }
+
   if (notify && !reason) {
-    errEl.textContent = 'Please enter a reason to send to the customer.';
+    errEl.textContent = 'Please enter a message to send to the customer.';
     errEl.style.display = 'block';
     return;
   }
@@ -7657,7 +7687,7 @@ window.confirmCancelOrder = async () => {
       const r = await fetch(`${SUPABASE_URL}/functions/v1/send-order-cancellation`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_id: id, reason }),
+        body: JSON.stringify({ order_id: id, reason, cancel_reason: auditReason }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok || !data.ok) {
@@ -7672,8 +7702,10 @@ window.confirmCancelOrder = async () => {
         alert('Order cancelled, but the notification email failed to send.');
       }
     } else {
-      // Silent cancel — status PATCH only (original behaviour).
-      const ok = await patchOrder(id, { status: 'cancelled' });
+      // Silent cancel — status PATCH + audit reason. cancelled_by / cancelled_at
+      // are stamped server-side by the trg_orders_stamp_cancel trigger (this
+      // PATCH runs under the user's JWT, so auth.uid() is the actor).
+      const ok = await patchOrder(id, { status: 'cancelled', cancel_reason: auditReason });
       if (!ok) {
         errEl.textContent = 'Cancel failed.'; errEl.style.display = 'block';
         btn.disabled = false; btn.textContent = 'Cancel Order';
