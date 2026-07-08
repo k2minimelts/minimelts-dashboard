@@ -1651,16 +1651,32 @@
         <div class="filter-group"><label>Status</label>
           <select id="orders-filter-status" onchange="loadOrders()">
             <option value="active" selected>Active (Pending + Scheduled + Shipped)</option>
-            <option value="new_installs">🆕 New Installs — all (active)</option>
-            <option value="new_installs_ice_cream">&nbsp;&nbsp;↳ 🍦 Ice Cream freezer</option>
-            <option value="new_installs_sorbet">&nbsp;&nbsp;↳ 🍧 Sorbet freezer</option>
-            <option value="new_installs_both">&nbsp;&nbsp;↳ 🍦+🍧 Both freezers</option>
             <option value="pending">Pending only</option>
             <option value="scheduled">Scheduled only</option>
             <option value="shipped">Shipped (awaiting invoice/payment)</option>
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
             <option value="">All</option>
+          </select>
+        </div>
+        <!-- Order type is INDEPENDENT of status. Previously the new-install
+             options lived inside the Status dropdown, which made questions like
+             "how many new installs are pending?" unaskable (you could only pick
+             one). Keeping the two axes separate lets them compose. -->
+        <div class="filter-group"><label>Type</label>
+          <select id="orders-filter-type" onchange="onOrdersTypeChange()">
+            <option value="" selected>All orders</option>
+            <option value="new_install">🆕 New installs</option>
+            <option value="freezer_pickup">📦 Freezer pickups</option>
+            <option value="regular">🔁 Regular restock</option>
+          </select>
+        </div>
+        <div class="filter-group" id="orders-filter-freezer-group" style="display:none"><label>Freezer</label>
+          <select id="orders-filter-freezer" onchange="loadOrders()">
+            <option value="" selected>Any freezer</option>
+            <option value="needs_ice_cream">🍦 Needs ice cream (incl. both)</option>
+            <option value="needs_sorbet">🍧 Needs sorbet (incl. both)</option>
+            <option value="both">🍦+🍧 Both freezers only</option>
           </select>
         </div>
         <div class="filter-group"><label>Source</label>
@@ -1703,6 +1719,10 @@
           <button class="btn-export" style="background:#a855f7" onclick="showBiweeklyModal()" data-admin-only>🔁 Recurring Bi-Weekly</button>
         </div>
       </div>
+      <!-- Freezer tally, shown only when Type = New installs. Answers "how many
+           freezers do we actually have to load", which the per-type filter alone
+           cannot: a 'both' install needs one ice cream AND one sorbet freezer. -->
+      <div id="orders-newinstall-summary" style="display:none;margin:0 0 12px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:13px"></div>
       <div class="table-wrap">
         <div class="table-header">
           <span class="table-title">📦 Orders</span>
@@ -7143,6 +7163,10 @@ async function loadOrders() {
     } catch (e) { /* non-fatal: fall back to All Depots */ }
   }
   const status = document.getElementById('orders-filter-status').value;
+  const typeEl = document.getElementById('orders-filter-type');
+  const type = typeEl ? typeEl.value : '';
+  const freezerEl = document.getElementById('orders-filter-freezer');
+  const freezer = freezerEl ? freezerEl.value : '';
   const source = document.getElementById('orders-filter-source').value;
   const province = document.getElementById('orders-filter-province').value;
   const depotEl = document.getElementById('orders-filter-depot');
@@ -7173,22 +7197,31 @@ async function loadOrders() {
   // default view between Mark Shipped and Mark Paid.
   if (status === 'active') {
     params.append('status', 'in.(pending,scheduled,shipped)');
-  } else if (status === 'new_installs') {
-    // New-install flag, scoped to the same active working-queue statuses as
-    // "Active" (pending/scheduled/shipped). is_new_install is exposed by the
-    // orders_with_schedule view so this filters server-side.
-    params.append('status', 'in.(pending,scheduled,shipped)');
-    params.append('is_new_install', 'eq.true');
-  } else if (status === 'new_installs_ice_cream' || status === 'new_installs_sorbet' || status === 'new_installs_both') {
-    // New installs narrowed to a single freezer type so a depot manager can see
-    // at a glance how many of each freezer they need to bring. Same active
-    // working-queue scope as "New Installs — all".
-    params.append('status', 'in.(pending,scheduled,shipped)');
-    params.append('is_new_install', 'eq.true');
-    params.append('product_type', `eq.${status.replace('new_installs_', '')}`);
   } else if (status) {
     params.append('status', `eq.${status}`);
   }
+
+  // Order type — composes with Status rather than replacing it, so
+  // "Pending + New installs" is now expressible.
+  if (type === 'new_install') {
+    params.append('is_new_install', 'eq.true');
+  } else if (type === 'freezer_pickup') {
+    params.append('is_freezer_pickup', 'eq.true');
+  } else if (type === 'regular') {
+    params.append('is_new_install', 'eq.false');
+    params.append('is_freezer_pickup', 'eq.false');
+  }
+
+  // Freezer type, only meaningful for new installs. IMPORTANT: "needs ice cream"
+  // and "needs sorbet" both include product_type='both', because a store getting
+  // both freezers needs one of each. Filtering eq.ice_cream (the old behaviour)
+  // silently under-reported how many freezers the depot actually has to load.
+  if (type === 'new_install' && freezer) {
+    if (freezer === 'needs_ice_cream')      params.append('product_type', 'in.(ice_cream,both)');
+    else if (freezer === 'needs_sorbet')    params.append('product_type', 'in.(sorbet,both)');
+    else if (freezer === 'both')            params.append('product_type', 'eq.both');
+  }
+
   if (source) params.append('source', `eq.${source}`);
 
   const data = await sbFetch(`orders_with_schedule?${params.toString()}`);
@@ -7287,6 +7320,60 @@ window.searchOrders = async function searchOrders() {
   loadOrders();
 };
 
+// Show/hide the Freezer filter — it only applies to new installs. Reset it when
+// leaving the new-install view so a stale freezer narrowing can't silently
+// persist into an unrelated Type selection.
+window.onOrdersTypeChange = function () {
+  const type = document.getElementById('orders-filter-type').value;
+  const group = document.getElementById('orders-filter-freezer-group');
+  if (group) group.style.display = (type === 'new_install') ? '' : 'none';
+  if (type !== 'new_install') {
+    const fz = document.getElementById('orders-filter-freezer');
+    if (fz) fz.value = '';
+  }
+  loadOrders();
+};
+
+// Freezer tally for new installs. Computed from the FULL filtered list (not the
+// visible page), so it respects Status/Depot/Province/Source/search.
+//
+// A 'both' install needs one ice cream freezer AND one sorbet freezer, so it is
+// counted toward each total. That is why the two headline numbers can sum to
+// more than the install count — that is the point: they answer "how many of each
+// freezer do we load", not "how many orders are of each kind".
+function renderNewInstallSummary(orders) {
+  const el = document.getElementById('orders-newinstall-summary');
+  if (!el) return;
+  const typeEl = document.getElementById('orders-filter-type');
+  if (!typeEl || typeEl.value !== 'new_install') { el.style.display = 'none'; return; }
+
+  let iceOnly = 0, sorbetOnly = 0, both = 0;
+  for (const o of orders) {
+    // Same fallback used by the row badge, for rows predating product_type.
+    const pt = o.product_type || (o.includes_sorbet ? 'both' : 'ice_cream');
+    if (pt === 'both') both++;
+    else if (pt === 'sorbet') sorbetOnly++;
+    else iceOnly++;
+  }
+  const total = orders.length;
+  const needIce = iceOnly + both;
+  const needSorbet = sorbetOnly + both;
+  const s = (n) => (n === 1 ? '' : 's');
+  const dot = '<span style="color:var(--muted);margin:0 10px">·</span>';
+
+  el.innerHTML =
+    `<span style="font-weight:700;color:var(--mm-pink)">🆕 ${total} new install${s(total)}</span>` + dot +
+    `<span style="font-weight:700;color:var(--gold)">🍦 ${needIce}</span> ` +
+    `<span style="color:var(--muted)">ice cream freezer${s(needIce)} needed</span>` + dot +
+    `<span style="font-weight:700;color:var(--mm-pink)">🍧 ${needSorbet}</span> ` +
+    `<span style="color:var(--muted)">sorbet freezer${s(needSorbet)} needed</span>` +
+    `<div style="color:var(--muted);font-size:11px;margin-top:6px">` +
+      `Breakdown: 🍦 ${iceOnly} ice cream only · 🍧 ${sorbetOnly} sorbet only · 🍦+🍧 ${both} both ` +
+      `<span style="opacity:0.75">(each “both” counts toward each total above)</span>` +
+    `</div>`;
+  el.style.display = '';
+}
+
 function renderOrdersFiltered() {
   const search = (document.getElementById('orders-filter-search').value || '').toLowerCase().trim();
   let orders = allOrders;
@@ -7310,6 +7397,8 @@ function renderOrdersFiltered() {
   // the global sort order (not just a per-page sort). renderOrdersTable is told
   // not to re-sort the slice.
   sortOrdersInPlace(orders);
+  // Tally before paginating — the strip describes the whole filtered set.
+  renderNewInstallSummary(orders);
   // Client-side pagination over the fully-filtered list (all orders are already
   // in memory). Clamp the page in case the filtered set shrank below the
   // current page (e.g. after a search narrows results).
