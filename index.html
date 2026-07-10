@@ -3595,9 +3595,15 @@ window.resolveCorrection = async (id) => {
 };
 
 function populateDriverFilter() {
-  const drivers = [...new Set(allDeliveries.map(d => d.driver_name))].sort();
   const sel = document.getElementById('filter-driver');
+  const current = sel.value;
+  // Reset to just the static "All Drivers" option (index 0) before repopulating.
+  // loadAll() runs on every refresh; without this reset the driver list is
+  // appended again each time, duplicating every name in the dropdown.
+  sel.length = 1;
+  const drivers = [...new Set(allDeliveries.map(d => d.driver_name).filter(Boolean))].sort();
   drivers.forEach(d => { const o = document.createElement('option'); o.value = d; o.textContent = d; sel.appendChild(o); });
+  sel.value = current;
 }
 
 // ── Stats ──
