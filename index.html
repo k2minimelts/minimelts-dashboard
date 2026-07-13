@@ -6493,9 +6493,183 @@ window.switchTab = (tab) => {
     } catch(e){ alert("Could not open PDF: "+e.message); }
   };
 
+  // ---- Existing-customer detection ---------------------------------------
+  // An existing customer (e.g. already selling ice cream) who applies to add
+  // sorbet would otherwise be given a BRAND NEW store + ST- code, duplicating
+  // themselves. Before creating anything, look for an active store that already
+  // represents this applicant. Matching is deliberately broad (email / phone /
+  // address / business name) because a near-miss is cheap — the office simply
+  // clicks "Create new store anyway" — whereas a missed match silently mints a
+  // duplicate. Note a store adding sorbet needs NO new store: linking to the
+  // existing one and placing a sorbet order auto-enrols it (see enrollSorbet).
+  function appDigits(s){ return String(s||"").replace(/\D/g,""); }
+  function appAddrKey(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,""); }
+  function appNameKey(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,""); }
+
+  // PostgREST caps a plain select at 1000 rows and there are ~1,900+ active
+  // stores, so page through — otherwise a match past the first page would be
+  // silently missed and we'd mint the duplicate we're trying to prevent.
+  async function appFetchAllStores(){
+    const PAGE = 1000, all = [];
+    let from = 0;
+    for (;;) {
+      const rows = await sbFetch(
+        "stores?active=eq.true&select=id,public_code,name,qb_name,email,phone,addr1,ship_addr1,city,ship_city,sorbet_enrolled"
+        + "&order=public_code.asc&offset=" + from + "&limit=" + PAGE
+      );
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      all.push.apply(all, rows);
+      if (rows.length < PAGE) break;
+      from += PAGE;
+      if (from > 20000) break; // hard stop; never loop forever
+    }
+    return all;
+  }
+
+  async function appFindExistingStores(a){
+    let rows = [];
+    try { rows = await appFetchAllStores(); }
+    catch(e){ return []; }
+    if (!Array.isArray(rows)) return [];
+
+    const leadEmail = String(a.email||"").trim().toLowerCase();
+    const leadPhone = appDigits(a.phone);
+    const leadAddr  = appAddrKey(a.addr1);
+    const leadNames = [a.operating_name, a.legal_name, a.name]
+      .map(appNameKey).filter(function(x){ return x && x.length >= 4; });
+
+    const out = [];
+    rows.forEach(function(s){
+      const why = [];
+      // store.email may hold several comma-separated addresses
+      if (leadEmail) {
+        const emails = String(s.email||"").toLowerCase().split(/[,;\s]+/).filter(Boolean);
+        if (emails.indexOf(leadEmail) !== -1) why.push("email");
+      }
+      if (leadPhone && leadPhone.length >= 10 && appDigits(s.phone).slice(-10) === leadPhone.slice(-10)) why.push("phone");
+      if (leadAddr && leadAddr.length >= 6 &&
+          (appAddrKey(s.addr1) === leadAddr || appAddrKey(s.ship_addr1) === leadAddr)) why.push("address");
+      if (leadNames.length) {
+        const sn = appNameKey(s.name), sq = appNameKey(s.qb_name);
+        if (leadNames.some(function(n){ return n === sn || n === sq; })) why.push("name");
+      }
+      if (why.length) out.push({ store: s, why: why });
+    });
+    // Strongest matches first (most signals), then by code
+    out.sort(function(x,y){ return (y.why.length - x.why.length) || String(x.store.public_code||"").localeCompare(String(y.store.public_code||"")); });
+    return out;
+  }
+
+  // Delivery counts for the matched stores, so the office can tell a real
+  // trading customer from an empty shell record.
+  async function appDeliveryCounts(storeIds){
+    const counts = {};
+    if (!storeIds.length) return counts;
+    try {
+      const list = storeIds.map(function(i){ return '"'+i+'"'; }).join(",");
+      const rows = await sbFetch("deliveries?select=store_id&store_id=in.("+list+")");
+      (Array.isArray(rows)?rows:[]).forEach(function(d){ counts[d.store_id] = (counts[d.store_id]||0)+1; });
+    } catch(e){ /* counts are advisory only */ }
+    return counts;
+  }
+
+  function appCloseMatchModal(){
+    const el = document.getElementById("app-match-overlay");
+    if (el) el.remove();
+  }
+  window.appCloseMatchModal = appCloseMatchModal;
+
+  async function appShowMatchChooser(a, matches){
+    const ids = matches.map(function(m){ return m.store.id; });
+    const counts = await appDeliveryCounts(ids);
+
+    const rowsHtml = matches.map(function(m){
+      const s = m.store;
+      const n = counts[s.id] || 0;
+      const sorbet = s.sorbet_enrolled
+        ? '<span style="color:var(--mm-pink)">🍧 sorbet enrolled</span>'
+        : '<span style="color:var(--muted)">no sorbet yet</span>';
+      const place = [s.ship_city || s.city].filter(Boolean).join("");
+      return ''
+        + '<div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:var(--bg3)">'
+        +   '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px">'
+        +     '<div style="min-width:0">'
+        +       '<div style="font-weight:700;color:var(--text)">'+escapeHtml(s.qb_name || s.name || "")+'</div>'
+        +       '<div style="font-size:12px;color:var(--muted);margin-top:2px">'
+        +         '<code style="color:var(--gold)">'+escapeHtml(s.public_code||"")+'</code>'
+        +         (place ? ' · '+escapeHtml(place) : '')
+        +         ' · '+n+' deliver'+(n===1?'y':'ies')+' · '+sorbet
+        +       '</div>'
+        +       '<div style="font-size:11px;color:var(--muted);margin-top:4px">matched on: '+m.why.join(", ")+'</div>'
+        +     '</div>'
+        +     '<button class="ld-btn primary" style="white-space:nowrap" onclick="window.appLinkExisting(\''+a.id+'\',\''+s.id+'\',\''+escapeHtml(s.public_code||"")+'\')">Link to '+escapeHtml(s.public_code||"this store")+'</button>'
+        +   '</div>'
+        + '</div>';
+    }).join("");
+
+    const wrap = document.createElement("div");
+    wrap.id = "app-match-overlay";
+    wrap.className = "modal-overlay open";
+    wrap.innerHTML = ''
+      + '<div class="modal" style="max-width:680px">'
+      +   '<div class="modal-header">'
+      +     '<div class="modal-title">⚠️ This applicant may already be a customer</div>'
+      +     '<button class="modal-close" onclick="window.appCloseMatchModal()">×</button>'
+      +   '</div>'
+      +   '<div style="padding:20px 24px">'
+      +     '<p style="margin:0 0 14px;color:var(--muted);font-size:13px;line-height:1.6">'
+      +       'We found '+matches.length+' active store'+(matches.length===1?'':'s')+' that appear'+(matches.length===1?'s':'')+' to be this business. '
+      +       'Linking uses the existing store and its ST- code &mdash; no duplicate is created. '
+      +       'To add sorbet, link here, then place a sorbet order on that store and it will be enrolled automatically.'
+      +     '</p>'
+      +     rowsHtml
+      +     '<div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;display:flex;justify-content:space-between;align-items:center;gap:12px">'
+      +       '<span style="font-size:12px;color:var(--muted)">Genuinely a different location? Create a new store.</span>'
+      +       '<button class="ld-btn" onclick="window.appCreateNewAnyway(\''+a.id+'\')">Create new store anyway</button>'
+      +     '</div>'
+      +   '</div>'
+      + '</div>';
+    document.body.appendChild(wrap);
+  }
+
+  // Link the application to an EXISTING store: no new store, no new ST- code.
+  window.appLinkExisting = async function(leadId, storeId, code){
+    if (!confirm("Link this application to "+(code||"the existing store")+"?\n\nNo new store or store code will be created.")) return;
+    try {
+      const rpc = await fetch(`${SUPABASE_URL}/rest/v1/rpc/convert_application_to_store`, {
+        method: "POST", headers: headers(),
+        body: JSON.stringify({ p_lead_id: leadId, p_store_id: storeId })
+      });
+      if (!rpc.ok) {
+        let em=""; try { const j = await rpc.json(); em = j.message || j.error || JSON.stringify(j); } catch(e){}
+        alert("Could not link the application: " + (em || ("HTTP " + rpc.status)));
+        return;
+      }
+      window._pendingAppConversion = null;
+      appCloseMatchModal();
+      if (window.loadApplications) window.loadApplications();
+      if (window.selectApplication) window.selectApplication(leadId);
+      alert("✅ Linked to " + (code||"the existing store") + ".\n\nNo duplicate store was created. If they're adding sorbet, place a sorbet order on this store — it will be enrolled automatically.");
+    } catch(e){
+      alert("Could not link the application: " + (e && e.message ? e.message : e));
+    }
+  };
+
+  // Escape hatch: the match was a false positive (e.g. a second location that
+  // shares an owner's email), so fall through to the normal new-store flow.
+  window.appCreateNewAnyway = async function(leadId){
+    appCloseMatchModal();
+    let a;
+    try { const arr = await sbFetch("leads?select=*&id=eq."+leadId+"&limit=1"); a = Array.isArray(arr)?arr[0]:null; }
+    catch(e){ alert("Could not load the application."); return; }
+    if (a) appOpenNewStoreForm(a);
+  };
+
   // ---- Set up customer (signed application -> store) --------------------
-  // Opens the standard Add New Store modal pre-filled from the application,
-  // and arms saveStore() to call convert_application_to_store on success.
+  // Checks for an existing store for this applicant FIRST. Only if there's no
+  // match (or the office overrides) does it open the Add New Store modal
+  // pre-filled from the application, arming saveStore() to call
+  // convert_application_to_store on success.
   window.appSetupCustomer = async function(id){
     let a;
     try { const arr = await sbFetch("leads?select=*&id=eq."+id+"&limit=1"); a = Array.isArray(arr)?arr[0]:null; }
@@ -6504,6 +6678,15 @@ window.switchTab = (tab) => {
     if (a.converted_store_id){ alert("This application is already converted to a store."); return; }
     if (typeof window.showAddStore !== "function"){ alert("Add Store modal is unavailable."); return; }
 
+    const matches = await appFindExistingStores(a);
+    if (matches.length){ await appShowMatchChooser(a, matches); return; }
+
+    appOpenNewStoreForm(a);
+  };
+
+  // The original new-store path, unchanged — now reachable either because no
+  // existing store matched, or because the office explicitly overrode.
+  function appOpenNewStoreForm(a){
     window.showAddStore(); // resets the form (and clears any prior _pendingAppConversion)
 
     const opName = a.operating_name || a.legal_name || a.name || "";
@@ -6531,7 +6714,7 @@ window.switchTab = (tab) => {
     window._pendingAppConversion = { lead_id: a.id };
     const msg = document.getElementById("store-save-msg");
     if (msg){ msg.style.color="var(--gold)"; msg.textContent="From application — review tax code & depot, then Save to create the store and link it."; }
-  };
+  }
 
   window.appStub = function(which){ alert(which + " is the next piece we're building — not wired up yet."); };
 })();
