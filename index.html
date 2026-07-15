@@ -1585,7 +1585,7 @@
       <div class="filters">
         <div class="filter-group"><label>Search</label><input type="text" id="filter-search" placeholder="Store, driver, receipt..." oninput="applyFilters()" style="min-width:200px"/></div>
         <div class="filter-group"><label>Driver</label><select id="filter-driver" onchange="applyFilters()"><option value="">All Drivers</option></select></div>
-        <div class="filter-group"><label>Payment</label><select id="filter-payment" onchange="applyFilters()"><option value="">All Payments</option><option value="Terms">Terms</option><option value="Cash">Cash</option><option value="Cheque">Cheque</option><option value="Mail Cheque">Mail Cheque</option><option value="E-Transfer">E-Transfer</option><option value="EFT">EFT</option></select></div>
+        <div class="filter-group"><label>Payment</label><select id="filter-payment" onchange="applyFilters()"><option value="">All Payments</option><option value="Terms">Terms</option><option value="Cash">Cash</option><option value="Cheque">Cheque</option><option value="Mail Cheque">Mail Cheque</option><option value="E-Transfer">E-Transfer</option><option value="PAD">PAD</option></select></div>
         <div class="filter-group"><label>QB Status</label><select id="filter-qb" onchange="applyFilters()"><option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="exported">Exported</option><option value="failed">Failed</option></select></div>
         <div class="filter-group"><label>From</label><input type="date" id="filter-from" onchange="applyFilters()"/></div>
         <div class="filter-group"><label>To</label><input type="date" id="filter-to" onchange="applyFilters()"/></div>
@@ -1622,7 +1622,7 @@
           <select id="unpaid-filter-type" onchange="renderUnpaid()">
             <option value="">All types</option>
             <option value="E-Transfer">E-Transfer</option>
-            <option value="EFT">🏦 EFT (pre-authorized debit)</option>
+            <option value="PAD">🏦 PAD (pre-authorized debit)</option>
             <option value="Unpaid">🔓 Unpaid (authorized)</option>
             <option value="Mail Cheque">✉️ Mail Cheque</option>
             <option value="Shipped">📦 Shipped</option>
@@ -2482,7 +2482,7 @@
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
             <div class="field"><label>Payment Terms</label>
               <select id="store-terms" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px">
-                <option value="EFT">EFT</option><option value="Net 30">Net 30</option><option value="Net 25">Net 25</option>
+                <option value="PAD">PAD</option><option value="Net 30">Net 30</option><option value="Net 25">Net 25</option>
                 <option value="Net 60">Net 60</option><option value="Due on receipt">Due on receipt</option><option value="COD">COD</option>
               </select></div>
             <div class="field"><label>Rep</label>
@@ -3616,7 +3616,7 @@ function renderStats() {
   const today = allDeliveries.filter(d => d.delivered_at?.startsWith(todayStr));
   const week = allDeliveries.filter(d => d.delivered_at >= weekAgo);
   const month = allDeliveries.filter(d => d.delivered_at >= monthStart);
-  const unpaid = allDeliveries.filter(d => (d.payment_type === 'E-Transfer' || d.payment_type === 'EFT' || d.payment_type === 'Unpaid' || d.payment_type === 'Mail Cheque') && !d.paid);
+  const unpaid = allDeliveries.filter(d => (d.payment_type === 'E-Transfer' || (d.payment_type === 'EFT' || d.payment_type === 'PAD') || d.payment_type === 'Unpaid' || d.payment_type === 'Mail Cheque') && !d.paid);
   const sum = arr => arr.reduce((s,d) => s + parseFloat(d.total||0), 0);
   const fmt = n => `$${n.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   document.getElementById('stat-today').textContent = fmt(sum(today));
@@ -3807,7 +3807,7 @@ function payBadge(pt) {
   if (pt === 'E-Transfer') return `<span class="badge badge-etransfer">E-Transfer</span>`;
   if (pt === 'Unpaid') return `<span class="badge" style="background:rgba(248,81,73,0.15);color:#f85149;border:1px solid rgba(248,81,73,0.4)">🔓 Unpaid</span>`;
   if (pt === 'Mail Cheque') return `<span class="badge" style="background:rgba(245,166,35,0.15);color:#f5a623;border:1px solid rgba(245,166,35,0.4)">✉️ Mail Cheque</span>`;
-  if (pt === 'EFT') return `<span class="badge" style="background:rgba(79,195,212,0.15);color:var(--mm-cyan);border:1px solid rgba(79,195,212,0.4)">🏦 EFT</span>`;
+  if (pt === 'EFT' || pt === 'PAD') return `<span class="badge" style="background:rgba(79,195,212,0.15);color:var(--mm-cyan);border:1px solid rgba(79,195,212,0.4)">🏦 PAD</span>`;
   return `<span class="badge">${pt}</span>`;
 }
 function qbBadge(s, err) {
@@ -3967,7 +3967,7 @@ function renderUnpaid() {
   // belong in this workflow alongside E-Transfers. Shipping orders are a
   // separate stream merged in below.
   const dsdUnpaid = allDeliveries.filter(d =>
-    (d.payment_type === 'E-Transfer' || d.payment_type === 'EFT' || d.payment_type === 'Unpaid' || d.payment_type === 'Mail Cheque') && !d.paid
+    (d.payment_type === 'E-Transfer' || (d.payment_type === 'EFT' || d.payment_type === 'PAD') || d.payment_type === 'Unpaid' || d.payment_type === 'Mail Cheque') && !d.paid
   );
 
   // 2. Normalize both sources into the common row shape
@@ -4506,7 +4506,7 @@ window.showDetail = async (id) => {
           <option value="Cheque" ${d.payment_type==='Cheque'?'selected':''}>Cheque</option>
           <option value="Mail Cheque" ${d.payment_type==='Mail Cheque'?'selected':''}>Mail Cheque</option>
           <option value="E-Transfer" ${d.payment_type==='E-Transfer'?'selected':''}>E-Transfer</option>
-          <option value="EFT" ${d.payment_type==='EFT'?'selected':''}>EFT (pre-authorized debit)</option>
+          <option value="PAD" ${d.payment_type==='PAD'||d.payment_type==='EFT'?'selected':''}>PAD (pre-authorized debit)</option>
           <option value="Terms" ${d.payment_type==='Invoice'||d.payment_type==='Terms'||d.payment_type==='No Payment'?'selected':''}>Terms</option>
         </select>
       </div>
@@ -5305,7 +5305,7 @@ window.showAddStore = () => {
   document.getElementById('store-fee').value = '20.00';
   document.getElementById('store-edi').value = 'false';
   document.getElementById('store-taxcode').value = 'G';
-  document.getElementById('store-terms').value = 'EFT';
+  document.getElementById('store-terms').value = 'PAD';
   document.getElementById('store-rep').value = 'DM';
   // Clear any prior auto-detect hint from a previous open
   const hintEl = document.getElementById('store-chain-hint');
@@ -5318,7 +5318,7 @@ window.showAddStore = () => {
 //   * Staples → Net 60
 //   * Safeway / Sobeys family → Net 30, is_edi=true
 //   * Co-op chain → Net 30, $0 delivery fee
-//   * Everyone else → EFT
+//   * Everyone else → PAD
 // `chainLabel` is shown as a small hint under the name field so the user
 // knows why their defaults changed. Returns null if no chain matches (so
 // the caller can leave fields alone or restore the COD default).
@@ -5330,7 +5330,7 @@ window.inferStoreDefaults = (qbName) => {
   // independents, not the Co-op chain. They should fall through to COD.
   const COOP_FALSE_POSITIVES = ["mrs cooper's convenience store", "scoops & things", "what's the scoop"];
   if (COOP_FALSE_POSITIVES.includes(n)) {
-    return { terms: 'EFT', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (EFT)' };
+    return { terms: 'PAD', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (PAD)' };
   }
 
   if (n.includes('staples')) {
@@ -5349,7 +5349,7 @@ window.inferStoreDefaults = (qbName) => {
   if (n.includes('co-op') || n.includes('coop')) {
     return { terms: 'Net 30', isEdi: false, deliveryFee: 0, unitPrice: 2.97, chainLabel: 'Co-op → Net 30, $0 delivery, $2.97' };
   }
-  return { terms: 'EFT', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (EFT)' };
+  return { terms: 'PAD', isEdi: false, deliveryFee: null, unitPrice: null, chainLabel: 'Independent (PAD)' };
 };
 
 // Apply inferred defaults to the Add Store form. Only runs for new stores
@@ -6186,7 +6186,7 @@ window.switchTab = (tab) => {
     amusement_park:"Amusement Park", movie_theatre:"Movie Theatre", ice_cream_shop:"Ice Cream Shop", other:"Other" };
   const CUST = { under_200:"Under 200/day", "200_499":"200–499/day", "500_999":"500–999/day",
     "1000_1499":"1,000–1,499/day", "1500_plus":"1,500+/day" };
-  const PAY = { pad_eft:"Pre-authorized debit / EFT", cheque:"Cheque", cash:"Cash", e_transfer:"e-Transfer", terms:"Invoice terms (Net 30)" };
+  const PAY = { pad_eft:"Pre-authorized debit (PAD)", cheque:"Cheque", cash:"Cash", e_transfer:"e-Transfer", terms:"Invoice terms (Net 30)" };
   const SEASON = { year_round:"Year-round", seasonal:"Seasonal" };
 
   const APP_COLS = "id,created_at,status,name,first_name,last_name,email,phone,operating_name,legal_name," +
