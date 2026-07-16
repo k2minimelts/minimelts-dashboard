@@ -5490,14 +5490,14 @@ window.saveStore = async () => {
 };
 
 window.toggleStore = async (id, currentActive) => { await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ active: !currentActive }) }); loadStores(); };
-window.retrySync = async (id) => { await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ qb_sync_status: 'pending', qb_sync_error: null }) }); alert('Store queued for retry.'); loadStores(); };
+window.retrySync = async (id) => { await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ qb_sync_status: 'pending', qb_sync_error: null, qb_sync_retries: 0 }) }); alert('Store queued for retry.'); loadStores(); };
 // Manual override: mark a store synced WITHOUT re-sending to QuickBooks. For the
 // "already in use" (QB 3100) case where the customer is confirmed to exist in QB.
 window.markStoreSynced = async (id) => {
   const s = (allStoresData || []).find(x => x.id === id);
   const label = s ? (s.name || s.qb_name || s.public_code || 'this store') : 'this store';
   if (!confirm(`Mark "${label}" as Synced?\n\nThis clears the QB sync error and marks the store synced WITHOUT sending it to QuickBooks. Only use this if you've confirmed the customer already exists in QuickBooks (e.g. a "name already in use" error).\n\nIf the customer is NOT actually in QB, its future invoices will fail to export.`)) return;
-  const resp = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ qb_sync_status: 'synced', qb_sync_error: null, qb_synced_at: new Date().toISOString() }) });
+  const resp = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ qb_sync_status: 'synced', qb_sync_error: null, qb_synced_at: new Date().toISOString(), qb_sync_retries: 0 }) });
   if (!resp.ok) { const t = await resp.text().catch(()=> ''); alert('Could not mark synced: ' + resp.status + (t ? ' — ' + t : '')); return; }
   loadStores();
 };
