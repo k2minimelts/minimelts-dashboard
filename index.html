@@ -8914,6 +8914,37 @@ let _expandedRefillId = null;   // currently-expanded row id (null = none)
 let _refillPage = 0;            // 0-indexed current page (refills pagination)
 const REFILL_PAGE_SIZE = 100;
 
+// ── Canonical driver names ────────────────────────────────────────────────
+// vending_refills.driver_name is a SNAPSHOT written by the driver app at submit
+// time. If the app's drivers-table lookup fails it falls back to the email
+// prefix, so a refill can be stamped e.g. "geoffrey" instead of "Geoffrey Jean"
+// — which then shows up as a phantom extra entry in the driver dropdown.
+// driver_id (the auth user id) is always correct, so we resolve the display name
+// from the drivers table by id and treat the stored name as a fallback only.
+// Cached for the session; keyed by drivers.user_id.
+let _driverNameById = null;      // null = not loaded yet, {} = loaded
+async function ensureDriverNames() {
+  if (_driverNameById) return _driverNameById;
+  try {
+    const rows = await sbFetch('drivers?select=user_id,name');
+    const map = {};
+    (Array.isArray(rows) ? rows : []).forEach(d => {
+      if (d.user_id && d.name) map[d.user_id] = d.name;
+    });
+    _driverNameById = map;
+  } catch (e) {
+    console.warn('driver name map unavailable, using stored names:', e);
+    _driverNameById = {};   // degrade gracefully to the snapshot names
+  }
+  return _driverNameById;
+}
+// Canonical name for a refill row: drivers table first, stored snapshot second.
+function refillDriverName(r) {
+  if (!r) return '—';
+  const canonical = (_driverNameById && r.driver_id) ? _driverNameById[r.driver_id] : null;
+  return canonical || r.driver_name || '—';
+}
+
 const VENDING_FLAVORS_DASH = [
   { key: 'lot_cotton_candy',   label: 'Cotton Candy' },
   { key: 'lot_cookies_cream',  label: 'Cookies & Cream' },
@@ -8938,6 +8969,7 @@ async function loadRefills() {
   _allRefills = Array.isArray(data) ? data : [];
   _filteredRefills = [..._allRefills];
   _refillPage = 0;
+  await ensureDriverNames();
   populateRefillDriverFilter();
   renderRefillsTable();
 }
@@ -8948,7 +8980,7 @@ function populateRefillDriverFilter() {
   if (!select) return;
   const previous = select.value;
   // Distinct driver names, sorted
-  const names = Array.from(new Set(_allRefills.map(r => r.driver_name).filter(Boolean))).sort();
+  const names = Array.from(new Set(_allRefills.map(r => refillDriverName(r)).filter(n => n && n !== '—'))).sort();
   select.innerHTML = '<option value="">All Drivers</option>' +
     names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
   if (previous) select.value = previous;
@@ -8961,12 +8993,13 @@ window.applyRefillFilters = () => {
   const to = document.getElementById('refills-filter-to').value;
 
   _filteredRefills = _allRefills.filter(r => {
-    if (driver && r.driver_name !== driver) return false;
+    if (driver && refillDriverName(r) !== driver) return false;
     if (from && r.serviced_at < from) return false;
     // 'to' is end-of-day inclusive — pad with T23:59:59
     if (to && r.serviced_at > (to + 'T23:59:59')) return false;
     if (search) {
       const haystack = [
+        refillDriverName(r),
         r.driver_name,
         r.machine?.nayax_machine_number,
         r.machine?.nayax_machine_name,
@@ -9009,7 +9042,7 @@ function renderRefillsTable() {
     const venue = r.machine?.venue?.name || '—';
     const machineDesc = r.machine?.nayax_machine_number || '';
     const machineSerial = r.machine?.nayax_machine_name || '';
-    const driver = r.driver_name || '—';
+    const driver = refillDriverName(r);
     const change = `$${parseFloat(r.total_change_added || 0).toFixed(2)}`;
     const lcd = `$${parseFloat(r.coin_mech_reading || 0).toFixed(2)}`;
     const lotCount = VENDING_FLAVORS_DASH.filter(f => r[f.key]).length;
