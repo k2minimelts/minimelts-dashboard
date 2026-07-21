@@ -1716,8 +1716,8 @@
         <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
           <button class="btn-export" onclick="showNewOrderModal('phone')">📞 New Phone Order</button>
           <button class="btn-export" style="background:var(--mm-cyan)" onclick="showNewOrderModal('staples_po')">📋 New Staples PO</button>
-          <button class="btn-export" style="background:var(--mm-pink)" onclick="showRecurringModal()" data-admin-only>🔄 Recurring Weekly</button>
-          <button class="btn-export" style="background:#a855f7" onclick="showBiweeklyModal()" data-admin-only>🔁 Recurring Bi-Weekly</button>
+          <button class="btn-export" style="background:var(--mm-pink)" onclick="showRecurringModal()" data-recurring-only>🔄 Recurring Weekly</button>
+          <button class="btn-export" style="background:#a855f7" onclick="showBiweeklyModal()" data-recurring-only>🔁 Recurring Bi-Weekly</button>
         </div>
       </div>
       <!-- Freezer tally, shown only when Type = New installs. Answers "how many
@@ -3192,6 +3192,14 @@ function applyRoleUI(roleInfo) {
   // Hide refund-only elements (Refunds tab) — refund managers + super admins only.
   document.querySelectorAll('[data-refund-only]').forEach(el => {
     el.style.display = roleInfo.can_manage_refunds ? '' : 'none';
+  });
+  // Recurring-order controls: admins and depot managers. Depot managers can flip
+  // recurring_weekly / recurring_biweekly for stores in their OWN depots — RLS
+  // scopes the rows and a column guard trigger blocks every other field, so the
+  // same modal is safe for both roles.
+  document.querySelectorAll('[data-recurring-only]').forEach(el => {
+    const canRecur = roleInfo.role === 'admin' || roleInfo.role === 'depot_manager';
+    el.style.display = canRecur ? '' : 'none';
   });
   // Hide scheduler-only elements (Schedule tab) for users who aren't an admin or depot manager.
   // Both 'admin' and 'depot_manager' roles can build schedules; everyone else cannot see it.
