@@ -4053,7 +4053,7 @@ async function loadShippingUnpaid() {
   const data = await sbFetch(
     `orders_with_schedule?select=id,store_id,submitted_at,shipped_at,invoiced_at,po_number,notes,` +
     `store:stores!store_id(id,public_code,qb_name,ship_city,province,route:routes(delivery_method))` +
-    `&status=eq.shipped&invoiced_at=not.is.null&paid_at=is.null&order=shipped_at.asc`
+    `&status=eq.shipped&paid_at=is.null&order=shipped_at.asc`
   );
   const rows = Array.isArray(data) ? data : [];
   // Defensive: ensure store really is on a shipping route.
@@ -11745,6 +11745,10 @@ async function schedLoadOrdersAndOverdue() {
 
   for (const r of overdueRows) {
     if (r.lat == null || r.lng == null) continue;
+    // Carrier-shipped customers are never driven, so they must not appear in the
+    // scheduler at all. They're handled entirely through the Orders tab
+    // (Mark Shipped -> Paid) with invoicing done directly in QuickBooks.
+    if (r.route_id && _routeMethodById[r.route_id] === 'shipped') continue;
     const days = r.days_until_due == null ? 0 : -r.days_until_due;
     if (days < -30) continue; // safety; shouldn't happen with our filter
     idx.set(r.store_id, {
@@ -11770,6 +11774,9 @@ async function schedLoadOrdersAndOverdue() {
     const s = o.store;
     if (!s || s.lat == null || s.lng == null) continue;
     if (!depotIds.includes(s.depot_id)) continue;
+    // Shipped customers: order stays in the Orders tab for Mark Shipped, but it
+    // must never surface as a schedulable pin on a driver's map.
+    if (s.route_id && _routeMethodById[s.route_id] === 'shipped') continue;
     idx.set(s.id, {
       id: s.id,
       qb_name: s.qb_name,
