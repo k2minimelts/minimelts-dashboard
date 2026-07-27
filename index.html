@@ -3702,11 +3702,39 @@ function renderCharts() {
   const depotEntries = Object.entries(depotRev).sort((a,b) => b[1]-a[1]);
   if (storeChart) storeChart.destroy();
   storeChart = new Chart(document.getElementById('chart-stores'), { type: 'bar', data: { labels: depotEntries.map(e => e[0]), datasets: [{ data: depotEntries.map(e=>e[1]), backgroundColor: '#4fc3d4', borderRadius: 6 }] }, options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }, y: { ticks: { color: '#8b949e', callback: v => '$'+v.toFixed(0) }, grid: { color: 'rgba(255,255,255,0.05)' } } } } });
-  const driverMap = {}; month.forEach(d => { driverMap[d.driver_name] = (driverMap[d.driver_name]||0) + parseFloat(d.total||0); });
-  const driverEntries = Object.entries(driverMap).sort((a,b) => b[1]-a[1]);
+  // Group revenue by driver_id, not driver_name. driver_name is a snapshot frozen
+  // at delivery time, so abbreviating last names (or a typo like Sohba/Shoba)
+  // splits one driver into multiple slices. driver_id is stable; we label each
+  // slice with that driver's MOST RECENT name so the current spelling shows.
+  const driverEntries = _driverRevenueByLatestName(month);
   const colors = ['#e2b04a','#4fc3d4','#3fb950','#f85149','#e87bb5','#bc8cff'];
   if (driverChart) driverChart.destroy();
   driverChart = new Chart(document.getElementById('chart-drivers'), { type: 'doughnut', data: { labels: driverEntries.map(e=>e[0]), datasets: [{ data: driverEntries.map(e=>e[1]), backgroundColor: colors, borderWidth: 0 }] }, options: { plugins: { legend: { position: 'bottom', labels: { color: '#8b949e', font: { size: 11 }, padding: 16 } } } } });
+}
+
+// Revenue per driver, grouped by stable driver_id and labelled with the driver's
+// most recent name (so renamed/abbreviated drivers appear once, current spelling).
+// Deliveries with no driver_id fall back to grouping by name so nothing is lost.
+function _driverRevenueByLatestName(rows) {
+  const byId = {};   // id -> { total, latestName, latestAt }
+  const byName = {}; // fallback for rows lacking a driver_id
+  for (const d of rows) {
+    const amt = parseFloat(d.total || 0);
+    if (d.driver_id) {
+      const e = byId[d.driver_id] || (byId[d.driver_id] = { total: 0, latestName: d.driver_name || '—', latestAt: '' });
+      e.total += amt;
+      const when = d.delivered_at || d.created_at || '';
+      if (d.driver_name && when >= e.latestAt) { e.latestName = d.driver_name; e.latestAt = when; }
+    } else if (d.driver_name) {
+      byName[d.driver_name] = (byName[d.driver_name] || 0) + amt;
+    }
+  }
+  const merged = {};
+  for (const { total, latestName } of Object.values(byId)) {
+    merged[latestName] = (merged[latestName] || 0) + total;  // collapse if two ids ever share a display name
+  }
+  for (const [name, total] of Object.entries(byName)) merged[name] = (merged[name] || 0) + total;
+  return Object.entries(merged).sort((a, b) => b[1] - a[1]);
 }
 
 // ── Sales Performance (DSD + Vending) ──
@@ -7125,9 +7153,7 @@ async function renderDriverTabCharts() {
   // Revenue by Driver (doughnut)
   const driverCanvas = document.getElementById('chart-drivers-tab');
   if (driverCanvas) {
-    const driverMap = {};
-    month.forEach(d => { driverMap[d.driver_name] = (driverMap[d.driver_name] || 0) + parseFloat(d.total || 0); });
-    const driverEntries = Object.entries(driverMap).sort((a, b) => b[1] - a[1]);
+    const driverEntries = _driverRevenueByLatestName(month);
     if (driverTabChart) driverTabChart.destroy();
     driverTabChart = new Chart(driverCanvas, { type: 'doughnut', data: { labels: driverEntries.map(e => e[0]), datasets: [{ data: driverEntries.map(e => e[1]), backgroundColor: colors, borderWidth: 0 }] }, options: { plugins: { legend: { position: 'bottom', labels: { color: '#8b949e', font: { size: 11 }, padding: 16 } } } } });
   }
@@ -7151,7 +7177,7 @@ function renderDriversTable(drivers) {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const rows = drivers.map(d => {
-    const monthDeliveries = allDeliveries.filter(del => del.driver_name === d.name && del.delivered_at >= monthStart);
+    const monthDeliveries = allDeliveries.filter(del => (del.driver_id ? del.driver_id === d.id : del.driver_name === d.name) && del.delivered_at >= monthStart);
     const monthRevenue = monthDeliveries.reduce((s, del) => s + parseFloat(del.total||0), 0);
     return `<tr>
       <td><strong style="color:var(--text)">${d.name}</strong></td>
@@ -7181,7 +7207,10 @@ window.viewDriverStats = (driverName) => {
   const body = document.getElementById('driver-stats-body');
   title.textContent = `📊 ${driverName} — Delivery Stats`;
   panel.style.display = 'block';
-  const driverDeliveries = allDeliveries.filter(d => d.driver_name === driverName).slice(0, 20);
+  const _drvRec = (typeof allDriversData !== 'undefined' && Array.isArray(allDriversData))
+    ? allDriversData.find(x => x.name === driverName) : null;
+  const _drvId = _drvRec ? _drvRec.id : null;
+  const driverDeliveries = allDeliveries.filter(d => _drvId ? d.driver_id === _drvId : d.driver_name === driverName).slice(0, 20);
   if (!driverDeliveries.length) { body.innerHTML = '<div class="empty">No deliveries found for this driver.</div>'; return; }
   const total = driverDeliveries.reduce((s,d) => s + parseFloat(d.total||0), 0);
   const rows = driverDeliveries.map(d => `<tr>
