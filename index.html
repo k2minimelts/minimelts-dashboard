@@ -1603,6 +1603,7 @@
           <button class="btn-sm" onclick="window.refreshDeliveriesTab(this)" style="margin-left:auto" title="Refetch data from server">🔄 Refresh</button>
         </div>
         <div id="table-body"><div class="loading">Loading deliveries...</div></div>
+        <div id="delivery-pager" style="display:flex;align-items:center;justify-content:center;gap:12px;margin-top:14px"></div>
       </div>
     </div>
 
@@ -3088,31 +3089,6 @@ async function sbFetch(path, opts={}) {
   }
   return r.json();
 }
-
-// Paginated fetch for any list that can exceed PostgREST's server row cap
-// (db-max-rows, 1000 on this project). A single request with limit=10000 does
-// NOT beat that cap — PostgREST silently clamps and truncates, and the caller
-// never knows. This pages through in chunks and concatenates until a short page
-// signals the end. Pass the query WITHOUT a limit/offset; they're added here.
-// Hard stop at MAX_ROWS so a bug can never loop forever.
-async function sbFetchAll(path, opts={}) {
-  const PAGE = 1000;          // match the server cap; larger is pointless
-  const MAX_ROWS = 100000;    // absolute guard: ~85 years of deliveries
-  const sep = path.includes('?') ? '&' : '?';
-  let offset = 0, all = [];
-  while (true) {
-    const page = await sbFetch(`${path}${sep}limit=${PAGE}&offset=${offset}`, opts);
-    if (!Array.isArray(page) || page.length === 0) break;
-    all = all.concat(page);
-    if (page.length < PAGE) break;      // short page => last page
-    offset += PAGE;
-    if (offset >= MAX_ROWS) {           // guard against runaway loops
-      console.warn(`sbFetchAll hit MAX_ROWS (${MAX_ROWS}) for ${path}; result truncated`);
-      break;
-    }
-  }
-  return all;
-}
 async function sbAuth(email, password) { const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY }, body: JSON.stringify({ email, password }) }); return r.json(); }
 async function sbSignOut() { await fetch(`${SUPABASE_URL}/auth/v1/logout`, { method: 'POST', headers: headers() }); }
 
@@ -3147,6 +3123,8 @@ async function sbUpdatePassword(newPassword, accessToken) {
 }
 
 let allDeliveries = [], filteredDeliveries = [], storeChart, driverChart, driverTabChart, depotTabChart;
+let _deliveryPage = 0;              // 0-indexed current page (deliveries display pagination)
+const DELIVERY_PAGE_SIZE = 100;     // mirror the orders tab
 // Stamp-compliance indicators for the Deliveries tab. Populated by id-only
 // fetches (no base64 shipped): which deliveries already have a stamped-receipt
 // photo, and which stores require a stamp. Lets each row show 📋 (stamp on file)
@@ -3558,18 +3536,17 @@ window.doSignOut = async () => {
 // rows. The delivery detail modal fetches those on-demand for the single row
 // being viewed (see showDetail). IIF is generated on demand at download time
 // (see buildDeliveryIIF), so the iif_content column is no longer fetched here.
-// Uses sbFetchAll to page past PostgREST's server row cap — a plain fetch with
-// limit=10000 was silently clamped to the cap and dropped the oldest rows.
+// limit guards against silent truncation.
 const DELIVERY_LIST_COLS = 'id,receipt_number,store_id,store_name,driver_id,driver_name,items,unit_price,delivery_fee,subtotal,tax,total,payment_type,notes,po_number,unpaid_authorized_by,unpaid_auth_note,delivered_at,created_at,qb_status,qb_export_error,qb_exported_at,signer_name,needs_correction,correction_note,big_unit_price,e_transfer_date,credits,store_email,paid,trip_stop_id,lot_cotton_candy,lot_cookies_cream,lot_banana_split,lot_cookie_dough,lot_orange,lot_mint_choc,lot_rainbow,lot_big_cherry,lot_big_mango,lot_big_kiwi,reminder_sent_at';
 async function loadAll() {
-  const data = await sbFetchAll(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc`);
+  const data = await sbFetch(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc&limit=10000`);
   allDeliveries = Array.isArray(data) ? data : [];
   filteredDeliveries = [...allDeliveries];
   // Stamp indicators — id-only fetches (RLS-scoped), no photo payload.
   try {
-    const sp = await sbFetchAll('deliveries?select=id&stamp_photo_base64=not.is.null');
+    const sp = await sbFetch('deliveries?select=id&stamp_photo_base64=not.is.null&limit=100000');
     stampPhotoDeliveryIds = new Set((Array.isArray(sp) ? sp : []).map(x => x.id));
-    const sr = await sbFetchAll('stores?select=id&is_stamp_required=eq.true');
+    const sr = await sbFetch('stores?select=id&is_stamp_required=eq.true&limit=100000');
     stampRequiredStoreIds = new Set((Array.isArray(sr) ? sr : []).map(x => x.id));
   } catch (e) { /* indicators are best-effort; never block the tab */ }
   populateDriverFilter(); renderStats(); await ensureStoreDepotMap(); renderCharts();
@@ -3887,8 +3864,22 @@ function stampBadge(d) {
 
 function renderTable(deliveries, bodyId, countId) {
   document.getElementById(countId).textContent = `${deliveries.length} records`;
-  if (!deliveries.length) { document.getElementById(bodyId).innerHTML = '<div class="empty">No deliveries found.</div>'; return; }
-  const rows = deliveries.map(d => `<tr>
+  if (!deliveries.length) {
+    document.getElementById(bodyId).innerHTML = '<div class="empty">No deliveries found.</div>';
+    _renderDeliveryPager(0, 0, 0);
+    return;
+  }
+  // Client-side display pagination (all rows already in memory, mirrors the
+  // orders tab). Only the main deliveries table paginates; other callers pass a
+  // different bodyId and get the full list.
+  const paginated = (bodyId === 'table-body');
+  const totalPages = paginated ? Math.max(1, Math.ceil(deliveries.length / DELIVERY_PAGE_SIZE)) : 1;
+  if (_deliveryPage > totalPages - 1) _deliveryPage = totalPages - 1;
+  if (_deliveryPage < 0) _deliveryPage = 0;
+  const pageRows = paginated
+    ? deliveries.slice(_deliveryPage * DELIVERY_PAGE_SIZE, _deliveryPage * DELIVERY_PAGE_SIZE + DELIVERY_PAGE_SIZE)
+    : deliveries;
+  const rows = pageRows.map(d => `<tr>
     <td><input type="checkbox" class="delivery-cb" data-id="${d.id}" ${d.qb_status==='exported'?'disabled':''}></td>
     <td style="color:var(--muted);font-size:12px">${d.receipt_number}</td>
     <td>${new Date(d.delivered_at).toLocaleDateString('en-CA')}</td>
@@ -3909,7 +3900,29 @@ function renderTable(deliveries, bodyId, countId) {
     </td>
   </tr>`).join('');
   document.getElementById(bodyId).innerHTML = `<table><thead><tr><th><input type="checkbox" id="select-all" onchange="toggleAll(this)"></th><th>Invoice #</th><th>Date</th><th>Store</th><th>PO #</th><th>Driver</th><th>Payment</th><th>Total</th><th>QB Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
+  if (bodyId === 'table-body') _renderDeliveryPager(_deliveryPage, totalPages, deliveries.length);
 }
+
+// Renders the Prev / "Page X of Y" / Next strip beneath the deliveries table.
+// Injected once, then updated in place. No-op target if the tab isn't present.
+function _renderDeliveryPager(page, totalPages, totalCount) {
+  const host = document.getElementById('delivery-pager');
+  if (!host) return;
+  if (totalCount === 0 || totalPages <= 1) {
+    host.innerHTML = totalCount === 0 ? '' :
+      `<span style="color:var(--muted);font-size:12px">${totalCount} record${totalCount===1?'':'s'}</span>`;
+    return;
+  }
+  const hasPrev = page > 0, hasNext = page < totalPages - 1;
+  const btn = (label, fn, on) =>
+    `<button onclick="${fn}" ${on?'':'disabled'} style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:${on?'pointer':'not-allowed'};opacity:${on?'1':'0.4'}">${label}</button>`;
+  host.innerHTML =
+    btn('← Prev', 'window.deliveriesPrevPage()', hasPrev) +
+    `<span style="color:var(--muted);font-size:12px;min-width:120px;text-align:center">Page ${page+1} of ${totalPages} · ${totalCount} records</span>` +
+    btn('Next →', 'window.deliveriesNextPage()', hasNext);
+}
+window.deliveriesNextPage = () => { _deliveryPage += 1; renderTable(filteredDeliveries, 'table-body', 'delivery-count'); };
+window.deliveriesPrevPage = () => { if (_deliveryPage > 0) { _deliveryPage -= 1; renderTable(filteredDeliveries, 'table-body', 'delivery-count'); } };
 
 window.toggleAll = (cb) => { document.querySelectorAll('.delivery-cb:not(:disabled)').forEach(c => c.checked = cb.checked); };
 
@@ -4229,6 +4242,7 @@ window.sendPaymentReminder = async (id) => {
 
 // ── Filters ──
 window.applyFilters = () => {
+  _deliveryPage = 0;
   const search = document.getElementById('filter-search').value.toLowerCase();
   const driver = document.getElementById('filter-driver').value;
   const payment = document.getElementById('filter-payment').value;
