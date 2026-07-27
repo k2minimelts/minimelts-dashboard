@@ -1540,6 +1540,7 @@
       <button class="tab" onclick="switchTab('drivers')">👤 Drivers</button>
       <button class="tab" onclick="switchTab('leads')" id="tab-btn-leads" data-admin-only style="display:none">📥 Leads <span id="leads-new-badge" class="leads-badge" style="display:none">0</span></button>
       <button class="tab" onclick="switchTab('applications')" id="tab-btn-applications" data-admin-only style="display:none">📋 Applications <span id="apps-new-badge" class="leads-badge" style="display:none">0</span></button>
+      <button class="tab" onclick="switchTab('pad')" id="tab-btn-pad" data-admin-only style="display:none">🏦 PAD</button>
       <button class="tab" onclick="switchTab('refunds')" id="tab-btn-refunds" data-refund-only style="display:none">💸 Refunds <span id="refunds-new-badge" class="leads-badge" style="display:none">0</span></button>
       <button class="tab" onclick="switchTab('access')" data-super-admin-only style="display:none">🔐 Access</button>
     </div>
@@ -2159,6 +2160,35 @@
     </div>
 
     <!-- Access Tab (super-admin only) -->
+    <div id="tab-pad" style="display:none">
+      <!-- Summary strip -->
+      <div class="stats" id="pad-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px"></div>
+
+      <div class="table-wrap">
+        <div class="table-header">
+          <span class="table-title">🏦 PAD Conversion</span>
+          <span class="table-count" id="pad-count">Loading…</span>
+          <button class="btn-sm" onclick="window.loadPadConversion(this)" style="margin-left:auto" title="Refetch from server">🔄 Refresh</button>
+        </div>
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="pad-search" type="text" placeholder="Search store, ST-code, city, email…" oninput="window.renderPadConversion()" style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;outline:none"/>
+          <select id="pad-depot-filter" onchange="window.renderPadConversion()" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px">
+            <option value="">All Depots</option>
+          </select>
+          <select id="pad-status-filter" onchange="window.renderPadConversion()" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px">
+            <option value="">All Statuses</option>
+            <option value="pending">Pending</option>
+            <option value="sent">Sent</option>
+            <option value="signed">Signed</option>
+            <option value="declined">Declined</option>
+            <option value="excluded">Excluded</option>
+          </select>
+        </div>
+        <div id="pad-body"><div class="loading">Loading PAD conversion status…</div></div>
+        <div id="pad-pager" style="display:flex;align-items:center;justify-content:center;gap:12px;margin:14px 0"></div>
+      </div>
+    </div>
+
     <div id="tab-access" style="display:none">
       <div class="table-wrap" style="margin-bottom:16px">
         <div class="table-header">
@@ -5558,7 +5588,7 @@ document.getElementById('store-modal').addEventListener('click', e => { if (e.ta
 window.switchTab = (tab) => {
   // The schedule tab uses a flex column layout; setting display:block
   // breaks it. Every other tab is fine with block, so we special-case here.
-  ['overview','deliveries','unpaid','orders','missed','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','applications','refunds','access'].forEach(t => {
+  ['overview','deliveries','unpaid','orders','missed','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','applications','refunds','access','pad'].forEach(t => {
     const el = document.getElementById(`tab-${t}`);
     if (!el) return;
     if (t !== tab) {
@@ -5585,6 +5615,7 @@ window.switchTab = (tab) => {
   if (tab==='applications') window.loadApplications();
   if (tab==='refunds') window.loadRefundRequests();
   if (tab==='deliveries') window.loadUnreconciledPrints();
+  if (tab==='pad') window.loadPadConversion();
 };
 
 // ===== UNRECONCILED PRINTS =====
@@ -9661,6 +9692,161 @@ async function _tabRefresh(btn, loader) {
 window.refreshDeliveriesTab = (btn) => _tabRefresh(btn, async () => { await loadAll(); window.applyFilters(); });
 // Unpaid: loadAll() re-renders the unpaid view and reads its filter inputs fresh.
 window.refreshUnpaidTab = (btn) => _tabRefresh(btn, loadAll);
+
+// ── PAD Conversion tab ────────────────────────────────────────────────────
+// Read-only cockpit over the pad_conversion_status view (admin-only, no banking
+// columns by design). Loads the full set once via sbFetchAll (paginates past
+// PostgREST's row cap — the campaign will eventually cover ~1,369 stores),
+// filters/sorts client-side, and paginates the display like the deliveries tab.
+// Send / remind / exclude actions are deliberately NOT here yet: this ships as a
+// safe read-only board first; the irreversible sending comes in the next pass
+// once the email wording is approved.
+let PAD_CACHE = [];
+let _padPage = 0;
+const PAD_PAGE_SIZE = 100;
+
+window.loadPadConversion = async function (btn) {
+  const body = document.getElementById('pad-body');
+  if (!body) return;
+  if (btn) { btn.disabled = true; const o = btn.textContent; btn.textContent = '…'; btn.dataset._o = o; }
+  body.innerHTML = '<div class="loading">Loading PAD conversion status…</div>';
+  try {
+    const data = await sbFetchAll('pad_conversion_status?select=*&order=updated_at.desc');
+    PAD_CACHE = Array.isArray(data) ? data : [];
+  } catch (e) {
+    body.innerHTML = '<div class="empty">Error loading PAD conversion status.</div>';
+    if (btn) { btn.disabled = false; btn.textContent = btn.dataset._o || '🔄 Refresh'; }
+    return;
+  }
+  // Populate the depot filter from whatever depots are present, once.
+  const depSel = document.getElementById('pad-depot-filter');
+  if (depSel && depSel.options.length <= 1) {
+    [...new Set(PAD_CACHE.map(r => r.depot).filter(Boolean))].sort().forEach(dep => {
+      const o = document.createElement('option'); o.value = dep; o.textContent = dep; depSel.appendChild(o);
+    });
+  }
+  _padPage = 0;
+  window.renderPadConversion();
+  if (btn) { btn.disabled = false; btn.textContent = btn.dataset._o || '🔄 Refresh'; }
+};
+
+function _padStatusBadge(st) {
+  const map = {
+    pending:  ['#8b949e', 'rgba(139,148,158,0.15)', 'Pending'],
+    sent:     ['#58a6ff', 'rgba(88,166,255,0.15)',  'Sent'],
+    signed:   ['#3fb950', 'rgba(63,185,80,0.15)',   'Signed'],
+    declined: ['#f85149', 'rgba(248,81,73,0.15)',   'Declined'],
+    excluded: ['#d29922', 'rgba(210,153,34,0.15)',  'Excluded'],
+  };
+  const [c, bg, label] = map[st] || ['#8b949e', 'rgba(139,148,158,0.15)', st || '—'];
+  return `<span class="badge" style="color:${c};background:${bg};border:1px solid ${c}55">${label}</span>`;
+}
+
+function _padDate(iso) { return iso ? new Date(iso).toLocaleDateString('en-CA') : '—'; }
+
+function _padFilteredRows() {
+  const q = (document.getElementById('pad-search')?.value || '').trim().toLowerCase();
+  const dep = document.getElementById('pad-depot-filter')?.value || '';
+  const st = document.getElementById('pad-status-filter')?.value || '';
+  const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+  return PAD_CACHE.filter(r => {
+    if (dep && r.depot !== dep) return false;
+    if (st && r.status !== st) return false;
+    if (tokens.length) {
+      const hay = [r.store_name, r.qb_name, r.public_code, r.city, r.province, r.email, r.depot]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!tokens.every(t => hay.includes(t))) return false;
+    }
+    return true;
+  });
+}
+
+window.renderPadConversion = function () {
+  const body = document.getElementById('pad-body');
+  const countEl = document.getElementById('pad-count');
+  if (!body) return;
+
+  // Summary strip is computed over the FULL cache, not the filtered view, so it
+  // always describes the whole campaign.
+  const tally = { total: PAD_CACHE.length, pending: 0, sent: 0, signed: 0, declined: 0, excluded: 0, pushed: 0 };
+  PAD_CACHE.forEach(r => {
+    if (tally[r.status] !== undefined) tally[r.status]++;
+    if (r.pushed_to_qb) tally.pushed++;
+  });
+  const stats = document.getElementById('pad-stats');
+  if (stats) {
+    const card = (label, val, color) =>
+      `<div class="stat-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px 16px">
+         <div style="font-size:22px;font-weight:700;color:${color||'var(--text)'}">${val}</div>
+         <div style="font-size:12px;color:var(--muted);margin-top:2px">${label}</div>
+       </div>`;
+    stats.innerHTML =
+      card('In campaign', tally.total) +
+      card('Sent', tally.sent, '#58a6ff') +
+      card('Signed', tally.signed, '#3fb950') +
+      card('Pushed to QB', tally.pushed, '#3fb950') +
+      card('Declined', tally.declined, '#f85149') +
+      card('Excluded', tally.excluded, '#d29922');
+  }
+
+  const rows = _padFilteredRows();
+  if (countEl) countEl.textContent = `${rows.length} record${rows.length===1?'':'s'}`;
+
+  if (!rows.length) {
+    body.innerHTML = '<div class="empty">No stores match — or no PAD invitations exist yet. Invitations are created when a campaign wave is sent.</div>';
+    _renderPadPager(0, 0, 0);
+    return;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAD_PAGE_SIZE));
+  if (_padPage > totalPages - 1) _padPage = totalPages - 1;
+  if (_padPage < 0) _padPage = 0;
+  const pageRows = rows.slice(_padPage * PAD_PAGE_SIZE, _padPage * PAD_PAGE_SIZE + PAD_PAGE_SIZE);
+
+  const tr = pageRows.map(r => {
+    const flag = (b) => b ? '<span style="color:#3fb950">✓</span>' : '<span style="color:var(--muted)">—</span>';
+    const remind = r.reminder_count ? ` <span style="color:var(--muted);font-size:11px">(${r.reminder_count}× )</span>` : '';
+    return `<tr>
+      <td style="color:var(--muted);font-size:12px">${escapeHtml(r.public_code||'—')}</td>
+      <td>${escapeHtml(r.store_name||r.qb_name||'—')}</td>
+      <td style="color:var(--muted);font-size:12px">${escapeHtml([r.city, r.province].filter(Boolean).join(', ')||'—')}</td>
+      <td>${escapeHtml(r.depot||'—')}</td>
+      <td style="font-size:12px">${escapeHtml(r.terms||'—')}</td>
+      <td>${_padStatusBadge(r.status)}${remind}</td>
+      <td style="font-size:12px">${_padDate(r.sent_at)}</td>
+      <td style="font-size:12px">${_padDate(r.signed_at)}</td>
+      <td style="text-align:center">${flag(r.confirmation_sent)}</td>
+      <td style="text-align:center">${flag(r.pushed_to_qb)}</td>
+      <td style="color:var(--muted);font-size:11px">${r.excluded_reason ? escapeHtml(r.excluded_reason) : ''}</td>
+    </tr>`;
+  }).join('');
+
+  body.innerHTML = `<table><thead><tr>
+    <th>ST-Code</th><th>Store</th><th>Location</th><th>Depot</th><th>Terms</th>
+    <th>Status</th><th>Sent</th><th>Signed</th><th>Conf.</th><th>QB</th><th>Note</th>
+  </tr></thead><tbody>${tr}</tbody></table>`;
+
+  _renderPadPager(_padPage, totalPages, rows.length);
+};
+
+function _renderPadPager(page, totalPages, totalCount) {
+  const host = document.getElementById('pad-pager');
+  if (!host) return;
+  if (totalCount === 0 || totalPages <= 1) {
+    host.innerHTML = totalCount === 0 ? '' :
+      `<span style="color:var(--muted);font-size:12px">${totalCount} record${totalCount===1?'':'s'}</span>`;
+    return;
+  }
+  const hasPrev = page > 0, hasNext = page < totalPages - 1;
+  const btn = (label, fn, on) =>
+    `<button onclick="${fn}" ${on?'':'disabled'} style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;cursor:${on?'pointer':'not-allowed'};opacity:${on?'1':'0.4'}">${label}</button>`;
+  host.innerHTML =
+    btn('← Prev', 'window.padPrevPage()', hasPrev) +
+    `<span style="color:var(--muted);font-size:12px;min-width:120px;text-align:center">Page ${page+1} of ${totalPages} · ${totalCount} records</span>` +
+    btn('Next →', 'window.padNextPage()', hasNext);
+}
+window.padNextPage = () => { _padPage += 1; window.renderPadConversion(); };
+window.padPrevPage = () => { if (_padPage > 0) { _padPage -= 1; window.renderPadConversion(); } };
 // Orders: loadOrders() reads the orders filter selects when building its query.
 window.refreshOrdersTab = (btn) => _tabRefresh(btn, loadOrders);
 
