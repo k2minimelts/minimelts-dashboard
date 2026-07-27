@@ -3088,6 +3088,31 @@ async function sbFetch(path, opts={}) {
   }
   return r.json();
 }
+
+// Paginated fetch for any list that can exceed PostgREST's server row cap
+// (db-max-rows, 1000 on this project). A single request with limit=10000 does
+// NOT beat that cap — PostgREST silently clamps and truncates, and the caller
+// never knows. This pages through in chunks and concatenates until a short page
+// signals the end. Pass the query WITHOUT a limit/offset; they're added here.
+// Hard stop at MAX_ROWS so a bug can never loop forever.
+async function sbFetchAll(path, opts={}) {
+  const PAGE = 1000;          // match the server cap; larger is pointless
+  const MAX_ROWS = 100000;    // absolute guard: ~85 years of deliveries
+  const sep = path.includes('?') ? '&' : '?';
+  let offset = 0, all = [];
+  while (true) {
+    const page = await sbFetch(`${path}${sep}limit=${PAGE}&offset=${offset}`, opts);
+    if (!Array.isArray(page) || page.length === 0) break;
+    all = all.concat(page);
+    if (page.length < PAGE) break;      // short page => last page
+    offset += PAGE;
+    if (offset >= MAX_ROWS) {           // guard against runaway loops
+      console.warn(`sbFetchAll hit MAX_ROWS (${MAX_ROWS}) for ${path}; result truncated`);
+      break;
+    }
+  }
+  return all;
+}
 async function sbAuth(email, password) { const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY }, body: JSON.stringify({ email, password }) }); return r.json(); }
 async function sbSignOut() { await fetch(`${SUPABASE_URL}/auth/v1/logout`, { method: 'POST', headers: headers() }); }
 
@@ -3533,17 +3558,18 @@ window.doSignOut = async () => {
 // rows. The delivery detail modal fetches those on-demand for the single row
 // being viewed (see showDetail). IIF is generated on demand at download time
 // (see buildDeliveryIIF), so the iif_content column is no longer fetched here.
-// limit guards against silent truncation.
+// Uses sbFetchAll to page past PostgREST's server row cap — a plain fetch with
+// limit=10000 was silently clamped to the cap and dropped the oldest rows.
 const DELIVERY_LIST_COLS = 'id,receipt_number,store_id,store_name,driver_id,driver_name,items,unit_price,delivery_fee,subtotal,tax,total,payment_type,notes,po_number,unpaid_authorized_by,unpaid_auth_note,delivered_at,created_at,qb_status,qb_export_error,qb_exported_at,signer_name,needs_correction,correction_note,big_unit_price,e_transfer_date,credits,store_email,paid,trip_stop_id,lot_cotton_candy,lot_cookies_cream,lot_banana_split,lot_cookie_dough,lot_orange,lot_mint_choc,lot_rainbow,lot_big_cherry,lot_big_mango,lot_big_kiwi,reminder_sent_at';
 async function loadAll() {
-  const data = await sbFetch(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc&limit=10000`);
+  const data = await sbFetchAll(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc`);
   allDeliveries = Array.isArray(data) ? data : [];
   filteredDeliveries = [...allDeliveries];
   // Stamp indicators — id-only fetches (RLS-scoped), no photo payload.
   try {
-    const sp = await sbFetch('deliveries?select=id&stamp_photo_base64=not.is.null&limit=100000');
+    const sp = await sbFetchAll('deliveries?select=id&stamp_photo_base64=not.is.null');
     stampPhotoDeliveryIds = new Set((Array.isArray(sp) ? sp : []).map(x => x.id));
-    const sr = await sbFetch('stores?select=id&is_stamp_required=eq.true&limit=100000');
+    const sr = await sbFetchAll('stores?select=id&is_stamp_required=eq.true');
     stampRequiredStoreIds = new Set((Array.isArray(sr) ? sr : []).map(x => x.id));
   } catch (e) { /* indicators are best-effort; never block the tab */ }
   populateDriverFilter(); renderStats(); await ensureStoreDepotMap(); renderCharts();
