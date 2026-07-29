@@ -3129,6 +3129,31 @@ async function sbFetch(path, opts={}) {
   }
   return r.json();
 }
+// Paginated read for result sets that can exceed PostgREST's hard row cap.
+// Supabase caps ANY single response at 1000 rows regardless of what `limit`
+// says — no error, no warning, just a short array. A high `limit=10000` does
+// NOT defeat this. The only correct approach is to loop in 1000-row pages
+// until a short page comes back.
+//
+// Routed through sbFetch so it inherits the 401 refresh-and-retry behaviour
+// and the session-expired redirect. Callers must supply a deterministic
+// `order=` (ideally with a unique tiebreaker) or rows can shift between
+// pages and be duplicated or dropped at page boundaries.
+async function sbFetchAll(path) {
+  const PAGE = 1000;
+  const all = [];
+  let from = 0;
+  while (true) {
+    const sep = path.includes('?') ? '&' : '?';
+    const batch = await sbFetch(`${path}${sep}offset=${from}&limit=${PAGE}`);
+    if (!Array.isArray(batch)) break;
+    all.push(...batch);
+    if (batch.length < PAGE) break;   // short page = last page
+    from += PAGE;
+    if (from > 50000) break;          // safety cap, never hit in practice
+  }
+  return all;
+}
 async function sbAuth(email, password) { const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY }, body: JSON.stringify({ email, password }) }); return r.json(); }
 async function sbSignOut() { await fetch(`${SUPABASE_URL}/auth/v1/logout`, { method: 'POST', headers: headers() }); }
 
@@ -3576,10 +3601,11 @@ window.doSignOut = async () => {
 // rows. The delivery detail modal fetches those on-demand for the single row
 // being viewed (see showDetail). IIF is generated on demand at download time
 // (see buildDeliveryIIF), so the iif_content column is no longer fetched here.
-// limit guards against silent truncation.
+// Fetched via sbFetchAll (paginated) — a high `limit` does NOT guard against
+// PostgREST's 1000-row cap; only paging does.
 const DELIVERY_LIST_COLS = 'id,receipt_number,store_id,store_name,driver_id,driver_name,items,unit_price,delivery_fee,subtotal,tax,total,payment_type,notes,po_number,unpaid_authorized_by,unpaid_auth_note,delivered_at,created_at,qb_status,qb_export_error,qb_exported_at,signer_name,needs_correction,correction_note,big_unit_price,e_transfer_date,credits,store_email,paid,trip_stop_id,lot_cotton_candy,lot_cookies_cream,lot_banana_split,lot_cookie_dough,lot_orange,lot_mint_choc,lot_rainbow,lot_big_cherry,lot_big_mango,lot_big_kiwi,reminder_sent_at';
 async function loadAll() {
-  const data = await sbFetch(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc&limit=10000`);
+  const data = await sbFetchAll(`deliveries?select=${DELIVERY_LIST_COLS}&order=delivered_at.desc,id.asc`);
   allDeliveries = Array.isArray(data) ? data : [];
   filteredDeliveries = [...allDeliveries];
   // Stamp indicators — id-only fetches (RLS-scoped), no photo payload.
