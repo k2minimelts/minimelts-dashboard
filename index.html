@@ -2521,6 +2521,16 @@
                 <option value="DM">DM</option><option value="KP">KP</option><option value="WK">WK</option>
               </select></div>
           </div>
+          <!-- Sorbet-only toggle (admin-only). Turning this ON also enrols the store
+               in sorbet (a sorbet-only store must be able to order sorbet), so the
+               public order form shows the sorbet flow and hides ice cream. -->
+          <div id="store-sorbet-only-row" data-admin-only style="display:none;margin-top:16px;background:rgba(232,123,181,0.06);border:1px solid rgba(232,123,181,0.35);border-radius:8px;padding:12px 14px">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin:0">
+              <input type="checkbox" id="store-sorbet-only" style="width:18px;height:18px;accent-color:var(--mm-pink);cursor:pointer;flex:none"/>
+              <span style="font-size:13px;color:var(--text);font-weight:600">🍧 Sorbet only (no ice cream)</span>
+            </label>
+            <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:6px;margin-left:28px">Store sells BIG Sorbet only. The online order form hides the ice cream question and the sorbet application. Enabling this also enrols the store in sorbet automatically.</div>
+          </div>
           <div style="display:flex;gap:10px;margin-top:20px">
             <button class="btn-modal btn-modal-primary" onclick="saveStore()" style="flex:2">Save Store</button>
             <button class="btn-modal btn-modal-outline" onclick="closeStoreModal()" style="flex:1">Cancel</button>
@@ -5368,7 +5378,7 @@ async function rebuildStoreFilterOptions() {
 function renderStoresTable(stores) {
   if (!stores.length) { document.getElementById('stores-body').innerHTML = '<div class="empty">No stores found.</div>'; return; }
   const rows = stores.map(s => `<tr>
-    <td>${s.name}</td>
+    <td>${s.name}${s.sorbet_only ? ' <span class="badge" style="background:rgba(232,123,181,0.14);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.4);font-size:10px">🍧 Sorbet only</span>' : ''}</td>
     <td style="color:var(--muted);font-size:12px">${s.qb_name}</td>
     <td style="font-family:monospace;color:var(--gold);font-weight:600">${s.public_code || '—'}</td>
     <td>${s.depot ? `<span class="badge" style="background:rgba(79,195,212,0.12);color:var(--mm-cyan);border:1px solid rgba(79,195,212,0.3);font-family:monospace">${s.depot.code}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
@@ -5404,6 +5414,7 @@ window.searchStores = async () => {
 window.showAddStore = () => {
   window._pendingAppConversion = null;
   ['store-edit-id','store-name','store-qbname','store-firstname','store-lastname','store-phone','store-email','store-addr1','store-city','store-postal','store-ship-addr1','store-ship-city','store-ship-postal','store-save-msg'].forEach(id => document.getElementById(id).value='');
+  const _so = document.getElementById('store-sorbet-only'); if (_so) _so.checked = false;
   document.getElementById('store-modal-title').textContent = 'Add New Store';
   document.getElementById('store-province').value = 'AB';
   document.getElementById('store-price').value = '2.89';
@@ -5536,6 +5547,7 @@ window.editStore = (id) => {
   document.getElementById('store-ship-addr1').value = s.ship_addr1 || s.addr1 || '';
   document.getElementById('store-ship-city').value = s.ship_city || s.city || '';
   document.getElementById('store-ship-postal').value = s.ship_postal || s.postal || '';
+  document.getElementById('store-sorbet-only').checked = !!s.sorbet_only;
   document.getElementById('store-save-msg').textContent = '';
   document.getElementById('store-modal').classList.add('open');
 };
@@ -5546,6 +5558,12 @@ window.saveStore = async () => {
   const bigPriceRaw = document.getElementById('store-big-price').value.trim();
   const bigPriceVal = bigPriceRaw === '' ? null : parseFloat(bigPriceRaw);
   const payload = { name: document.getElementById('store-name').value.trim(), qb_name: document.getElementById('store-qbname').value.trim(), province: document.getElementById('store-province').value, unit_price: parseFloat(document.getElementById('store-price').value), big_unit_price: bigPriceVal, delivery_fee: parseFloat(document.getElementById('store-fee').value), is_edi: document.getElementById('store-edi').value==='true', tax_code: document.getElementById('store-taxcode').value, terms: document.getElementById('store-terms').value, rep: document.getElementById('store-rep').value, first_name: document.getElementById('store-firstname').value.trim(), last_name: document.getElementById('store-lastname').value.trim(), phone: document.getElementById('store-phone').value.trim(), email: document.getElementById('store-email').value.trim(), addr1: document.getElementById('store-addr1').value.trim(), city: document.getElementById('store-city').value.trim(), postal: document.getElementById('store-postal').value.trim(), ship_addr1: document.getElementById('store-ship-addr1').value.trim(), ship_city: document.getElementById('store-ship-city').value.trim(), ship_postal: document.getElementById('store-ship-postal').value.trim(), active: true };
+  // Sorbet-only: a store selling only sorbet must also be sorbet-enrolled,
+  // or the order form would hide ice cream AND block sorbet, leaving them
+  // unable to order. Set both together so the state can never be broken.
+  const sorbetOnly = document.getElementById('store-sorbet-only').checked;
+  payload.sorbet_only = sorbetOnly;
+  if (sorbetOnly) payload.sorbet_enrolled = true;
   if (isNew) payload.qb_sync_status = 'pending';
   if (!payload.name || !payload.qb_name) { document.getElementById('store-save-msg').textContent = '⚠️ Store name and QB name are required.'; return; }
   const msg = document.getElementById('store-save-msg');
