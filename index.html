@@ -9859,10 +9859,13 @@ window.loadPadWaves = async function (btn) {
 window.padRefreshKillBanner = async function () {
   const el = document.getElementById('pad-kill-banner');
   if (!el) return;
+  // Via RPC, not a table read: app_config is service-role-only because it also
+  // holds delivery_scheduled_secret, so the dashboard has no grants on it.
+  // pad_sending_status() is SECURITY DEFINER and returns exactly one boolean.
   let enabled = false;
   try {
-    const rows = await sbFetch('app_config?select=key,value&key=eq.pad_sending_enabled&limit=1');
-    enabled = Array.isArray(rows) && rows[0] && String(rows[0].value) === 'true';
+    const res = await sbFetch('rpc/pad_sending_status', { method: 'POST', body: '{}' });
+    enabled = res === true;
   } catch (e) { enabled = false; }
   window._padSendingEnabled = enabled;
   const canToggle = !!window._role?.is_super_admin;
@@ -9890,24 +9893,15 @@ window.padSetSending = async function (on) {
   // the auth headers rather than merging with them -- the request goes out with
   // no Authorization, PostgREST answers 401, and sbFetch concludes the session
   // is dead and signs the user out. Explicit headers here avoid that entirely.
-  const token = window._session?.access_token;
   try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/app_config?key=eq.pad_sending_enabled`, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'apikey': SUPABASE_ANON_KEY,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=representation',
-      },
-      body: JSON.stringify({ value: on ? 'true' : 'false', updated_at: new Date().toISOString() }),
+    const res = await sbFetch('rpc/set_pad_sending', {
+      method: 'POST',
+      body: JSON.stringify({ enabled: !!on }),
     });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    // return=representation means an RLS denial comes back as an empty array
-    // rather than an error, which would otherwise look like success.
-    const rows = await r.json();
-    if (!Array.isArray(rows) || rows.length === 0) {
-      throw new Error('no rows updated — super admin required');
+    // The function raises for a non-super-admin, which PostgREST returns as a
+    // body with a message rather than a boolean.
+    if (res !== true && res !== false) {
+      throw new Error(res?.message || 'refused');
     }
   } catch (e) {
     alert('Could not change the sending flag: ' + (e?.message || e));
@@ -10009,7 +10003,7 @@ window.padPreviewWave = async function (waveId) {
       <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700;color:#58a6ff">${res.recipients}</div><div style="font-size:11px;color:var(--muted)">EMAILS</div></div>
       <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700;color:${res.skipped_count ? '#d29922' : 'var(--muted)'}">${res.skipped_count}</div><div style="font-size:11px;color:var(--muted)">SKIPPED</div></div>
     </div>
-    ${res.grouped_savings > 0 ? `<div style="font-size:12px;color:var(--muted);margin-bottom:14px">${res.eligible} stores group into ${res.recipients} emails — ${res.grouped_savings} multi-location stores share an address with another.</div>` : ''}
+    ${res.grouped_savings > 0 ? `<div style="font-size:12px;color:var(--muted);margin-bottom:14px">${res.eligible} stores group into ${res.recipients} emails — ${res.grouped_savings} ${res.grouped_savings === 1 ? 'store shares an address' : 'stores share an address'} with another location, so the owner receives one email listing all of them.</div>` : ''}
     ${skipRows ? `<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:700;margin-bottom:6px">Skipped (will not be emailed, wave still sends)</div>
       <table style="width:100%;border-collapse:collapse;font-size:12px;background:var(--bg3);border-radius:8px">${skipRows}</table></div>` : ''}
     ${!canSend ? '<div class="empty">You do not have send permission. Preview only.</div>' : (
