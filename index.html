@@ -2164,6 +2164,30 @@
       <!-- Summary strip -->
       <div class="stats" id="pad-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px"></div>
 
+      <!-- Kill-switch banner. Without this, an operator presses Run, gets
+           'sending_disabled' from the function and has no idea why. -->
+      <div id="pad-kill-banner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;font-size:13px"></div>
+
+      <div class="table-wrap" style="margin-bottom:16px">
+        <div class="table-header">
+          <span class="table-title">📤 Invitation Waves</span>
+          <span class="table-count" id="pad-waves-count">Loading…</span>
+          <button class="btn-sm" onclick="window.loadPadWaves(this)" style="margin-left:auto" title="Refetch waves">🔄 Refresh</button>
+        </div>
+        <div id="pad-waves-body" style="padding:14px"><div class="loading">Loading waves…</div></div>
+      </div>
+
+      <!-- Preview / confirm modal -->
+      <div id="pad-send-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center;padding:20px">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;max-width:720px;width:100%;max-height:86vh;overflow:auto">
+          <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+            <span style="font-weight:700;font-size:15px" id="pad-send-title">Preview wave</span>
+            <button class="btn-sm" style="margin-left:auto" onclick="window.padCloseSendModal()">✕ Close</button>
+          </div>
+          <div id="pad-send-body" style="padding:18px 20px"></div>
+        </div>
+      </div>
+
       <div class="table-wrap">
         <div class="table-header">
           <span class="table-title">🏦 PAD Conversion</span>
@@ -3208,7 +3232,7 @@ async function fetchUserRole() {
   if (!authUserId) return null;
 
   // Try admins first — match on user_id (FK to auth.users), not on admins.id.
-  const admin = await sbFetch(`admins?select=user_id,name,email,is_super_admin,can_manage_refunds&user_id=eq.${authUserId}&limit=1`);
+  const admin = await sbFetch(`admins?select=user_id,name,email,is_super_admin,can_manage_refunds,can_send_pad&user_id=eq.${authUserId}&limit=1`);
   if (Array.isArray(admin) && admin.length > 0) {
     return {
       role: 'admin',
@@ -3217,6 +3241,9 @@ async function fetchUserRole() {
       name: admin[0].name || admin[0].email,
       is_super_admin: !!admin[0].is_super_admin,
       can_manage_refunds: !!admin[0].can_manage_refunds || !!admin[0].is_super_admin,
+      // Deliberately NOT inherited from is_super_admin: send rights are granted
+      // per person so they can be handed to Dylan without handing over banking.
+      can_send_pad: !!admin[0].can_send_pad,
     };
   }
   // Try depot managers — same pattern. depot_managers has multiple rows per user
@@ -3256,6 +3283,11 @@ function applyRoleUI(roleInfo) {
   // Hide super-admin-only elements (e.g., the Access tab button)
   document.querySelectorAll('[data-super-admin-only]').forEach(el => {
     el.style.display = roleInfo.is_super_admin ? '' : 'none';
+  });
+  // Hide PAD-send elements. The edge function enforces can_send_pad regardless;
+  // this only avoids offering a button that would be refused.
+  document.querySelectorAll('[data-pad-send-only]').forEach(el => {
+    el.style.display = roleInfo.can_send_pad ? '' : 'none';
   });
   // Hide refund-only elements (Refunds tab) — refund managers + super admins only.
   document.querySelectorAll('[data-refund-only]').forEach(el => {
@@ -5687,7 +5719,7 @@ window.switchTab = (tab) => {
   if (tab==='applications') window.loadApplications();
   if (tab==='refunds') window.loadRefundRequests();
   if (tab==='deliveries') window.loadUnreconciledPrints();
-  if (tab==='pad') window.loadPadConversion();
+  if (tab==='pad') { window.loadPadWaves(); window.loadPadConversion(); }
 };
 
 // ===== UNRECONCILED PRINTS =====
@@ -9777,6 +9809,230 @@ window.refreshUnpaidTab = (btn) => _tabRefresh(btn, loadAll);
 let PAD_CACHE = [];
 let _padPage = 0;
 const PAD_PAGE_SIZE = 100;
+
+// ── Invitation waves ──────────────────────────────────────────────────────
+// Waves are staged in advance (pad_wave_members, super-admin only) so that the
+// person running one chooses WHEN, never WHO. Everything here is preview-first:
+// the Run button cannot be reached without a dry run, and the dry run is served
+// by the same edge function code path that does the real send, so the number on
+// screen is the number that will go out.
+let PAD_WAVES = [];
+let _padPreview = null;   // last dry-run result, keyed to a wave id
+
+function _padCallSend(payload) {
+  const token = window._session?.access_token;
+  return fetch(`${SUPABASE_URL}/functions/v1/send-pad-invitations`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'apikey': SUPABASE_ANON_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+}
+
+window.loadPadWaves = async function (btn) {
+  const body = document.getElementById('pad-waves-body');
+  if (!body) return;
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const waves = await sbFetchAll('pad_campaign_waves?select=*&order=wave_number.asc');
+    PAD_WAVES = Array.isArray(waves) ? waves : [];
+    // Staged counts, one query rather than one per wave.
+    const members = await sbFetchAll('pad_wave_members?select=wave_id');
+    const staged = {};
+    for (const m of (members || [])) staged[m.wave_id] = (staged[m.wave_id] || 0) + 1;
+    for (const w of PAD_WAVES) w._staged = staged[w.id] || 0;
+  } catch (e) {
+    body.innerHTML = '<div class="empty">Error loading waves.</div>';
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
+    return;
+  }
+  await window.padRefreshKillBanner();
+  window.renderPadWaves();
+  if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
+};
+
+// Reads the fail-safe flag and says plainly whether sending is possible. The
+// function refuses unless this is exactly 'true'.
+window.padRefreshKillBanner = async function () {
+  const el = document.getElementById('pad-kill-banner');
+  if (!el) return;
+  let enabled = false;
+  try {
+    const rows = await sbFetch('app_config?select=key,value&key=eq.pad_sending_enabled&limit=1');
+    enabled = Array.isArray(rows) && rows[0] && String(rows[0].value) === 'true';
+  } catch (e) { enabled = false; }
+  window._padSendingEnabled = enabled;
+  const canToggle = !!window._role?.is_super_admin;
+  if (enabled) {
+    el.style.display = '';
+    el.style.background = 'rgba(63,185,80,0.10)';
+    el.style.border = '1px solid rgba(63,185,80,0.35)';
+    el.style.color = '#3fb950';
+    el.innerHTML = '<strong>Sending is ENABLED.</strong> Running a wave will email real customers.'
+      + (canToggle ? ' <button class="btn-sm" style="margin-left:10px" onclick="window.padSetSending(false)">Disable sending</button>' : '');
+  } else {
+    el.style.display = '';
+    el.style.background = 'rgba(210,153,34,0.10)';
+    el.style.border = '1px solid rgba(210,153,34,0.35)';
+    el.style.color = '#d29922';
+    el.innerHTML = '<strong>Sending is DISABLED.</strong> Previews work; Run will be refused until sending is enabled.'
+      + (canToggle ? ' <button class="btn-sm" style="margin-left:10px" onclick="window.padSetSending(true)">Enable sending</button>' : '');
+  }
+};
+
+window.padSetSending = async function (on) {
+  if (on && !confirm('Enable PAD sending?\n\nWhile enabled, running a wave will email real customers immediately.')) return;
+  try {
+    await sbFetch('app_config?key=eq.pad_sending_enabled', {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ value: on ? 'true' : 'false', updated_at: new Date().toISOString() }),
+    });
+  } catch (e) { alert('Could not change the sending flag: ' + (e?.message || e)); }
+  await window.padRefreshKillBanner();
+};
+
+function _padWaveBadge(st) {
+  const map = {
+    draft:     ['#8b949e', 'rgba(139,148,158,0.15)', 'Draft'],
+    ready:     ['#58a6ff', 'rgba(88,166,255,0.15)',  'Ready'],
+    sending:   ['#d29922', 'rgba(210,153,34,0.15)',  'Sending…'],
+    sent:      ['#3fb950', 'rgba(63,185,80,0.15)',   'Sent'],
+    cancelled: ['#f85149', 'rgba(248,81,73,0.15)',   'Cancelled'],
+  };
+  const [c, bg, label] = map[st] || ['#8b949e', 'rgba(139,148,158,0.15)', st || '—'];
+  return `<span style="color:${c};background:${bg};border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700">${label}</span>`;
+}
+
+window.renderPadWaves = function () {
+  const body = document.getElementById('pad-waves-body');
+  const cnt = document.getElementById('pad-waves-count');
+  if (!body) return;
+  if (cnt) cnt.textContent = PAD_WAVES.length ? `${PAD_WAVES.length} waves` : 'none';
+  if (!PAD_WAVES.length) {
+    body.innerHTML = '<div class="empty">No waves staged yet.</div>';
+    return;
+  }
+  const canSend = !!window._role?.can_send_pad;
+  const rows = PAD_WAVES.map(w => {
+    const sent = w.status === 'sent';
+    const runnable = canSend && (w.status === 'ready');
+    const actions = [
+      `<button class="btn-sm" onclick="window.padPreviewWave('${w.id}')">🔍 Preview</button>`,
+      runnable ? `<button class="btn-sm" data-pad-send-only style="border-color:rgba(232,123,181,0.5)" onclick="window.padPreviewWave('${w.id}')">📤 Preview &amp; Run</button>` : '',
+    ].filter(Boolean).join(' ');
+    const result = sent
+      ? `<div style="font-size:12px;color:var(--muted);margin-top:4px">Sent ${(w.sent_at||'').slice(0,10)} — ${w.emails_sent||0} stores emailed${w.emails_failed ? `, ${w.emails_failed} failed` : ''}</div>`
+      : '';
+    return `<tr>
+      <td style="padding:10px 8px;font-weight:600">#${w.wave_number}</td>
+      <td style="padding:10px 8px">${escapeHtmlDash(w.name)}${result}</td>
+      <td style="padding:10px 8px">${String(w.lang||'en').toUpperCase()}</td>
+      <td style="padding:10px 8px">${w._staged} staged</td>
+      <td style="padding:10px 8px">${w.planned_send_date || '—'}</td>
+      <td style="padding:10px 8px">${_padWaveBadge(w.status)}</td>
+      <td style="padding:10px 8px;text-align:right">${actions}</td>
+    </tr>`;
+  }).join('');
+  body.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="color:var(--muted);font-size:11px;letter-spacing:.5px;text-align:left">
+      <th style="padding:6px 8px">WAVE</th><th style="padding:6px 8px">NAME</th><th style="padding:6px 8px">LANG</th>
+      <th style="padding:6px 8px">STORES</th><th style="padding:6px 8px">PLANNED</th><th style="padding:6px 8px">STATUS</th>
+      <th style="padding:6px 8px"></th></tr></thead><tbody>${rows}</tbody></table>`;
+};
+
+function escapeHtmlDash(v) {
+  return String(v ?? '—').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+window.padCloseSendModal = function () {
+  const m = document.getElementById('pad-send-modal');
+  if (m) m.style.display = 'none';
+  _padPreview = null;
+};
+
+// Dry run first, always. Writes nothing; returns the exact recipient grouping
+// and the skip list with reasons.
+window.padPreviewWave = async function (waveId) {
+  const modal = document.getElementById('pad-send-modal');
+  const body = document.getElementById('pad-send-body');
+  const title = document.getElementById('pad-send-title');
+  if (!modal || !body) return;
+  modal.style.display = 'flex';
+  title.textContent = 'Preview wave';
+  body.innerHTML = '<div class="loading">Running preview…</div>';
+
+  const res = await _padCallSend({ wave_id: waveId, dry_run: true });
+  if (!res?.ok) {
+    body.innerHTML = `<div class="empty">Preview failed: ${escapeHtmlDash(res?.error || 'unknown')}${res?.detail ? ' — ' + escapeHtmlDash(res.detail) : ''}</div>`;
+    return;
+  }
+  _padPreview = res;
+
+  const skipRows = (res.skipped || []).map(s =>
+    `<tr><td style="padding:4px 8px">${escapeHtmlDash(s.public_code)}</td>
+         <td style="padding:4px 8px">${escapeHtmlDash(s.name)}</td>
+         <td style="padding:4px 8px;color:#d29922">${escapeHtmlDash(s.reason)}</td></tr>`).join('');
+
+  const canSend = !!window._role?.can_send_pad;
+  const sendingOn = !!window._padSendingEnabled;
+
+  body.innerHTML = `
+    <div style="font-size:14px;margin-bottom:14px"><strong>Wave #${res.wave.number} — ${escapeHtmlDash(res.wave.name)}</strong>
+      <span style="color:var(--muted)">(${String(res.wave.lang).toUpperCase()})</span></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px">
+      <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700">${res.staged}</div><div style="font-size:11px;color:var(--muted)">STAGED</div></div>
+      <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700;color:#3fb950">${res.eligible}</div><div style="font-size:11px;color:var(--muted)">ELIGIBLE</div></div>
+      <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700;color:#58a6ff">${res.recipients}</div><div style="font-size:11px;color:var(--muted)">EMAILS</div></div>
+      <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700;color:${res.skipped_count ? '#d29922' : 'var(--muted)'}">${res.skipped_count}</div><div style="font-size:11px;color:var(--muted)">SKIPPED</div></div>
+    </div>
+    ${res.grouped_savings > 0 ? `<div style="font-size:12px;color:var(--muted);margin-bottom:14px">${res.eligible} stores group into ${res.recipients} emails — ${res.grouped_savings} multi-location stores share an address with another.</div>` : ''}
+    ${skipRows ? `<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:700;margin-bottom:6px">Skipped (will not be emailed, wave still sends)</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;background:var(--bg3);border-radius:8px">${skipRows}</table></div>` : ''}
+    ${!canSend ? '<div class="empty">You do not have send permission. Preview only.</div>' : (
+      !sendingOn
+        ? '<div style="background:rgba(210,153,34,0.10);border:1px solid rgba(210,153,34,0.35);color:#d29922;border-radius:8px;padding:12px;font-size:13px">Sending is currently disabled, so this wave cannot be run. A super admin can enable it from the banner on the PAD tab.</div>'
+        : `<div style="border-top:1px solid var(--border);padding-top:14px">
+             <div style="font-size:13px;margin-bottom:8px">To send, type the eligible store count <strong>${res.eligible}</strong> to confirm:</div>
+             <div style="display:flex;gap:10px;align-items:center">
+               <input id="pad-confirm-input" type="text" inputmode="numeric" placeholder="${res.eligible}"
+                 style="width:120px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:14px"
+                 oninput="document.getElementById('pad-run-btn').disabled = (this.value.trim() !== '${res.eligible}')"/>
+               <button id="pad-run-btn" class="btn-export" disabled
+                 onclick="window.padRunWave('${res.wave.id}', ${res.eligible})">📤 Send ${res.recipients} emails</button>
+             </div>
+             <div style="font-size:12px;color:var(--muted);margin-top:8px">This cannot be undone. Emails go out immediately.</div>
+           </div>`
+    )}`;
+};
+
+window.padRunWave = async function (waveId, expected) {
+  const btn = document.getElementById('pad-run-btn');
+  const body = document.getElementById('pad-send-body');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  const res = await _padCallSend({ wave_id: waveId, confirm_count: expected });
+  if (!res?.ok) {
+    if (body) body.innerHTML = `<div class="empty">Send failed: ${escapeHtmlDash(res?.error || 'unknown')}${res?.detail ? ' — ' + escapeHtmlDash(res.detail) : ''}</div>`;
+    return;
+  }
+  const failRows = (res.failures || []).map(f =>
+    `<tr><td style="padding:4px 8px">${escapeHtmlDash(f.email)}</td><td style="padding:4px 8px;color:#f85149">${escapeHtmlDash(f.error)}</td></tr>`).join('');
+  if (body) body.innerHTML = `
+    <div style="font-size:15px;font-weight:700;color:#3fb950;margin-bottom:12px">Wave #${res.wave.number} sent</div>
+    <div style="font-size:13px;line-height:1.9">
+      Invitations created: <strong>${res.invitations_created}</strong><br>
+      Stores emailed: <strong>${res.stores_emailed}</strong> across ${res.recipients} recipients<br>
+      ${res.stores_failed ? `Failed: <strong style="color:#f85149">${res.stores_failed}</strong><br>` : ''}
+      ${res.skipped_count ? `Skipped: <strong style="color:#d29922">${res.skipped_count}</strong><br>` : ''}
+      Sent by: ${escapeHtmlDash(res.sent_by)}
+    </div>
+    ${failRows ? `<div style="margin-top:14px"><div style="font-size:12px;font-weight:700;margin-bottom:6px">Failures</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;background:var(--bg3);border-radius:8px">${failRows}</table></div>` : ''}
+    <div style="margin-top:16px"><button class="btn-sm" onclick="window.padCloseSendModal();window.loadPadWaves();window.loadPadConversion()">Done</button></div>`;
+};
 
 window.loadPadConversion = async function (btn) {
   const body = document.getElementById('pad-body');
