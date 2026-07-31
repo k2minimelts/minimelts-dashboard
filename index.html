@@ -1587,7 +1587,7 @@
         <div class="filter-group"><label>Search</label><input type="text" id="filter-search" placeholder="Store, driver, receipt..." oninput="applyFilters()" style="min-width:200px"/></div>
         <div class="filter-group"><label>Driver</label><select id="filter-driver" onchange="applyFilters()"><option value="">All Drivers</option></select></div>
         <div class="filter-group"><label>Payment</label><select id="filter-payment" onchange="applyFilters()"><option value="">All Payments</option><option value="Terms">Terms</option><option value="Cash">Cash</option><option value="Cheque">Cheque</option><option value="Mail Cheque">Mail Cheque</option><option value="E-Transfer">E-Transfer</option><option value="PAD">PAD</option></select></div>
-        <div class="filter-group"><label>QB Status</label><select id="filter-qb" onchange="applyFilters()"><option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="exported">Exported</option><option value="failed">Failed</option></select></div>
+        <div class="filter-group"><label>QB Status</label><select id="filter-qb" onchange="applyFilters()"><option value="">All</option><option value="pending">Not sent (failed)</option><option value="approved">Approved</option><option value="exported">Exported</option><option value="failed">Failed</option></select></div>
         <div class="filter-group"><label>From</label><input type="date" id="filter-from" onchange="applyFilters()"/></div>
         <div class="filter-group"><label>To</label><input type="date" id="filter-to" onchange="applyFilters()"/></div>
         <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
@@ -2204,8 +2204,7 @@
             <option value="pending">Pending</option>
             <option value="sent">Sent</option>
             <option value="signed">Signed</option>
-            <option value="declined">Declined</option>
-            <option value="excluded">Excluded</option>
+
           </select>
         </div>
         <div id="pad-body"><div class="loading">Loading PAD conversion status…</div></div>
@@ -9937,6 +9936,7 @@ window.renderPadWaves = function () {
     const actions = [
       `<button class="btn-sm" onclick="window.padPreviewWave('${w.id}')">🔍 Preview</button>`,
       runnable ? `<button class="btn-sm" data-pad-send-only style="border-color:rgba(232,123,181,0.5)" onclick="window.padPreviewWave('${w.id}')">📤 Preview &amp; Run</button>` : '',
+      sent && canSend ? `<button class="btn-sm" data-pad-send-only onclick="window.padRemindWave('${w.id}')">✉️ Remind</button>` : '',
     ].filter(Boolean).join(' ');
     const result = sent
       ? `<div style="font-size:12px;color:var(--muted);margin-top:4px">Sent ${(w.sent_at||'').slice(0,10)} — ${w.emails_sent||0} stores emailed${w.emails_failed ? `, ${w.emails_failed} failed` : ''}</div>`
@@ -10048,6 +10048,107 @@ window.padRunWave = async function (waveId, expected) {
     <div style="margin-top:16px"><button class="btn-sm" onclick="window.padCloseSendModal();window.loadPadWaves();window.loadPadConversion()">Done</button></div>`;
 };
 
+// ── Reminders ─────────────────────────────────────────────────────────────
+// Two entry points sharing one edge function: a per-row button mirroring the
+// Unpaid tab (confirm dialog, one store), and a per-wave bulk chase using the
+// same preview-then-typed-confirm flow as sending. The function enforces the
+// 5-day gap and 3-reminder ceiling regardless of which one is used.
+function _padCallRemind(payload) {
+  const token = window._session?.access_token;
+  return fetch(`${SUPABASE_URL}/functions/v1/send-pad-reminder`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'apikey': SUPABASE_ANON_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+}
+
+window.padRemindStore = async function (invitationId, code) {
+  const row = (PAD_CACHE || []).find(r => r.invitation_id === invitationId);
+  const last = row?.last_reminder_at
+    ? `\n\nLast reminded: ${new Date(row.last_reminder_at).toLocaleDateString()}`
+    : '\n\nNo reminder sent yet.';
+  const name = row?.store_name || code || 'this store';
+  if (!confirm(`Send a reminder to ${name}?${last}\n\nThis re-sends the original invitation with "Reminder" in the subject, using the same signing link.`)) return;
+  const res = await _padCallRemind({ invitation_id: invitationId });
+  if (!res?.ok) {
+    const why = (res?.skipped && res.skipped[0]?.reason) || res?.detail || res?.error || 'unknown';
+    alert('Reminder not sent: ' + why);
+    return;
+  }
+  alert(`Reminder sent to ${name}.`);
+  window.loadPadConversion();
+};
+
+window.padRemindWave = async function (waveId) {
+  const modal = document.getElementById('pad-send-modal');
+  const body = document.getElementById('pad-send-body');
+  const title = document.getElementById('pad-send-title');
+  if (!modal || !body) return;
+  modal.style.display = 'flex';
+  title.textContent = 'Remind wave';
+  body.innerHTML = '<div class="loading">Checking who is due…</div>';
+
+  const res = await _padCallRemind({ wave_id: waveId, dry_run: true });
+  if (!res?.ok) {
+    body.innerHTML = `<div class="empty">Preview failed: ${escapeHtmlDash(res?.error || 'unknown')}</div>`;
+    return;
+  }
+  const skipRows = (res.skipped || []).map(s =>
+    `<tr><td style="padding:4px 8px">${escapeHtmlDash(s.public_code)}</td>
+         <td style="padding:4px 8px">${escapeHtmlDash(s.name)}</td>
+         <td style="padding:4px 8px;color:#d29922">${escapeHtmlDash(s.reason)}</td></tr>`).join('');
+  const sendingOn = !!window._padSendingEnabled;
+
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px">
+      <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700">${res.candidates}</div><div style="font-size:11px;color:var(--muted)">IN WAVE</div></div>
+      <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700;color:#3fb950">${res.due}</div><div style="font-size:11px;color:var(--muted)">DUE A REMINDER</div></div>
+      <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700;color:#58a6ff">${res.recipients}</div><div style="font-size:11px;color:var(--muted)">EMAILS</div></div>
+      <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700;color:${res.skipped_count ? '#d29922' : 'var(--muted)'}">${res.skipped_count}</div><div style="font-size:11px;color:var(--muted)">NOT DUE</div></div>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px">Rules: at least ${res.rules.min_days_between} days since the last reminder, maximum ${res.rules.max_reminders} per store. Signed stores are never chased.</div>
+    ${skipRows ? `<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:700;margin-bottom:6px">Not due</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;background:var(--bg3);border-radius:8px">${skipRows}</table></div>` : ''}
+    ${res.due === 0 ? '<div class="empty">Nobody is due a reminder right now.</div>' : (
+      !sendingOn
+        ? '<div style="background:rgba(210,153,34,0.10);border:1px solid rgba(210,153,34,0.35);color:#d29922;border-radius:8px;padding:12px;font-size:13px">Sending is disabled, so reminders cannot go out.</div>'
+        : `<div style="border-top:1px solid var(--border);padding-top:14px">
+             <div style="font-size:13px;margin-bottom:8px">To send, type <strong>${res.due}</strong> to confirm:</div>
+             <div style="display:flex;gap:10px;align-items:center">
+               <input id="pad-confirm-input" type="text" inputmode="numeric" placeholder="${res.due}"
+                 style="width:120px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:14px"
+                 oninput="document.getElementById('pad-remind-btn').disabled = (this.value.trim() !== '${res.due}')"/>
+               <button id="pad-remind-btn" class="btn-export" disabled
+                 onclick="window.padRunRemind('${waveId}', ${res.due})">✉️ Send ${res.recipients} reminders</button>
+             </div>
+           </div>`
+    )}`;
+};
+
+window.padRunRemind = async function (waveId, expected) {
+  const btn = document.getElementById('pad-remind-btn');
+  const body = document.getElementById('pad-send-body');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  const res = await _padCallRemind({ wave_id: waveId, confirm_count: expected });
+  if (!res?.ok) {
+    if (body) body.innerHTML = `<div class="empty">Send failed: ${escapeHtmlDash(res?.error || 'unknown')}${res?.detail ? ' — ' + escapeHtmlDash(res.detail) : ''}</div>`;
+    return;
+  }
+  if (body) body.innerHTML = `
+    <div style="font-size:15px;font-weight:700;color:#3fb950;margin-bottom:12px">Reminders sent</div>
+    <div style="font-size:13px;line-height:1.9">
+      Stores reminded: <strong>${res.reminders_sent}</strong> across ${res.recipients} recipients<br>
+      ${res.reminders_failed ? `Failed: <strong style="color:#f85149">${res.reminders_failed}</strong><br>` : ''}
+      ${res.skipped_count ? `Not due: <strong style="color:#d29922">${res.skipped_count}</strong><br>` : ''}
+      Sent by: ${escapeHtmlDash(res.sent_by)}
+    </div>
+    <div style="margin-top:16px"><button class="btn-sm" onclick="window.padCloseSendModal();window.loadPadWaves();window.loadPadConversion()">Done</button></div>`;
+};
+
 window.loadPadConversion = async function (btn) {
   const body = document.getElementById('pad-body');
   if (!body) return;
@@ -10111,10 +10212,11 @@ window.renderPadConversion = function () {
 
   // Summary strip is computed over the FULL cache, not the filtered view, so it
   // always describes the whole campaign.
-  const tally = { total: PAD_CACHE.length, pending: 0, sent: 0, signed: 0, declined: 0, excluded: 0, pushed: 0 };
+  const tally = { total: PAD_CACHE.length, pending: 0, sent: 0, signed: 0, declined: 0, excluded: 0, pushed: 0, reminded: 0 };
   PAD_CACHE.forEach(r => {
     if (tally[r.status] !== undefined) tally[r.status]++;
     if (r.pushed_to_qb) tally.pushed++;
+    if (Number(r.reminder_count || 0) > 0) tally.reminded++;
   });
   const stats = document.getElementById('pad-stats');
   if (stats) {
@@ -10128,8 +10230,10 @@ window.renderPadConversion = function () {
       card('Sent', tally.sent, '#58a6ff') +
       card('Signed', tally.signed, '#3fb950') +
       card('Pushed to QB', tally.pushed, '#3fb950') +
-      card('Declined', tally.declined, '#f85149') +
-      card('Excluded', tally.excluded, '#d29922');
+      // 'Not sent' means the invitation exists but the email failed -- these are
+      // the stores that will never sign because they were never asked.
+      card('Not sent', tally.pending, tally.pending ? '#f85149' : undefined) +
+      card('Reminded', tally.reminded, '#d29922');
   }
 
   const rows = _padFilteredRows();
@@ -10148,7 +10252,15 @@ window.renderPadConversion = function () {
 
   const tr = pageRows.map(r => {
     const flag = (b) => b ? '<span style="color:#3fb950">✓</span>' : '<span style="color:var(--muted)">—</span>';
-    const remind = r.reminder_count ? ` <span style="color:var(--muted);font-size:11px">(${r.reminder_count}× )</span>` : '';
+    const remind = r.reminder_count ? ` <span style="color:var(--muted);font-size:11px">(${r.reminder_count}×)</span>` : '';
+    // Only offered where it can actually work: an unsigned invitation with a
+    // live token. The function re-checks all of this regardless.
+    const canRemind = !!window._role?.can_send_pad
+      && r.status === 'sent'
+      && Number(r.reminder_count || 0) < 3;
+    const remindBtn = canRemind
+      ? `<button class="btn-sm" data-pad-send-only onclick="window.padRemindStore('${r.invitation_id}','${String(r.public_code||'').replace(/'/g,"")}')">✉️ Remind</button>`
+      : '<span style="color:var(--muted)">—</span>';
     return `<tr>
       <td style="color:var(--muted);font-size:12px">${escapeHtml(r.public_code||'—')}</td>
       <td>${escapeHtml(r.store_name||r.qb_name||'—')}</td>
@@ -10161,12 +10273,13 @@ window.renderPadConversion = function () {
       <td style="text-align:center">${flag(r.confirmation_sent)}</td>
       <td style="text-align:center">${flag(r.pushed_to_qb)}</td>
       <td style="color:var(--muted);font-size:11px">${r.excluded_reason ? escapeHtml(r.excluded_reason) : ''}</td>
+      <td style="text-align:right">${remindBtn}</td>
     </tr>`;
   }).join('');
 
   body.innerHTML = `<table><thead><tr>
     <th>ST-Code</th><th>Store</th><th>Location</th><th>Depot</th><th>Terms</th>
-    <th>Status</th><th>Sent</th><th>Signed</th><th>Conf.</th><th>QB</th><th>Note</th>
+    <th>Status</th><th>Sent</th><th>Signed</th><th>Conf.</th><th>QB</th><th>Note</th><th></th>
   </tr></thead><tbody>${tr}</tbody></table>`;
 
   _renderPadPager(_padPage, totalPages, rows.length);
