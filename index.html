@@ -2191,6 +2191,7 @@
       <div class="table-wrap">
         <div class="table-header">
           <span class="table-title">🏦 PAD Conversion</span>
+          <span id="pad-bulk-remind" style="display:none;align-items:center;gap:10px;margin-left:14px"></span>
           <span class="table-count" id="pad-count">Loading…</span>
           <button class="btn-sm" onclick="window.loadPadConversion(this)" style="margin-left:auto" title="Refetch from server">🔄 Refresh</button>
         </div>
@@ -10066,6 +10067,72 @@ function _padCallRemind(payload) {
   }).then(r => r.json());
 }
 
+// Mirrors send-pad-reminder's rules so the UI never offers something the
+// server will refuse. The function remains authoritative -- this is presentation
+// only, and it deliberately re-uses the same numbers (5 days, 3 maximum).
+const PAD_MIN_DAYS_BETWEEN = 5;
+const PAD_MAX_REMINDERS = 3;
+
+function _padRemindEligible(r) {
+  if (r.status === 'signed') return { ok: false, short: 'signed', why: 'Already signed' };
+  if (r.status === 'pending') return { ok: false, short: 'not sent', why: 'The original email never went out — this needs a re-send, not a reminder' };
+  if (r.status !== 'sent') return { ok: false, short: r.status || '—', why: 'Not an open invitation' };
+  const count = Number(r.reminder_count || 0);
+  if (count >= PAD_MAX_REMINDERS) return { ok: false, short: 'max 3', why: `Already reminded ${count} times — time for a phone call` };
+  if (r.last_reminder_at) {
+    const days = (Date.now() - new Date(r.last_reminder_at).getTime()) / 86400000;
+    if (days < PAD_MIN_DAYS_BETWEEN) {
+      const wait = Math.ceil(PAD_MIN_DAYS_BETWEEN - days);
+      return { ok: false, short: `in ${wait}d`, why: `Reminded ${Math.floor(days)} day(s) ago — reminders are spaced at least ${PAD_MIN_DAYS_BETWEEN} days apart` };
+    }
+  }
+  return { ok: true, short: '', why: '' };
+}
+
+window.padToggleAllPicks = function (el) {
+  document.querySelectorAll('.pad-pick').forEach(cb => { cb.checked = el.checked; });
+  window.padUpdatePickCount();
+};
+
+window.padUpdatePickCount = function () {
+  const picked = document.querySelectorAll('.pad-pick:checked').length;
+  const host = document.getElementById('pad-bulk-remind');
+  if (!host) return;
+  if (!picked) { host.style.display = 'none'; return; }
+  host.style.display = '';
+  host.innerHTML = `<span style="font-size:13px">${picked} selected</span>
+    <button class="btn-sm" data-pad-send-only style="border-color:rgba(232,123,181,0.5)"
+      onclick="window.padRemindSelected()">✉️ Remind ${picked} selected</button>`;
+};
+
+// Sends one at a time rather than as a wave: the selection is arbitrary (it can
+// span waves, or be a handful picked by hand), and the per-store endpoint
+// already applies every guardrail. Slower, but each result is independent -- one
+// refusal does not abandon the rest.
+window.padRemindSelected = async function () {
+  const ids = [...document.querySelectorAll('.pad-pick:checked')].map(cb => cb.value);
+  if (!ids.length) return;
+  if (!confirm(`Send a reminder to ${ids.length} store${ids.length===1?'':'s'}?\n\nEach receives the original invitation with "Reminder" in the subject, using their existing signing link.\n\nThis cannot be undone.`)) return;
+
+  const host = document.getElementById('pad-bulk-remind');
+  if (host) host.innerHTML = `<span style="font-size:13px">Sending 0 / ${ids.length}…</span>`;
+
+  let ok = 0; const failed = [];
+  for (let i = 0; i < ids.length; i++) {
+    try {
+      const res = await _padCallRemind({ invitation_id: ids[i] });
+      if (res?.ok) ok++;
+      else failed.push((res?.skipped && res.skipped[0]?.reason) || res?.error || 'unknown');
+    } catch (e) { failed.push(String(e)); }
+    if (host) host.innerHTML = `<span style="font-size:13px">Sending ${i+1} / ${ids.length}…</span>`;
+    // Resend allows 25/sec; this is well inside that, and pacing keeps a large
+    // selection from arriving as one burst.
+    await new Promise(r => setTimeout(r, 250));
+  }
+  alert(`Reminders sent: ${ok} of ${ids.length}.` + (failed.length ? `\n\nNot sent (${failed.length}): ${[...new Set(failed)].join(', ')}` : ''));
+  window.loadPadConversion();
+};
+
 window.padRemindStore = async function (invitationId, code) {
   const row = (PAD_CACHE || []).find(r => r.invitation_id === invitationId);
   const last = row?.last_reminder_at
@@ -10253,15 +10320,19 @@ window.renderPadConversion = function () {
   const tr = pageRows.map(r => {
     const flag = (b) => b ? '<span style="color:#3fb950">✓</span>' : '<span style="color:var(--muted)">—</span>';
     const remind = r.reminder_count ? ` <span style="color:var(--muted);font-size:11px">(${r.reminder_count}×)</span>` : '';
-    // Only offered where it can actually work: an unsigned invitation with a
-    // live token. The function re-checks all of this regardless.
-    const canRemind = !!window._role?.can_send_pad
-      && r.status === 'sent'
-      && Number(r.reminder_count || 0) < 3;
+    // Mirror the server's rules exactly (send-pad-reminder: status 'sent', under
+    // 3 reminders, at least 5 days since the last one). Offering a button the
+    // function will refuse just produces a confusing alert after the click.
+    const eligible = _padRemindEligible(r);
+    const canRemind = !!window._role?.can_send_pad && eligible.ok;
     const remindBtn = canRemind
       ? `<button class="btn-sm" data-pad-send-only onclick="window.padRemindStore('${r.invitation_id}','${String(r.public_code||'').replace(/'/g,"")}')">✉️ Remind</button>`
-      : '<span style="color:var(--muted)">—</span>';
+      : `<span style="color:var(--muted);font-size:11px" title="${escapeHtml(eligible.why)}">${eligible.short}</span>`;
+    const box = canRemind
+      ? `<input type="checkbox" class="pad-pick" value="${r.invitation_id}" onchange="window.padUpdatePickCount()">`
+      : '';
     return `<tr>
+      <td style="text-align:center">${box}</td>
       <td style="color:var(--muted);font-size:12px">${escapeHtml(r.public_code||'—')}</td>
       <td>${escapeHtml(r.store_name||r.qb_name||'—')}</td>
       <td style="color:var(--muted);font-size:12px">${escapeHtml([r.city, r.province].filter(Boolean).join(', ')||'—')}</td>
@@ -10270,6 +10341,7 @@ window.renderPadConversion = function () {
       <td>${_padStatusBadge(r.status)}${remind}</td>
       <td style="font-size:12px">${_padDate(r.sent_at)}</td>
       <td style="font-size:12px">${_padDate(r.signed_at)}</td>
+      <td style="font-size:12px">${_padDate(r.last_reminder_at)}</td>
       <td style="text-align:center">${flag(r.confirmation_sent)}</td>
       <td style="text-align:center">${flag(r.pushed_to_qb)}</td>
       <td style="color:var(--muted);font-size:11px">${r.excluded_reason ? escapeHtml(r.excluded_reason) : ''}</td>
@@ -10278,9 +10350,11 @@ window.renderPadConversion = function () {
   }).join('');
 
   body.innerHTML = `<table><thead><tr>
+    <th style="text-align:center"><input type="checkbox" id="pad-pick-all" onchange="window.padToggleAllPicks(this)" title="Select all eligible on this page"></th>
     <th>ST-Code</th><th>Store</th><th>Location</th><th>Depot</th><th>Terms</th>
-    <th>Status</th><th>Sent</th><th>Signed</th><th>Conf.</th><th>QB</th><th>Note</th><th></th>
+    <th>Status</th><th>Sent</th><th>Signed</th><th>Reminded</th><th>Conf.</th><th>QB</th><th>Note</th><th></th>
   </tr></thead><tbody>${tr}</tbody></table>`;
+  window.padUpdatePickCount();
 
   _renderPadPager(_padPage, totalPages, rows.length);
 };
