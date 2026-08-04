@@ -10089,6 +10089,97 @@ function _padRemindEligible(r) {
   return { ok: true, short: '', why: '' };
 }
 
+// Exclude a store from the PAD campaign.
+//
+// Two things make this more than a status flip:
+//
+//  1. The token is killed server-side. A customer who has refused PAD must not
+//     be left holding a working signing link.
+//  2. Other locations on the same email are offered too, ticked by default.
+//     Kidz Kingdom emailed about Londonderry (invited in wave 0) but also owns
+//     Southgate, which has no invitation yet and would be picked up by wave 1 --
+//     so excluding only the store that complained means inviting them again a
+//     fortnight after telling them it was handled.
+window.padExcludeStore = async function (storeId, code, name) {
+  let siblings = [];
+  try {
+    siblings = await sbFetch('rpc/pad_sibling_stores', {
+      method: 'POST',
+      body: JSON.stringify({ p_store_id: storeId }),
+    }) || [];
+  } catch (e) { siblings = []; }
+
+  const modal = document.getElementById('pad-send-modal');
+  const body = document.getElementById('pad-send-body');
+  const title = document.getElementById('pad-send-title');
+  if (!modal || !body) return;
+  modal.style.display = 'flex';
+  title.textContent = 'Exclude from PAD campaign';
+
+  const sibRows = siblings.map(x => `
+    <label class="mm-check-row" style="display:flex;gap:10px;align-items:center;padding:6px 0">
+      <input type="checkbox" class="pad-exc-sib" value="${x.store_id}" checked>
+      <span style="font-size:13px">${escapeHtmlDash(x.name)}
+        <span style="color:var(--muted)">${escapeHtmlDash(x.public_code)}${x.city ? ' — ' + escapeHtmlDash(x.city) : ''}
+        · ${escapeHtmlDash(x.invite_status)}</span></span>
+    </label>`).join('');
+
+  body.innerHTML = `
+    <div style="font-size:14px;margin-bottom:6px"><strong>${escapeHtmlDash(name || code)}</strong>
+      <span style="color:var(--muted)">${escapeHtmlDash(code)}</span></div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:16px">
+      Excluding stops all further PAD emails, cancels any open invitation, and disables their signing link.
+      They will not be picked up by future waves.
+    </div>
+    ${siblings.length ? `<div style="background:var(--bg3);border-radius:8px;padding:12px;margin-bottom:16px">
+      <div style="font-size:12px;font-weight:700;margin-bottom:6px">Other locations on the same email address</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">These would otherwise be invited in a later wave.</div>
+      ${sibRows}</div>` : ''}
+    <div style="margin-bottom:14px">
+      <label style="font-size:13px;display:block;margin-bottom:6px">Reason (required — recorded against the account)</label>
+      <input id="pad-exc-reason" type="text" placeholder="e.g. Company policy — does not use PAD. Moving to Net 30."
+        style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:9px 12px;color:var(--text);font-size:14px"
+        oninput="document.getElementById('pad-exc-btn').disabled = this.value.trim().length < 5">
+    </div>
+    <div style="display:flex;gap:10px">
+      <button id="pad-exc-btn" class="btn-export" disabled
+        style="background:#f85149;border-color:#f85149"
+        onclick="window.padRunExclude('${storeId}')">🚫 Exclude from campaign</button>
+      <button class="btn-sm" onclick="window.padCloseSendModal()">Cancel</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:10px">This can be reversed later, but their signing link will not come back — they would need a fresh invitation.</div>`;
+};
+
+window.padRunExclude = async function (storeId) {
+  const reason = (document.getElementById('pad-exc-reason')?.value || '').trim();
+  if (reason.length < 5) return;
+  const ids = [storeId, ...[...document.querySelectorAll('.pad-exc-sib:checked')].map(cb => cb.value)];
+  const btn = document.getElementById('pad-exc-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Excluding…'; }
+
+  const done = []; const failed = [];
+  for (const id of ids) {
+    try {
+      const res = await sbFetch('rpc/exclude_store_from_pad', {
+        method: 'POST',
+        body: JSON.stringify({ p_store_id: id, p_reason: reason }),
+      });
+      if (res?.ok) done.push(res.public_code || id);
+      else failed.push(res?.message || 'refused');
+    } catch (e) { failed.push(String(e?.message || e)); }
+  }
+
+  const body = document.getElementById('pad-send-body');
+  if (body) body.innerHTML = `
+    <div style="font-size:15px;font-weight:700;color:#3fb950;margin-bottom:12px">Excluded from the campaign</div>
+    <div style="font-size:13px;line-height:1.9">
+      Stores excluded: <strong>${done.length}</strong>${done.length ? ' — ' + done.map(escapeHtmlDash).join(', ') : ''}<br>
+      ${failed.length ? `Failed: <strong style="color:#f85149">${failed.length}</strong> — ${[...new Set(failed)].map(escapeHtmlDash).join('; ')}<br>` : ''}
+      Reason recorded: ${escapeHtmlDash(reason)}
+    </div>
+    <div style="margin-top:16px"><button class="btn-sm" onclick="window.padCloseSendModal();window.loadPadConversion()">Done</button></div>`;
+};
+
 window.padToggleAllPicks = function (el) {
   document.querySelectorAll('.pad-pick').forEach(cb => { cb.checked = el.checked; });
   window.padUpdatePickCount();
@@ -10331,6 +10422,12 @@ window.renderPadConversion = function () {
     const box = canRemind
       ? `<input type="checkbox" class="pad-pick" value="${r.invitation_id}" onchange="window.padUpdatePickCount()">`
       : '';
+    // Exclusion is a commercial concession, not a send action, so it is gated on
+    // super admin rather than can_send_pad: Dylan can chase, but granting an
+    // exemption unsupervised is a different kind of decision.
+    const excludeBtn = (!!window._role?.is_super_admin && r.status !== 'signed' && r.status !== 'excluded')
+      ? ` <button class="btn-sm" data-super-admin-only style="border-color:rgba(248,81,73,0.4)" onclick="window.padExcludeStore('${r.store_id}','${String(r.public_code||'').replace(/'/g,"")}','${String(r.store_name||'').replace(/['\\]/g,"")}')">🚫 Exclude</button>`
+      : '';
     return `<tr>
       <td style="text-align:center">${box}</td>
       <td style="color:var(--muted);font-size:12px">${escapeHtml(r.public_code||'—')}</td>
@@ -10345,7 +10442,7 @@ window.renderPadConversion = function () {
       <td style="text-align:center">${flag(r.confirmation_sent)}</td>
       <td style="text-align:center">${flag(r.pushed_to_qb)}</td>
       <td style="color:var(--muted);font-size:11px">${r.excluded_reason ? escapeHtml(r.excluded_reason) : ''}</td>
-      <td style="text-align:right">${remindBtn}</td>
+      <td style="text-align:right;white-space:nowrap">${remindBtn}${excludeBtn}</td>
     </tr>`;
   }).join('');
 
