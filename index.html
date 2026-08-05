@@ -7253,7 +7253,9 @@ function renderDriversTable(drivers) {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const rows = drivers.map(d => {
-    const monthDeliveries = allDeliveries.filter(del => (del.driver_id ? del.driver_id === d.id : del.driver_name === d.name) && del.delivered_at >= monthStart);
+    // deliveries.driver_id stores the AUTH user_id, not drivers.id — match on
+    // d.user_id (matching on d.id always returned 0, zeroing every driver's stats).
+    const monthDeliveries = allDeliveries.filter(del => (del.driver_id ? del.driver_id === d.user_id : del.driver_name === d.name) && del.delivered_at >= monthStart);
     const monthRevenue = monthDeliveries.reduce((s, del) => s + parseFloat(del.total||0), 0);
     return `<tr>
       <td><strong style="color:var(--text)">${d.name}</strong></td>
@@ -7285,7 +7287,8 @@ window.viewDriverStats = (driverName) => {
   panel.style.display = 'block';
   const _drvRec = (typeof allDriversData !== 'undefined' && Array.isArray(allDriversData))
     ? allDriversData.find(x => x.name === driverName) : null;
-  const _drvId = _drvRec ? _drvRec.id : null;
+  // Match on user_id: deliveries.driver_id is the auth user_id, not drivers.id.
+  const _drvId = _drvRec ? _drvRec.user_id : null;
   const driverDeliveries = allDeliveries.filter(d => _drvId ? d.driver_id === _drvId : d.driver_name === driverName).slice(0, 20);
   if (!driverDeliveries.length) { body.innerHTML = '<div class="empty">No deliveries found for this driver.</div>'; return; }
   const total = driverDeliveries.reduce((s,d) => s + parseFloat(d.total||0), 0);
@@ -9623,42 +9626,6 @@ window.saveMachineNote = async function(machineId) {
   }
 };
 
-// ── Store operational notes (dynamic, store-level) ────────────────────────
-// Same pattern as vending machine notes: loaded separately from stores (auth
-// read) so notes never reach the anon map layer, edited from the Map tab store
-// popup. A depot manager adds a current issue (e.g. "needs new freezer top") and
-// it carries forward to the store's next stop, where the driver sees it. Cleared
-// when resolved. Save gated server-side to admins + depot managers of the depot.
-let _storeNotes = new Map();  // stores.id -> operational note
-async function loadStoreNotes() {
-  try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/stores?select=id,notes&notes=not.is.null&limit=5000`, { headers: headers() });
-    if (!r.ok) return;
-    const rows = await r.json();
-    if (Array.isArray(rows)) _storeNotes = new Map(rows.map(x => [x.id, x.notes]));
-  } catch (e) { console.warn('[store notes] load failed', e); }
-}
-
-window.saveStoreNote = async function(storeId) {
-  const ta = document.getElementById('snote-' + storeId);
-  const status = document.getElementById('snote-status-' + storeId);
-  if (!ta) return;
-  if (status) { status.textContent = 'Saving…'; status.style.color = '#6b7280'; }
-  try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/set_store_notes`, {
-      method: 'POST',
-      headers: { ...headers(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ p_store_id: storeId, p_notes: ta.value }),
-    });
-    if (!r.ok) throw new Error((await r.text()) || ('HTTP ' + r.status));
-    const saved = await r.json(); // cleaned note text, or null if cleared
-    if (saved == null) _storeNotes.delete(storeId); else _storeNotes.set(storeId, saved);
-    if (status) { status.textContent = saved == null ? '✓ Cleared' : '✓ Saved'; status.style.color = '#15803d'; }
-  } catch (e) {
-    if (status) { status.textContent = '✗ ' + (e.message || 'Failed'); status.style.color = '#b91c1c'; }
-  }
-};
-
 // ── Per-store route reassignment (admin-only) ─────────────────────────────
 // Called from the store popup's "Change route" link. Renders an inline
 // dropdown + save controls into the editor div under the popup's route line.
@@ -10569,7 +10536,7 @@ async function loadMapData() {
   _mapDepots = depots;
   _mapRoutes = routes;
   _mapPendingOrders = pendingOrders;
-  await loadMachineNotes(); await loadStoreNotes();
+  await loadMachineNotes();
 }
 
 function populateMapFilterDropdowns() {
@@ -10995,15 +10962,6 @@ async function initMapboxGL() {
             : ''}
         </div>
         <div id="popup-route-editor-${escapeHtmlMap(p.id)}" style="display:none;margin-top:8px;padding:8px;background:#f3f4f6;border-radius:6px"></div>
-        <div style="margin-top:10px;border-top:1px solid #e5e7eb;padding-top:8px">
-          <div style="font-size:11px;color:#666;font-weight:600;margin-bottom:4px">📍 Store note <span style="font-weight:400;color:#999">(shown to driver on next stop)</span></div>
-          <textarea id="snote-${escapeHtmlMap(p.id)}" placeholder="e.g. Needs new freezer top — bring on next delivery" style="width:100%;box-sizing:border-box;min-height:52px;font-size:12px;padding:6px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;font-family:inherit">${escapeHtmlMap(_storeNotes.get(p.id) || '')}</textarea>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
-            <button onclick="window.saveStoreNote('${escapeHtmlMap(p.id)}')" style="background:#f59e0b;color:#fff;border:none;border-radius:4px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer">Save note</button>
-            <span id="snote-status-${escapeHtmlMap(p.id)}" style="font-size:11px"></span>
-          </div>
-          <div style="font-size:10px;color:#999;margin-top:3px">Clear the note and Save once the issue is resolved.</div>
-        </div>
       </div>`;
     new mapboxgl.Popup({ closeButton: true, offset: 10 }).setLngLat(coords).setHTML(html).addTo(_map);
   }
@@ -12621,7 +12579,7 @@ async function schedLoadOrdersAndOverdue() {
   let overdueRows = [], orderRows = [], vendingRows = [], routesLite = [], skippedRows = [];
   try {
     [overdueRows, orderRows, vendingRows, routesLite, skippedRows] = await Promise.all([overduePromise, ordersPromise, vendingPromise, routesLitePromise, skippedPromise]);
-    await loadMachineNotes(); await loadStoreNotes();
+    await loadMachineNotes();
     if (!Array.isArray(overdueRows)) overdueRows = [];
     if (!Array.isArray(orderRows)) orderRows = [];
     if (!Array.isArray(vendingRows)) vendingRows = [];
