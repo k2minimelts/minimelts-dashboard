@@ -7253,9 +7253,7 @@ function renderDriversTable(drivers) {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const rows = drivers.map(d => {
-    // deliveries.driver_id stores the AUTH user_id, not drivers.id — match on
-    // d.user_id (matching on d.id always returned 0, zeroing every driver's stats).
-    const monthDeliveries = allDeliveries.filter(del => (del.driver_id ? del.driver_id === d.user_id : del.driver_name === d.name) && del.delivered_at >= monthStart);
+    const monthDeliveries = allDeliveries.filter(del => (del.driver_id ? del.driver_id === d.id : del.driver_name === d.name) && del.delivered_at >= monthStart);
     const monthRevenue = monthDeliveries.reduce((s, del) => s + parseFloat(del.total||0), 0);
     return `<tr>
       <td><strong style="color:var(--text)">${d.name}</strong></td>
@@ -7287,8 +7285,7 @@ window.viewDriverStats = (driverName) => {
   panel.style.display = 'block';
   const _drvRec = (typeof allDriversData !== 'undefined' && Array.isArray(allDriversData))
     ? allDriversData.find(x => x.name === driverName) : null;
-  // Match on user_id: deliveries.driver_id is the auth user_id, not drivers.id.
-  const _drvId = _drvRec ? _drvRec.user_id : null;
+  const _drvId = _drvRec ? _drvRec.id : null;
   const driverDeliveries = allDeliveries.filter(d => _drvId ? d.driver_id === _drvId : d.driver_name === driverName).slice(0, 20);
   if (!driverDeliveries.length) { body.innerHTML = '<div class="empty">No deliveries found for this driver.</div>'; return; }
   const total = driverDeliveries.reduce((s,d) => s + parseFloat(d.total||0), 0);
@@ -10082,11 +10079,19 @@ function _padRemindEligible(r) {
   if (r.status !== 'sent') return { ok: false, short: r.status || '—', why: 'Not an open invitation' };
   const count = Number(r.reminder_count || 0);
   if (count >= PAD_MAX_REMINDERS) return { ok: false, short: 'max 3', why: `Already reminded ${count} times — time for a phone call` };
-  if (r.last_reminder_at) {
-    const days = (Date.now() - new Date(r.last_reminder_at).getTime()) / 86400000;
+  // Spaced from the LAST CONTACT, not just the last reminder. Comparing only
+  // against last_reminder_at left it null for a never-reminded store, so nothing
+  // separated the first reminder from the invitation itself — a wave sent
+  // yesterday showed every store as due.
+  const sentMs = r.sent_at ? new Date(r.sent_at).getTime() : 0;
+  const remMs = r.last_reminder_at ? new Date(r.last_reminder_at).getTime() : 0;
+  const lastContact = Math.max(sentMs, remMs);
+  if (lastContact > 0) {
+    const days = (Date.now() - lastContact) / 86400000;
     if (days < PAD_MIN_DAYS_BETWEEN) {
       const wait = Math.ceil(PAD_MIN_DAYS_BETWEEN - days);
-      return { ok: false, short: `in ${wait}d`, why: `Reminded ${Math.floor(days)} day(s) ago — reminders are spaced at least ${PAD_MIN_DAYS_BETWEEN} days apart` };
+      const what = remMs >= sentMs && remMs > 0 ? 'Reminded' : 'Invited';
+      return { ok: false, short: `in ${wait}d`, why: `${what} ${Math.floor(days)} day(s) ago — contact is spaced at least ${PAD_MIN_DAYS_BETWEEN} days apart` };
     }
   }
   return { ok: true, short: '', why: '' };
