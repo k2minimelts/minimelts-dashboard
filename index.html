@@ -2205,6 +2205,7 @@
             <option value="pending">Pending</option>
             <option value="sent">Sent</option>
             <option value="signed">Signed</option>
+            <option value="__bounced">Bounced / complained</option>
 
           </select>
         </div>
@@ -10161,6 +10162,11 @@ function _padRemindEligible(r) {
   if (r.status === 'signed') return { ok: false, short: 'signed', why: 'Already signed' };
   if (r.status === 'pending') return { ok: false, short: 'not sent', why: 'The original email never went out — this needs a re-send, not a reminder' };
   if (r.status !== 'sent') return { ok: false, short: r.status || '—', why: 'Not an open invitation' };
+  // A hard bounce means the address is dead. Reminding it is pure waste, and
+  // repeated mail to a bouncing address damages the sending domain — which also
+  // carries delivery receipts and invoices.
+  if (r.bounced_at) return { ok: false, short: 'bounced', why: `Email bounced — ${r.bounce_reason || 'address not reachable'}. Needs a phone call or a corrected address.` };
+  if (r.complained_at) return { ok: false, short: 'complained', why: 'Recipient marked our mail as spam. Do not email again.' };
   const count = Number(r.reminder_count || 0);
   const maxRem = Number(window._padMaxReminders || 0);
   if (maxRem > 0 && count >= maxRem) {
@@ -10469,6 +10475,17 @@ window.loadPadConversion = async function (btn) {
   try {
     const data = await sbFetchAll('pad_conversion_status?select=*&order=updated_at.desc');
     PAD_CACHE = Array.isArray(data) ? data : [];
+    // Bounce state is merged in rather than added to pad_conversion_status: a
+    // CREATE OR REPLACE VIEW silently drops and recreates the view unless every
+    // existing column keeps its exact position, and dependent queries break.
+    try {
+      const bounces = await sbFetchAll('pad_invitations?select=id,bounced_at,bounce_reason,complained_at&or=(bounced_at.not.is.null,complained_at.not.is.null)');
+      const byId = new Map((bounces || []).map(b => [b.id, b]));
+      for (const r of PAD_CACHE) {
+        const b = byId.get(r.invitation_id);
+        if (b) { r.bounced_at = b.bounced_at; r.bounce_reason = b.bounce_reason; r.complained_at = b.complained_at; }
+      }
+    } catch (e) { /* non-fatal: the board still works without bounce markers */ }
   } catch (e) {
     body.innerHTML = '<div class="empty">Error loading PAD conversion status.</div>';
     if (btn) { btn.disabled = false; btn.textContent = btn.dataset._o || '🔄 Refresh'; }
@@ -10507,7 +10524,11 @@ function _padFilteredRows() {
   const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
   return PAD_CACHE.filter(r => {
     if (dep && r.depot !== dep) return false;
-    if (st && r.status !== st) return false;
+    // A delivery-outcome pseudo-status: bounced and complained are not values of
+    // pad_invitations.status, they are separate columns, so they cannot be
+    // matched by the normal status compare.
+    if (st === '__bounced') { if (!r.bounced_at && !r.complained_at) return false; }
+    else if (st && r.status !== st) return false;
     if (tokens.length) {
       const hay = [r.store_name, r.qb_name, r.public_code, r.city, r.province, r.email, r.depot]
         .filter(Boolean).join(' ').toLowerCase();
@@ -10565,6 +10586,14 @@ window.renderPadConversion = function () {
   const tr = pageRows.map(r => {
     const flag = (b) => b ? '<span style="color:#3fb950">✓</span>' : '<span style="color:var(--muted)">—</span>';
     const remind = r.reminder_count ? ` <span style="color:var(--muted);font-size:11px">(${r.reminder_count}×)</span>` : '';
+    // Shown beside the status badge: a bounced store looks nothing like an
+    // unanswered one, and treating them the same means chasing someone who was
+    // never reached.
+    const delivery = r.bounced_at
+      ? ` <span style="color:#f85149;background:rgba(248,81,73,0.15);border-radius:10px;padding:2px 8px;font-size:11px;font-weight:700" title="${escapeHtml(r.bounce_reason || '')}">✉ bounced</span>`
+      : (r.complained_at
+          ? ` <span style="color:#d29922;background:rgba(210,153,34,0.15);border-radius:10px;padding:2px 8px;font-size:11px;font-weight:700">spam complaint</span>`
+          : '');
     // Mirror the server's rules exactly (send-pad-reminder: status 'sent', under
     // 3 reminders, at least 5 days since the last one). Offering a button the
     // function will refuse just produces a confusing alert after the click.
@@ -10589,7 +10618,7 @@ window.renderPadConversion = function () {
       <td style="color:var(--muted);font-size:12px">${escapeHtml([r.city, r.province].filter(Boolean).join(', ')||'—')}</td>
       <td>${escapeHtml(r.depot||'—')}</td>
       <td style="font-size:12px">${escapeHtml(r.terms||'—')}</td>
-      <td>${_padStatusBadge(r.status)}${remind}</td>
+      <td>${_padStatusBadge(r.status)}${remind}${delivery}</td>
       <td style="font-size:12px">${_padDate(r.sent_at)}</td>
       <td style="font-size:12px">${_padDate(r.signed_at)}</td>
       <td style="font-size:12px">${_padDate(r.last_reminder_at)}</td>
