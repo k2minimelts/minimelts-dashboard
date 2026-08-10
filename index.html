@@ -10034,22 +10034,6 @@ window.padPreviewWave = async function (waveId) {
   const canSend = !!window._role?.can_send_pad;
   const sendingOn = !!window._padSendingEnabled;
 
-  // Stores sharing an owner's email receive ONE message listing both, so mark
-  // them — unticking one of a pair changes what the other's email says.
-  const groupCounts = {};
-  for (const d of (res.due_list || [])) groupCounts[d.group_key] = (groupCounts[d.group_key] || 0) + 1;
-  window._padDueList = res.due_list || [];
-
-  const dueRows = (res.due_list || []).map(d => {
-    const shared = groupCounts[d.group_key] > 1
-      ? ` <span style="color:#58a6ff;font-size:11px" title="Shares one email with ${groupCounts[d.group_key]-1} other location">grouped</span>` : '';
-    const nth = d.reminder_count ? ` <span style="color:var(--muted);font-size:11px">(${d.reminder_count}× already)</span>` : '';
-    return `<label style="display:flex;gap:10px;align-items:center;padding:5px 4px;font-size:13px;cursor:pointer">
-      <input type="checkbox" class="pad-due-pick" value="${d.invitation_id}" checked onchange="window.padDueUpdate()">
-      <span>${escapeHtmlDash(d.name)}
-        <span style="color:var(--muted)">${escapeHtmlDash(d.public_code)}${d.city ? ' — ' + escapeHtmlDash(d.city) : ''}</span>${shared}${nth}</span>
-    </label>`;
-  }).join('');
 
   body.innerHTML = `
     <div style="font-size:14px;margin-bottom:14px"><strong>Wave #${res.wave.number} — ${escapeHtmlDash(res.wave.name)}</strong>
@@ -10324,6 +10308,22 @@ window.padRemindWave = async function (waveId) {
          <td style="padding:4px 8px">${escapeHtmlDash(s.name)}</td>
          <td style="padding:4px 8px;color:#d29922">${escapeHtmlDash(s.reason)}</td></tr>`).join('');
   const sendingOn = !!window._padSendingEnabled;
+  // Stores sharing an owner's email receive ONE message listing both, so mark
+  // them — unticking one of a pair changes what the other's email says.
+  const groupCounts = {};
+  for (const d of (res.due_list || [])) groupCounts[d.group_key] = (groupCounts[d.group_key] || 0) + 1;
+  window._padDueList = res.due_list || [];
+
+  const dueRows = (res.due_list || []).map(d => {
+    const shared = groupCounts[d.group_key] > 1
+      ? ` <span style="color:#58a6ff;font-size:11px" title="Shares one email with ${groupCounts[d.group_key]-1} other location">grouped</span>` : '';
+    const nth = d.reminder_count ? ` <span style="color:var(--muted);font-size:11px">(${d.reminder_count}× already)</span>` : '';
+    return `<label style="display:flex;gap:10px;align-items:center;padding:5px 4px;font-size:13px;cursor:pointer">
+      <input type="checkbox" class="pad-due-pick" value="${d.invitation_id}" checked onchange="window.padDueUpdate()">
+      <span>${escapeHtmlDash(d.name)}
+        <span style="color:var(--muted)">${escapeHtmlDash(d.public_code)}${d.city ? ' — ' + escapeHtmlDash(d.city) : ''}</span>${shared}${nth}</span>
+    </label>`;
+  }).join('');
 
   body.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px">
