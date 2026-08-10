@@ -9882,7 +9882,24 @@ window.loadPadWaves = async function (btn) {
     const members = await sbFetchAll('pad_wave_members?select=wave_id');
     const staged = {};
     for (const m of (members || [])) staged[m.wave_id] = (staged[m.wave_id] || 0) + 1;
-    for (const w of PAD_WAVES) w._staged = staged[w.id] || 0;
+
+    // Per-wave progress. Counted from pad_invitations rather than the
+    // pad_conversion_status view, which does not expose wave_id — and adding it
+    // would mean a CREATE OR REPLACE VIEW, which silently drops and recreates
+    // the view unless every existing column keeps its exact position.
+    const inv = await sbFetchAll('pad_invitations?select=wave_id,status');
+    const tally = {};
+    for (const i of (inv || [])) {
+      if (!i.wave_id) continue;
+      const t = (tally[i.wave_id] ||= { signed: 0, outstanding: 0, other: 0 });
+      if (i.status === 'signed') t.signed++;
+      else if (i.status === 'sent' || i.status === 'pending') t.outstanding++;
+      else t.other++;   // excluded / declined — neither chased nor counted as won
+    }
+    for (const w of PAD_WAVES) {
+      w._staged = staged[w.id] || 0;
+      w._tally = tally[w.id] || { signed: 0, outstanding: 0, other: 0 };
+    }
   } catch (e) {
     body.innerHTML = '<div class="empty">Error loading waves.</div>';
     if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
@@ -9948,6 +9965,25 @@ window.padSetSending = async function (on) {
   await window.padRefreshKillBanner();
 };
 
+// Progress for a sent wave: how many still owe us a signature, and how far
+// through it is. A wave that has not been sent shows nothing — "81 remaining"
+// on an unsent wave would read as outstanding work when nobody has been asked.
+function _padWaveProgress(w) {
+  if (w.status !== 'sent' && w.status !== 'sending') {
+    return '<span style="color:var(--muted)">—</span>';
+  }
+  const t = w._tally || { signed: 0, outstanding: 0, other: 0 };
+  const total = t.signed + t.outstanding;   // excluded stores are not "remaining"
+  if (!total) return '<span style="color:var(--muted)">—</span>';
+  const pct = Math.round((t.signed / total) * 100);
+  const done = t.outstanding === 0;
+  const colour = done ? '#3fb950' : (pct >= 50 ? '#d29922' : '#f0883e');
+  return `<span style="color:${colour};font-weight:600">${t.outstanding}</span>`
+    + `<span style="color:var(--muted)"> of ${total} left</span>`
+    + `<div style="font-size:11px;color:var(--muted);margin-top:2px">${t.signed} signed · ${pct}%`
+    + (t.other ? ` · ${t.other} excluded` : '') + `</div>`;
+}
+
 function _padWaveBadge(st) {
   const map = {
     draft:     ['#8b949e', 'rgba(139,148,158,0.15)', 'Draft'],
@@ -9988,6 +10024,7 @@ window.renderPadWaves = function () {
       <td style="padding:10px 8px">${w._staged} staged</td>
       <td style="padding:10px 8px">${w.planned_send_date || '—'}</td>
       <td style="padding:10px 8px">${_padWaveBadge(w.status)}</td>
+      <td style="padding:10px 8px">${_padWaveProgress(w)}</td>
       <td style="padding:10px 8px;text-align:right">${actions}</td>
     </tr>`;
   }).join('');
@@ -9995,6 +10032,7 @@ window.renderPadWaves = function () {
     <thead><tr style="color:var(--muted);font-size:11px;letter-spacing:.5px;text-align:left">
       <th style="padding:6px 8px">WAVE</th><th style="padding:6px 8px">NAME</th><th style="padding:6px 8px">LANG</th>
       <th style="padding:6px 8px">STORES</th><th style="padding:6px 8px">PLANNED</th><th style="padding:6px 8px">STATUS</th>
+      <th style="padding:6px 8px">REMAINING</th>
       <th style="padding:6px 8px"></th></tr></thead><tbody>${rows}</tbody></table>`;
 };
 
