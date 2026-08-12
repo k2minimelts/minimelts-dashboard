@@ -2178,6 +2178,18 @@
           <button class="btn-sm" onclick="window.loadPadVerify(this)" style="margin-left:auto">🔄 Refresh</button>
         </div>
         <div id="pad-verify-body" style="padding:14px"><div class="loading">Loading…</div></div>
+        <!-- Look-up, not a queue. The bounced-payment path: search the store,
+             open its cheque, compare against QuickBooks. -->
+        <div style="padding:0 14px 14px;border-top:1px solid var(--border);margin-top:4px;padding-top:14px">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px">Look up a store's VOID cheque</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">
+            For a bounced or rejected payment — find the store and check its cheque against QuickBooks.
+          </div>
+          <input id="pad-cheque-search" type="text" placeholder="Store name or ST-code…"
+            style="width:100%;max-width:420px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:9px 12px;color:var(--text);font-size:14px"
+            oninput="window.padChequeSearch()">
+          <div id="pad-cheque-results" style="margin-top:10px"></div>
+        </div>
       </div>
 
       <div class="table-wrap" style="margin-bottom:16px">
@@ -9906,7 +9918,7 @@ window.loadPadVerify = async function (btn) {
     const rows = await sbFetchAll(
       'store_pad_mandates?select=id,store_id,mandate_reference,account_last4,account_type,fi_name,' +
       'account_holder_name,signer_name,signed_at,void_cheque_path,void_uploaded_at,void_verified_at,' +
-      'void_verify_result,needs_review,review_reason' +
+      'void_verify_result,needs_review,review_reason,qb_corrected_at' +
       '&status=eq.active&void_cheque_path=not.is.null&order=void_uploaded_at.desc');
     const list = Array.isArray(rows) ? rows : [];
     // Store names are not on the mandate; fetch the ones we need.
@@ -9930,6 +9942,7 @@ window.loadPadVerify = async function (btn) {
     return;
   }
   window.renderPadVerify();
+  window.padChequeSearch();   // keep look-up results current after an action
   if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
 };
 
@@ -9937,58 +9950,117 @@ window.renderPadVerify = function () {
   const body = document.getElementById('pad-verify-body');
   const cnt = document.getElementById('pad-verify-count');
   if (!body) return;
-  const pending = PAD_VERIFY.filter(r => !r.void_verified_at);
-  const done = PAD_VERIFY.length - pending.length;
-  if (cnt) cnt.textContent = `${pending.length} to check · ${done} done`;
 
-  if (!PAD_VERIFY.length) {
-    body.innerHTML = '<div class="empty">No VOID cheques on file yet.</div>';
+  // ONLY what the system actually flagged. Listing all 31 cheques implied every
+  // one needed checking, which it does not — most are a recognised institution
+  // at a store with payment history, and a to-do list that long simply stops
+  // being opened. What is detectable is an institution number that does not
+  // exist; everything else is available on demand via look-up below.
+  const flagged = PAD_VERIFY.filter(r =>
+    (r.needs_review && !r.void_verified_at) ||
+    (r.void_verify_result === 'mismatch' && !r.qb_corrected_at));
+
+  if (cnt) cnt.textContent = flagged.length
+    ? `${flagged.length} need${flagged.length === 1 ? 's' : ''} attention`
+    : 'nothing flagged';
+
+  if (!flagged.length) {
+    body.innerHTML = `<div style="padding:6px 0;font-size:13px;color:var(--muted)">
+      ✓ No accounts need checking. Unrecognised institution numbers and unresolved
+      mismatches appear here automatically.</div>`;
     return;
   }
 
-  const row = (r) => {
-    const verified = !!r.void_verified_at;
-    const res = r.void_verify_result;
-    const badge = !verified
-      ? '<span style="color:#d29922;background:rgba(210,153,34,0.15);border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700">to check</span>'
-      : (res === 'mismatch'
-          ? '<span style="color:#f85149;background:rgba(248,81,73,0.15);border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700">MISMATCH</span>'
-          : res === 'illegible'
-            ? '<span style="color:#8b949e;background:rgba(139,148,158,0.15);border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700">illegible</span>'
-            : '<span style="color:#3fb950;background:rgba(63,185,80,0.15);border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700">✓ match</span>');
-    const flag = r.needs_review
-      ? ` <span style="color:#f0883e;font-size:11px" title="${escapeHtml(r.review_reason || '')}">⚑ ${escapeHtml((r.review_reason || '').split(':')[0])}</span>` : '';
-    const actions = verified
-      ? `<button class="btn-sm" onclick="window.padOpenCheque('${r.id}')">📄 View</button>`
-      : `<button class="btn-sm" onclick="window.padOpenCheque('${r.id}')">📄 View cheque</button>
-         <button class="btn-sm" style="border-color:rgba(63,185,80,0.5)" onclick="window.padMarkVoid('${r.id}','match')">✓ Matches</button>
-         <button class="btn-sm" style="border-color:rgba(248,81,73,0.5)" onclick="window.padMarkVoid('${r.id}','mismatch')">✗ Mismatch</button>`;
-    return `<tr>
-      <td style="padding:9px 8px;color:var(--muted);font-size:12px">${escapeHtmlDash(r._code)}</td>
-      <td style="padding:9px 8px">${escapeHtmlDash(r._name)}${r._city ? `<span style="color:var(--muted)"> — ${escapeHtmlDash(r._city)}</span>` : ''}${flag}</td>
-      <td style="padding:9px 8px;font-family:monospace">••••${escapeHtmlDash(r.account_last4)}</td>
-      <td style="padding:9px 8px;font-size:12px">${escapeHtmlDash(r.fi_name || '(not recognised)')}</td>
-      <td style="padding:9px 8px;font-size:12px">${_padDate(r.void_uploaded_at)}</td>
-      <td style="padding:9px 8px">${badge}</td>
-      <td style="padding:9px 8px;text-align:right;white-space:nowrap">${actions}</td>
-    </tr>`;
-  };
-
-  const ordered = [...PAD_VERIFY].sort((a, b) => (a.void_verified_at ? 1 : 0) - (b.void_verified_at ? 1 : 0));
   body.innerHTML = `
     <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">
-      Compare the cheque against <strong>QuickBooks → the customer → Additional Info</strong>:
-      <strong>ABA ROUTING NUMBER</strong> is <code>0</code> + institution + transit, and
-      <strong>BANK ACCOUNT NUMBER</strong> should end in the last four shown here.
-      The full digits are not held in this system — they are flushed once pushed to QuickBooks.
-      <br>Cheque links expire after 2 minutes and every view is logged.
+      Compare against <strong>QuickBooks → the customer → Additional Info</strong>:
+      <strong>ABA ROUTING NUMBER</strong> is <code>0</code> + institution + transit;
+      <strong>BANK ACCOUNT NUMBER</strong> ends in the last four shown.
+      The full digits are not held here — they are flushed once pushed to QuickBooks.
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="color:var(--muted);font-size:11px;letter-spacing:.5px;text-align:left">
         <th style="padding:6px 8px">ST-CODE</th><th style="padding:6px 8px">STORE</th>
         <th style="padding:6px 8px">ACCOUNT</th><th style="padding:6px 8px">INSTITUTION</th>
-        <th style="padding:6px 8px">UPLOADED</th><th style="padding:6px 8px">STATUS</th><th></th>
-      </tr></thead><tbody>${ordered.map(row).join('')}</tbody></table>`;
+        <th style="padding:6px 8px">WHY FLAGGED</th><th></th>
+      </tr></thead><tbody>${flagged.map(_padVerifyRow).join('')}</tbody></table>`;
+};
+
+// Shared by the flagged list and the look-up results so both behave identically.
+function _padVerifyRow(r, compact) {
+  const openMismatch = r.void_verify_result === 'mismatch' && !r.qb_corrected_at;
+  const why = openMismatch
+    ? `<span style="color:#f85149">MISMATCH — ${escapeHtmlDash(r.review_reason || '').replace(/^VOID CHEQUE MISMATCH:\s*/, '')}</span>`
+    : `<span style="color:#f0883e">${escapeHtmlDash(r.review_reason || 'flagged')}</span>`;
+
+  const actions = [
+    `<button class="btn-sm" onclick="window.padOpenCheque('${r.id}')">📄 View cheque</button>`,
+    openMismatch
+      ? `<button class="btn-sm" style="border-color:rgba(63,185,80,0.5)" onclick="window.padMarkQbCorrected('${r.id}')">✓ Fixed in QB</button>`
+      : `<button class="btn-sm" style="border-color:rgba(63,185,80,0.5)" onclick="window.padMarkVoid('${r.id}','match')">✓ Matches</button>
+         <button class="btn-sm" style="border-color:rgba(248,81,73,0.5)" onclick="window.padMarkVoid('${r.id}','mismatch')">✗ Mismatch</button>`,
+  ].join(' ');
+
+  return `<tr>
+    <td style="padding:9px 8px;color:var(--muted);font-size:12px">${escapeHtmlDash(r._code)}</td>
+    <td style="padding:9px 8px">${escapeHtmlDash(r._name)}${r._city ? `<span style="color:var(--muted)"> — ${escapeHtmlDash(r._city)}</span>` : ''}</td>
+    <td style="padding:9px 8px;font-family:monospace">••••${escapeHtmlDash(r.account_last4)}</td>
+    <td style="padding:9px 8px;font-size:12px">${escapeHtmlDash(r.fi_name || '(not recognised)')}</td>
+    ${compact
+      ? `<td style="padding:9px 8px;font-size:12px;color:var(--muted)">${_padDate(r.void_uploaded_at)}</td>`
+      : `<td style="padding:9px 8px;font-size:12px">${why}</td>`}
+    <td style="padding:9px 8px;text-align:right;white-space:nowrap">${actions}</td>
+  </tr>`;
+}
+
+// Look-up for the bounced-payment case. Filters the already-loaded set rather
+// than querying per keystroke.
+window.padChequeSearch = function () {
+  const q = (document.getElementById('pad-cheque-search')?.value || '').trim().toLowerCase();
+  const out = document.getElementById('pad-cheque-results');
+  if (!out) return;
+  if (q.length < 2) { out.innerHTML = ''; return; }
+  const hits = PAD_VERIFY.filter(r =>
+    `${r._code} ${r._name} ${r._city}`.toLowerCase().includes(q)).slice(0, 12);
+  if (!hits.length) {
+    out.innerHTML = '<div style="font-size:12px;color:var(--muted)">No store with a VOID cheque on file matches that. Only stores that uploaded one appear here.</div>';
+    return;
+  }
+  out.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="color:var(--muted);font-size:11px;letter-spacing:.5px;text-align:left">
+      <th style="padding:6px 8px">ST-CODE</th><th style="padding:6px 8px">STORE</th>
+      <th style="padding:6px 8px">ACCOUNT</th><th style="padding:6px 8px">INSTITUTION</th>
+      <th style="padding:6px 8px">UPLOADED</th><th></th>
+    </tr></thead><tbody>${hits.map(r => _padVerifyRow(r, true)).join('')}</tbody></table>`;
+};
+
+window.padMarkQbCorrected = async function (mandateId) {
+  const r = PAD_VERIFY.find(x => x.id === mandateId);
+  const who = r ? `${r._name} (${r._code})` : 'this store';
+  if (!confirm(`Confirm you have corrected the banking in QuickBooks for ${who}?\n\nThis clears the flag. QBWC will not overwrite your change — the mandate is already pushed.`)) return;
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/store_pad_mandates?id=eq.${mandateId}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${window._session?.access_token}`,
+        'apikey': SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation',
+      },
+      body: JSON.stringify({
+        qb_corrected_at: new Date().toISOString(),
+        needs_review: false,
+        reviewed_at: new Date().toISOString(),
+      }),
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const updated = await resp.json();
+    if (!Array.isArray(updated) || !updated.length) throw new Error('no rows updated — super admin required');
+  } catch (e) {
+    alert('Could not record that: ' + (e?.message || e));
+    return;
+  }
+  window.loadPadVerify();
 };
 
 window.padOpenCheque = async function (mandateId) {
