@@ -2168,6 +2168,18 @@
            'sending_disabled' from the function and has no idea why. -->
       <div id="pad-kill-banner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;font-size:13px"></div>
 
+      <!-- Banking verification. Super-admin only: a VOID cheque is a plaintext
+           image of a bank account, and Dylan can run the campaign without ever
+           seeing one. -->
+      <div class="table-wrap" style="margin-bottom:16px" data-super-admin-only>
+        <div class="table-header">
+          <span class="table-title">🏦 Bank verification</span>
+          <span class="table-count" id="pad-verify-count">—</span>
+          <button class="btn-sm" onclick="window.loadPadVerify(this)" style="margin-left:auto">🔄 Refresh</button>
+        </div>
+        <div id="pad-verify-body" style="padding:14px"><div class="loading">Loading…</div></div>
+      </div>
+
       <div class="table-wrap" style="margin-bottom:16px">
         <div class="table-header">
           <span class="table-title">📤 Invitation Waves</span>
@@ -5720,7 +5732,7 @@ window.switchTab = (tab) => {
   if (tab==='applications') window.loadApplications();
   if (tab==='refunds') window.loadRefundRequests();
   if (tab==='deliveries') window.loadUnreconciledPrints();
-  if (tab==='pad') { window.loadPadWaves(); window.loadPadConversion(); }
+  if (tab==='pad') { window.loadPadWaves(); window.loadPadVerify(); window.loadPadConversion(); }
 };
 
 // ===== UNRECONCILED PRINTS =====
@@ -9871,6 +9883,185 @@ function _padCallSend(payload) {
     body: JSON.stringify(payload),
   }).then(r => r.json());
 }
+
+// ── Bank verification ─────────────────────────────────────────────────────
+// Why this exists: ST-1665 typed institution 216 instead of 219 (ATB). The
+// payment bounced. The VOID cheque that would have caught it had been sitting
+// unopened for a week, because the only way to see one was direct Supabase
+// access — which Warren does not have.
+//
+// The comparison target is QUICKBOOKS, not this dashboard. The encrypted
+// transit and account are flushed the moment QBWC pushes them, so the last four
+// digits are all that survives here. The panel therefore tells the reviewer
+// exactly which QuickBooks fields to read.
+let PAD_VERIFY = [];
+
+window.loadPadVerify = async function (btn) {
+  const body = document.getElementById('pad-verify-body');
+  const cnt = document.getElementById('pad-verify-count');
+  if (!body) return;
+  if (!window._role?.is_super_admin) { body.innerHTML = '<div class="empty">Super admin only.</div>'; return; }
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const rows = await sbFetchAll(
+      'store_pad_mandates?select=id,store_id,mandate_reference,account_last4,account_type,fi_name,' +
+      'account_holder_name,signer_name,signed_at,void_cheque_path,void_uploaded_at,void_verified_at,' +
+      'void_verify_result,needs_review,review_reason' +
+      '&status=eq.active&void_cheque_path=not.is.null&order=void_uploaded_at.desc');
+    const list = Array.isArray(rows) ? rows : [];
+    // Store names are not on the mandate; fetch the ones we need.
+    const ids = [...new Set(list.map(r => r.store_id).filter(Boolean))];
+    const nameById = new Map();
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200).join(',');
+      const st = await sbFetch(`stores?select=id,public_code,name,city&id=in.(${chunk})`);
+      for (const x of (st || [])) nameById.set(x.id, x);
+    }
+    for (const r of list) {
+      const st = nameById.get(r.store_id);
+      r._code = st?.public_code || '—';
+      r._name = st?.name || '—';
+      r._city = st?.city || '';
+    }
+    PAD_VERIFY = list;
+  } catch (e) {
+    body.innerHTML = '<div class="empty">Error loading verification queue.</div>';
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
+    return;
+  }
+  window.renderPadVerify();
+  if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
+};
+
+window.renderPadVerify = function () {
+  const body = document.getElementById('pad-verify-body');
+  const cnt = document.getElementById('pad-verify-count');
+  if (!body) return;
+  const pending = PAD_VERIFY.filter(r => !r.void_verified_at);
+  const done = PAD_VERIFY.length - pending.length;
+  if (cnt) cnt.textContent = `${pending.length} to check · ${done} done`;
+
+  if (!PAD_VERIFY.length) {
+    body.innerHTML = '<div class="empty">No VOID cheques on file yet.</div>';
+    return;
+  }
+
+  const row = (r) => {
+    const verified = !!r.void_verified_at;
+    const res = r.void_verify_result;
+    const badge = !verified
+      ? '<span style="color:#d29922;background:rgba(210,153,34,0.15);border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700">to check</span>'
+      : (res === 'mismatch'
+          ? '<span style="color:#f85149;background:rgba(248,81,73,0.15);border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700">MISMATCH</span>'
+          : res === 'illegible'
+            ? '<span style="color:#8b949e;background:rgba(139,148,158,0.15);border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700">illegible</span>'
+            : '<span style="color:#3fb950;background:rgba(63,185,80,0.15);border-radius:10px;padding:2px 10px;font-size:11px;font-weight:700">✓ match</span>');
+    const flag = r.needs_review
+      ? ` <span style="color:#f0883e;font-size:11px" title="${escapeHtml(r.review_reason || '')}">⚑ ${escapeHtml((r.review_reason || '').split(':')[0])}</span>` : '';
+    const actions = verified
+      ? `<button class="btn-sm" onclick="window.padOpenCheque('${r.id}')">📄 View</button>`
+      : `<button class="btn-sm" onclick="window.padOpenCheque('${r.id}')">📄 View cheque</button>
+         <button class="btn-sm" style="border-color:rgba(63,185,80,0.5)" onclick="window.padMarkVoid('${r.id}','match')">✓ Matches</button>
+         <button class="btn-sm" style="border-color:rgba(248,81,73,0.5)" onclick="window.padMarkVoid('${r.id}','mismatch')">✗ Mismatch</button>`;
+    return `<tr>
+      <td style="padding:9px 8px;color:var(--muted);font-size:12px">${escapeHtmlDash(r._code)}</td>
+      <td style="padding:9px 8px">${escapeHtmlDash(r._name)}${r._city ? `<span style="color:var(--muted)"> — ${escapeHtmlDash(r._city)}</span>` : ''}${flag}</td>
+      <td style="padding:9px 8px;font-family:monospace">••••${escapeHtmlDash(r.account_last4)}</td>
+      <td style="padding:9px 8px;font-size:12px">${escapeHtmlDash(r.fi_name || '(not recognised)')}</td>
+      <td style="padding:9px 8px;font-size:12px">${_padDate(r.void_uploaded_at)}</td>
+      <td style="padding:9px 8px">${badge}</td>
+      <td style="padding:9px 8px;text-align:right;white-space:nowrap">${actions}</td>
+    </tr>`;
+  };
+
+  const ordered = [...PAD_VERIFY].sort((a, b) => (a.void_verified_at ? 1 : 0) - (b.void_verified_at ? 1 : 0));
+  body.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">
+      Compare the cheque against <strong>QuickBooks → the customer → Additional Info</strong>:
+      <strong>ABA ROUTING NUMBER</strong> is <code>0</code> + institution + transit, and
+      <strong>BANK ACCOUNT NUMBER</strong> should end in the last four shown here.
+      The full digits are not held in this system — they are flushed once pushed to QuickBooks.
+      <br>Cheque links expire after 2 minutes and every view is logged.
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="color:var(--muted);font-size:11px;letter-spacing:.5px;text-align:left">
+        <th style="padding:6px 8px">ST-CODE</th><th style="padding:6px 8px">STORE</th>
+        <th style="padding:6px 8px">ACCOUNT</th><th style="padding:6px 8px">INSTITUTION</th>
+        <th style="padding:6px 8px">UPLOADED</th><th style="padding:6px 8px">STATUS</th><th></th>
+      </tr></thead><tbody>${ordered.map(row).join('')}</tbody></table>`;
+};
+
+window.padOpenCheque = async function (mandateId) {
+  // The tab is opened BEFORE the await: a popup blocker will stop window.open
+  // if it is not a direct result of the click.
+  const tab = window.open('', '_blank');
+  try {
+    const token = window._session?.access_token;
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/get-void-cheque`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mandate_id: mandateId }),
+    }).then(r => r.json());
+    if (!res?.ok) {
+      if (tab) tab.close();
+      alert('Could not open the cheque: ' + (res?.detail || res?.error || 'unknown'));
+      return;
+    }
+    if (tab) tab.location.href = res.url;
+    else window.location.href = res.url;
+  } catch (e) {
+    if (tab) tab.close();
+    alert('Could not open the cheque: ' + (e?.message || e));
+  }
+};
+
+window.padMarkVoid = async function (mandateId, result) {
+  const r = PAD_VERIFY.find(x => x.id === mandateId);
+  const who = r ? `${r._name} (${r._code})` : 'this store';
+  let note = '';
+  if (result === 'mismatch') {
+    note = prompt(`MISMATCH for ${who}.\n\nWhat does the cheque actually show? (e.g. "institution 219 not 216", "transit 12435 not 12345")\n\nThis is recorded so QuickBooks can be corrected before the next debit.`, '');
+    if (note === null) return;
+    if (!note.trim()) { alert('Please describe the mismatch so it can be fixed.'); return; }
+  } else {
+    if (!confirm(`Confirm the cheque for ${who} matches the banking in QuickBooks?`)) return;
+  }
+  try {
+    const patch = {
+      void_verified_at: new Date().toISOString(),
+      void_verify_result: result,
+      reviewed_at: new Date().toISOString(),
+    };
+    // A mismatch keeps the mandate flagged: it is not resolved until someone
+    // corrects QuickBooks.
+    if (result === 'mismatch') {
+      patch.needs_review = true;
+      patch.review_reason = `VOID CHEQUE MISMATCH: ${note.trim()}`.slice(0, 500);
+    } else {
+      patch.needs_review = false;
+    }
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/store_pad_mandates?id=eq.${mandateId}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${window._session?.access_token}`,
+        'apikey': SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation',
+      },
+      body: JSON.stringify(patch),
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const updated = await resp.json();
+    if (!Array.isArray(updated) || !updated.length) throw new Error('no rows updated — super admin required');
+  } catch (e) {
+    alert('Could not record that: ' + (e?.message || e));
+    return;
+  }
+  if (result === 'mismatch') {
+    alert(`Recorded as a mismatch.\n\nNext step: correct the banking in QuickBooks for ${who}. QBWC will not overwrite it — the mandate is already pushed.`);
+  }
+  window.loadPadVerify();
+};
 
 window.loadPadWaves = async function (btn) {
   const body = document.getElementById('pad-waves-body');
