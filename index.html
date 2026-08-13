@@ -10336,6 +10336,40 @@ window.padPreviewWave = async function (waveId) {
   const canSend = !!window._role?.can_send_pad;
   const sendingOn = !!window._padSendingEnabled;
 
+  // The full recipient list, collapsed. This is the only opportunity to notice
+  // a store that should not be in the wave — and on a French wave it matters,
+  // because the ANJ depot serves both Quebec and Ontario. Provinces are shown
+  // so "are these all Quebec?" is answerable at a glance.
+  const rl = res.recipient_list || [];
+  const provinces = {};
+  for (const r of rl) for (const l of r.locations) provinces[l.province || '—'] = (provinces[l.province || '—'] || 0) + 1;
+  const provSummary = Object.entries(provinces).sort((a,b) => b[1]-a[1])
+    .map(([p, c]) => `${escapeHtmlDash(p)} ${c}`).join(' · ');
+  const recipientRows = rl.map(r => {
+    const multi = r.locations.length > 1;
+    const locs = r.locations.map(l =>
+      `<div style="padding:1px 0">${escapeHtmlDash(l.name)}
+        <span style="color:var(--muted)">${escapeHtmlDash(l.public_code)}${l.city ? ' — ' + escapeHtmlDash(l.city) : ''}, ${escapeHtmlDash(l.province)}</span></div>`).join('');
+    return `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:6px 8px;vertical-align:top;font-size:12px">${escapeHtmlDash(r.email)}${
+        r.all_emails && r.all_emails.length > 1
+          ? `<div style="color:var(--muted)">+ ${r.all_emails.length - 1} more on this record</div>` : ''}</td>
+      <td style="padding:6px 8px;font-size:12px">${locs}${
+        multi ? `<div style="color:#58a6ff;font-size:11px">one email listing ${r.locations.length} locations</div>` : ''}</td>
+    </tr>`;
+  }).join('');
+  const recipientBlock = rl.length ? `
+    <details style="margin-bottom:16px">
+      <summary style="cursor:pointer;font-size:12px;font-weight:700">Show all ${rl.length} recipients</summary>
+      <div style="font-size:12px;color:var(--muted);margin:8px 0">${provSummary}</div>
+      <div style="max-height:320px;overflow:auto;background:var(--bg3);border-radius:8px">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="color:var(--muted);font-size:11px;text-align:left">
+            <th style="padding:6px 8px">EMAIL</th><th style="padding:6px 8px">STORES</th>
+          </tr></thead><tbody>${recipientRows}</tbody></table>
+      </div>
+    </details>` : '';
+
 
   body.innerHTML = `
     <div style="font-size:14px;margin-bottom:14px"><strong>Wave #${res.wave.number} — ${escapeHtmlDash(res.wave.name)}</strong>
@@ -10347,6 +10381,7 @@ window.padPreviewWave = async function (waveId) {
       <div style="background:var(--bg3);border-radius:8px;padding:10px"><div style="font-size:20px;font-weight:700;color:${res.skipped_count ? '#d29922' : 'var(--muted)'}">${res.skipped_count}</div><div style="font-size:11px;color:var(--muted)">SKIPPED</div></div>
     </div>
     ${res.grouped_savings > 0 ? `<div style="font-size:12px;color:var(--muted);margin-bottom:14px">${res.eligible} stores group into ${res.recipients} emails — ${res.grouped_savings} ${res.grouped_savings === 1 ? 'store shares an address' : 'stores share an address'} with another location, so the owner receives one email listing all of them.</div>` : ''}
+    ${recipientBlock}
     ${skipRows ? `<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:700;margin-bottom:6px">Skipped (will not be emailed, wave still sends)</div>
       <table style="width:100%;border-collapse:collapse;font-size:12px;background:var(--bg3);border-radius:8px">${skipRows}</table></div>` : ''}
     ${!canSend ? '<div class="empty">You do not have send permission. Preview only.</div>' : (
