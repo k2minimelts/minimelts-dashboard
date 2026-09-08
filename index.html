@@ -3146,6 +3146,50 @@ const headers = () => ({
   'Authorization': `Bearer ${window._token || SUPABASE_ANON_KEY}`,
 });
 
+// Non-blocking error banner. Exists because API failures used to be invisible:
+// sbFetch returns whatever the API sent, so a PostgREST error object flowed
+// into callers that do `Array.isArray(data) ? data : []` and rendered as an
+// empty list. A statement-timeout on the Vending Refills tab showed as
+// "No refills match the current filters" for days (2026-09-08).
+//
+// Deliberately does NOT throw or alter control flow: 42 of ~104 sbFetch call
+// sites have no try/catch, so throwing would turn silent-empty results into
+// unhandled rejections and hanging spinners. The operator gets told; the code
+// path behaves exactly as before.
+function sbShowError(msg) {
+  try {
+    let host = document.getElementById('sb-error-host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'sb-error-host';
+      host.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:99999;'
+        + 'display:flex;flex-direction:column;gap:8px;max-width:420px';
+      document.body.appendChild(host);
+    }
+    // Collapse duplicates: a failing tab often fires the same call repeatedly.
+    const existing = Array.from(host.children).find(c => c.dataset.msg === msg);
+    if (existing) {
+      const n = (parseInt(existing.dataset.count || '1', 10) + 1);
+      existing.dataset.count = String(n);
+      const badge = existing.querySelector('.sb-err-count');
+      if (badge) badge.textContent = ' ×' + n;
+      return;
+    }
+    const el = document.createElement('div');
+    el.dataset.msg = msg;
+    el.dataset.count = '1';
+    el.style.cssText = 'background:rgba(248,81,73,0.14);border:1px solid rgba(248,81,73,0.45);'
+      + 'color:var(--danger);border-radius:8px;padding:10px 12px;font-size:12.5px;'
+      + 'line-height:1.5;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.35);word-break:break-word';
+    el.innerHTML = '<strong>Request failed</strong><span class="sb-err-count"></span><br>'
+      + escapeHtml(msg);
+    el.title = 'Click to dismiss';
+    el.onclick = () => el.remove();
+    host.appendChild(el);
+    setTimeout(() => { el.remove(); }, 20000);
+  } catch (_e) { /* a broken banner must never break the page */ }
+}
+
 async function sbFetch(path, opts={}) {
   // First attempt — normal call.
   let r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: headers(), ...opts });
@@ -3176,6 +3220,26 @@ async function sbFetch(path, opts={}) {
     }
     throw new Error('Session expired');
   }
+
+  // Any other non-2xx: make it visible. The response body is still returned
+  // unchanged, so callers behave exactly as before — this only adds a console
+  // entry and an on-screen banner. r.clone() is used so the success path below
+  // still consumes the original body with r.json() as it always did.
+  if (!r.ok) {
+    let detail = '';
+    try {
+      const raw = await r.clone().text();
+      let parsed = null;
+      try { parsed = raw ? JSON.parse(raw) : null; } catch (_e) { /* not JSON */ }
+      detail = (parsed && (parsed.message || parsed.error_description || parsed.error))
+        || (raw || '').slice(0, 300);
+      if (parsed && parsed.hint) detail += ' — ' + parsed.hint;
+    } catch (_e) { /* body unreadable */ }
+    const where = String(path).split('?')[0];
+    console.error('[sbFetch]', r.status, path, detail);
+    sbShowError(where + ' — ' + (detail || ('HTTP ' + r.status)));
+  }
+
   return r.json();
 }
 // Paginated read for result sets that can exceed PostgREST's hard row cap.
@@ -4989,7 +5053,24 @@ window.deleteDelivery = async (id) => {
     filteredDeliveries = filteredDeliveries.filter(x => x.id !== id);
     closeModal(); renderTable(filteredDeliveries, 'table-body', 'delivery-count'); renderUnpaid(); updateCorrectionsBadge();
     alert(`✓ Invoice ${d.receipt_number} deleted.`);
-  } else { alert('Error deleting delivery. Please try again.'); }
+  } else {
+    // Report what the server actually said. This used to be a bare
+    // "Please try again", which described a transient fault — but the real
+    // cause was a foreign-key constraint that failed identically every time,
+    // so the office gave up and zeroed invoices out instead of deleting them.
+    let why = '';
+    try {
+      const raw = await r.text();
+      let parsed = null;
+      try { parsed = raw ? JSON.parse(raw) : null; } catch (_e) { /* not JSON */ }
+      why = (parsed && (parsed.message || parsed.error || parsed.details)) || (raw || '').slice(0, 300);
+      if (parsed && parsed.hint) why += '\n\n' + parsed.hint;
+    } catch (_e) { /* body unreadable */ }
+    console.error('[deleteDelivery]', r.status, why);
+    alert('Could not delete invoice ' + d.receipt_number + '.\n\n'
+      + (why || ('HTTP ' + r.status))
+      + '\n\nIf this keeps happening, send this message to Ketu.');
+  }
 };
 
 window.saveCorrection = async (id) => {
@@ -6908,7 +6989,15 @@ window.switchTab = (tab) => {
     try { const arr = await sbFetch("leads?select=*&id=eq."+id+"&limit=1"); a = Array.isArray(arr)?arr[0]:null; }
     catch(e){ alert("Could not load the application."); return; }
     if (!a){ alert("Could not load the application."); return; }
-    if (a.converted_store_id){ alert("This application is already converted to a store."); return; }
+    // Gate on the STATUS, not on converted_store_id. submit-pad-mandate's
+    // resolveStoreForLead() stamps converted_store_id on any lead whose email
+    // uniquely matches an active store — which is exactly what happens when an
+    // existing owner applies for a SECOND location. The lead is not converted;
+    // it is merely matched. Testing the pointer here returned before
+    // appFindExistingStores() could run, so the operator never reached the
+    // "Create new store anyway" escape hatch below and had no way to add the
+    // new site. (Lenny's takeout Moncton, 2026-09-08.)
+    if (a.status === "converted"){ alert("This application is already converted to a store."); return; }
     if (typeof window.showAddStore !== "function"){ alert("Add Store modal is unavailable."); return; }
 
     const matches = await appFindExistingStores(a);
