@@ -9234,6 +9234,13 @@ window.saveOrder = async () => {
 let _allRefills = [];           // raw rows from the DB
 let _filteredRefills = [];      // after filters applied
 let _expandedRefillId = null;   // currently-expanded row id (null = none)
+// Ids whose photo blobs are currently held in memory, oldest first. Each
+// expanded row costs ~1 MB of base64, and _heavyLoaded used to keep every one
+// of them for the life of the page — browsing 50 refills meant ~50 MB resident.
+// Only the few most recent are kept; older ones are dropped and re-fetched if
+// the operator goes back to them.
+const REFILL_BLOB_CACHE_MAX = 4;
+let _refillBlobCache = [];
 let _refillPage = 0;            // 0-indexed current page (refills pagination)
 const REFILL_PAGE_SIZE = 100;
 
@@ -9492,17 +9499,45 @@ window.toggleRefillRow = async (id) => {
   // The list view excludes heavy base64 (photos/PDF) to keep memory low. Fetch
   // them on-demand for just the row being expanded, merge into the cached row,
   // then render. Cache via _heavyLoaded so re-expanding doesn't re-fetch.
+  //
+  // receipt_pdf_base64 is deliberately NOT fetched: renderRefillDetail never
+  // displays it and there is no download control for it, so it was ~149 kB of
+  // dead weight on every expand (13% of a ~1.1 MB payload). If a "download
+  // receipt" button is ever added here, fetch it from that button rather than
+  // putting it back in this request.
+  //
+  // The two photos are fetched as separate requests so the freezer shot renders
+  // as soon as it lands instead of waiting on the coin mech as well. They run
+  // concurrently, so this is not slower overall — it just shows something sooner.
   const row = _allRefills.find(r => r.id === id);
   if (row && row._heavyLoaded !== true) {
     renderRefillsTable(); // show the expanded shell immediately (photos load in)
-    try {
-      const heavy = await sbFetch(`vending_refills?id=eq.${id}&select=freezer_photo_base64,coinmech_photo_base64,receipt_pdf_base64&limit=1`);
-      if (Array.isArray(heavy) && heavy[0]) {
-        Object.assign(row, heavy[0]);
-        row._heavyLoaded = true;
+    const grab = async (col) => {
+      try {
+        const res = await sbFetch(`vending_refills?id=eq.${id}&select=${col}&limit=1`);
+        if (Array.isArray(res) && res[0]) {
+          row[col] = res[0][col];
+          // Repaint per photo so the first to arrive is visible right away.
+          if (_expandedRefillId === id) renderRefillsTable();
+        }
+      } catch (err) {
+        console.warn('Could not load', col, 'for refill', id, err);
       }
-    } catch (err) {
-      console.warn('Could not load refill photos for', id, err);
+    };
+    await Promise.all([grab('freezer_photo_base64'), grab('coinmech_photo_base64')]);
+    row._heavyLoaded = true;
+
+    // Keep only the most recent few rows' blobs resident.
+    _refillBlobCache = _refillBlobCache.filter(x => x !== id).concat(id);
+    while (_refillBlobCache.length > REFILL_BLOB_CACHE_MAX) {
+      const evictId = _refillBlobCache.shift();
+      if (evictId === _expandedRefillId) continue;   // never evict what's on screen
+      const old = _allRefills.find(r => r.id === evictId);
+      if (old) {
+        old.freezer_photo_base64 = undefined;
+        old.coinmech_photo_base64 = undefined;
+        old._heavyLoaded = false;                    // re-fetch if reopened
+      }
     }
   }
   renderRefillsTable();
