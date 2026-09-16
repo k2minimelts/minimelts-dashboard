@@ -1755,6 +1755,8 @@
         <div class="filter-group"><label>Show</label>
           <select id="missed-filter-kind" onchange="loadMissedStops()">
             <option value="all">All missed stops</option>
+            <option value="unactioned">Never actioned (driver didn't mark it)</option>
+            <option value="skipped">Skipped &amp; still unresolved</option>
             <option value="order">Order stops (stuck as scheduled)</option>
             <option value="vending">Vending only</option>
           </select>
@@ -7567,7 +7569,10 @@ async function loadMissedStops() {
   const body = document.getElementById('missed-body');
   if (body) body.innerHTML = '<div class="loading">Loading…</div>';
   let q = 'missed_stops?select=*&order=day_date.asc';
-  if (kind !== 'all') q += `&kind=eq.${kind}`;
+  // Two filter dimensions share one dropdown: missed_kind ('unactioned' vs
+  // 'skipped') and kind ('order' vs 'vending'). Route each to its own column.
+  if (kind === 'unactioned' || kind === 'skipped') q += `&missed_kind=eq.${kind}`;
+  else if (kind !== 'all') q += `&kind=eq.${kind}`;
   let rows;
   try { rows = await sbFetch(q); }
   catch (e) { if (body) body.innerHTML = `<div class="loading">Error: ${escapeHtml(e.message || String(e))}</div>`; return; }
@@ -7609,6 +7614,10 @@ window.renderMissedStops = renderMissedStops;
 
 function renderMissedRow(r) {
   const isOrder = r.kind === 'order';
+  // 'unactioned' = still planned on a past day, the driver never touched it.
+  // 'skipped'    = the driver did skip it, but the store/machine still needs
+  //                service (this is the latest stop and any order is still open).
+  const wasSkipped = r.missed_kind === 'skipped';
   const sourceMap = { online:'📱 Online', phone:'📞 Phone', staples_po:'📋 Staples', staples_vmi:'🏪 VMI', driver_walk_in:'🚚 Walk-in', recurring:'🔄 Recurring' };
   const title = isOrder
     ? `${escapeHtml(r.store_name || '—')} <span style="color:var(--muted);font-family:monospace;font-size:11px">${escapeHtml(r.store_code || '')}</span>`
@@ -7621,34 +7630,59 @@ function renderMissedRow(r) {
   const badge = isOrder
     ? '<span style="background:rgba(245,166,35,0.18);color:#f5a623;border:1px solid rgba(245,166,35,0.45);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">ORDER</span>'
     : '<span style="background:rgba(91,201,255,0.15);color:#5bc9ff;border:1px solid rgba(91,201,255,0.4);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">VENDING</span>';
+  // Why it is here, so the two populations are never confused.
+  const whyBadge = wasSkipped
+    ? `<span style="background:rgba(176,48,48,0.15);color:#e06060;border:1px solid rgba(176,48,48,0.45);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">SKIPPED${r.skip_reason ? ' · ' + escapeHtml(r.skip_reason) : ''}</span>`
+    : '<span style="background:rgba(255,255,255,0.07);color:var(--muted);border:1px solid rgba(255,255,255,0.15);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">NOT ACTIONED</span>';
   const action = `<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
     <button class="btn-sm" style="background:var(--gold);color:var(--bg);border:none;padding:6px 12px;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap"
-      onclick="resolveMissedStop('${r.stop_id}','${r.kind}')">${isOrder ? 'Revert to pending' : 'Mark resolved'}</button>
+      onclick="resolveMissedStop('${r.stop_id}','${r.kind}','${r.missed_kind || ''}')">${wasSkipped ? 'Mark handled' : (isOrder ? 'Revert to pending' : 'Mark resolved')}</button>
     <button class="btn-sm" style="background:transparent;color:var(--danger);border:1px solid var(--danger);padding:6px 10px;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap"
       onclick="deleteMissedStop('${r.stop_id}','${r.kind}','${r.order_id || ''}')">Delete</button>
   </div>`;
   return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid rgba(255,255,255,0.04)">
     <div style="flex:1;min-width:0">
-      <div style="font-weight:600">${title} ${badge}</div>
+      <div style="font-weight:600">${title} ${badge} ${whyBadge}</div>
       <div style="font-size:12px;color:var(--muted);margin-top:2px">${escapeHtml(r.day_date || '')} · ${overdue} overdue${prov ? ' · ' + escapeHtml(prov) : ''} · ${meta}</div>
     </div>
     ${action}
   </div>`;
 }
 
-window.resolveMissedStop = async (stopId, kind) => {
-  const verb = kind === 'order' ? 'revert the linked order to pending so it can be rescheduled' : 'mark this stop resolved';
-  if (!confirm(`This records the stop as skipped and will ${verb}. No customer email is sent. Continue?`)) return;
+window.resolveMissedStop = async (stopId, kind, missedKind) => {
+  // Two different actions behind one button, because the two populations need
+  // different things:
+  //
+  //  unactioned — the stop was never touched. Mark it skipped; the BEFORE
+  //    skip-revert trigger returns the linked order to pending for
+  //    rescheduling, and customer_skip_notified_at suppresses the stale
+  //    customer email.
+  //
+  //  skipped — the driver already skipped it and any order is already pending.
+  //    Re-skipping would do nothing. What the office needs is to acknowledge
+  //    it so it leaves the list: without that, a row only clears when a future
+  //    visit supersedes it, so things needing no action ("Store refused",
+  //    "Closed", a retired machine) would sit there forever.
+  const wasSkipped = missedKind === 'skipped';
+  let body;
+  if (wasSkipped) {
+    if (!confirm('Mark this skipped stop as dealt with and remove it from the list?\n\nThis does not cancel anything. If the order was returned to pending it stays pending and will still be rescheduled.')) return;
+    body = { skip_resolved_at: new Date().toISOString() };
+  } else {
+    const verb = kind === 'order' ? 'revert the linked order to pending so it can be rescheduled' : 'mark this stop resolved';
+    if (!confirm(`This records the stop as skipped and will ${verb}. No customer email is sent. Continue?`)) return;
+    body = {
+      status: 'skipped',
+      skip_reason: 'Missed — not completed',
+      completed_at: new Date().toISOString(),
+      customer_skip_notified_at: new Date().toISOString()
+    };
+  }
   try {
     const resp = await fetch(`${SUPABASE_URL}/rest/v1/trip_stops?id=eq.${stopId}`, {
       method: 'PATCH',
       headers: { ...headers(), 'Prefer': 'return=minimal' },
-      body: JSON.stringify({
-        status: 'skipped',
-        skip_reason: 'Missed — not completed',
-        completed_at: new Date().toISOString(),
-        customer_skip_notified_at: new Date().toISOString()
-      })
+      body: JSON.stringify(body)
     });
     if (!resp.ok) { alert('Could not resolve: ' + (await resp.text())); return; }
     await loadMissedStops();
