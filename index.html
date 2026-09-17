@@ -1503,10 +1503,28 @@
       <h2 style="color:var(--text);margin:0;font-size:20px">Set new password</h2>
       <p style="color:var(--muted);font-size:12px;margin-top:6px">Enter a new password for your account</p>
     </div>
-    <div class="field"><label>New password</label><input type="password" id="new-password" placeholder="At least 6 characters" onkeydown="if(event.key==='Enter')document.getElementById('new-password-confirm').focus()"/></div>
+    <div class="field"><label>New password</label><input type="password" id="new-password" placeholder="At least 10 characters" onkeydown="if(event.key==='Enter')document.getElementById('new-password-confirm').focus()"/></div>
     <div class="field"><label>Confirm new password</label><input type="password" id="new-password-confirm" placeholder="Repeat password" onkeydown="if(event.key==='Enter')doPasswordUpdate()"/></div>
     <button class="btn-primary" onclick="doPasswordUpdate()">Update password →</button>
     <div class="error-msg" id="new-password-error"></div>
+  </div>
+</div>
+
+<!-- Forced Password Change Screen (shown after login when the user is flagged
+     in password_change_required; blocks the app until a new password is set) -->
+<div id="force-password-screen" style="display:none;min-height:100vh;align-items:center;justify-content:center;padding:24px;background:linear-gradient(135deg, #0d1117 0%, #0d1e24 50%, #161b22 100%)">
+  <div class="login-card">
+    <div class="login-logo" style="text-align:center;margin-bottom:24px">
+      <h2 style="color:var(--text);margin:0;font-size:20px">Choose a new password</h2>
+      <p style="color:var(--muted);font-size:12px;margin-top:6px;line-height:1.5">For security, you need to set your own password before continuing. Use at least 10 characters. Common or previously leaked passwords are rejected.</p>
+    </div>
+    <div class="field"><label>New password</label><input type="password" id="force-new-password" placeholder="At least 10 characters" autocomplete="new-password" onkeydown="if(event.key==='Enter')document.getElementById('force-new-password-confirm').focus()"/></div>
+    <div class="field"><label>Confirm new password</label><input type="password" id="force-new-password-confirm" placeholder="Repeat password" autocomplete="new-password" onkeydown="if(event.key==='Enter')doForcedPasswordChange()"/></div>
+    <button class="btn-primary" id="force-password-btn" onclick="doForcedPasswordChange()">Set password &amp; continue</button>
+    <div class="error-msg" id="force-password-error"></div>
+    <div style="text-align:center;margin-top:14px">
+      <a href="#" onclick="event.preventDefault();document.getElementById('force-password-screen').style.display='none';doSignOut()" style="color:var(--muted);font-size:13px;text-decoration:none">Sign out</a>
+    </div>
   </div>
 </div>
 
@@ -2482,7 +2500,7 @@
             <input id="driver-email" type="email" placeholder="driver@minimelts.ca" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px;outline:none"/>
           </div>
           <div class="field" id="driver-password-field" style="margin-bottom:16px">
-            <label style="display:block;font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">Password <span style="color:var(--muted);font-weight:normal;text-transform:none">(min 6 chars)</span></label>
+            <label style="display:block;font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">Password <span style="color:var(--muted);font-weight:normal;text-transform:none">(min 10 chars)</span></label>
             <input id="driver-password" type="password" placeholder="Set initial password" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px;outline:none"/>
           </div>
           <div class="field" id="driver-reset-field" style="margin-bottom:16px;display:none">
@@ -3467,6 +3485,72 @@ async function scopeProvinceFiltersByRole(roleInfo) {
   });
 }
 
+// ── Forced password change gate ──
+// After role check, a user flagged in password_change_required sees the
+// force-password-screen instead of the app. The flag is cleared server-side by
+// complete_password_change(), which only succeeds if the password hash actually
+// changed, so the flag can't be cleared without a real change.
+async function enterAppOrForcePasswordChange(roleInfo) {
+  let flagged = false;
+  try {
+    const rows = await sbFetch(`password_change_required?select=user_id&user_id=eq.${roleInfo.auth_user_id}`);
+    flagged = Array.isArray(rows) && rows.length > 0;
+  } catch { flagged = false; }
+  document.getElementById('login-screen').style.display = 'none';
+  if (flagged) {
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('force-password-screen').style.display = 'flex';
+    document.getElementById('force-new-password').focus();
+    return;
+  }
+  document.getElementById('force-password-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  loadAll();
+}
+
+window.doForcedPasswordChange = async () => {
+  const pw = document.getElementById('force-new-password').value;
+  const confirmPw = document.getElementById('force-new-password-confirm').value;
+  const errEl = document.getElementById('force-password-error');
+  const btn = document.getElementById('force-password-btn');
+  errEl.style.display = 'none';
+  if (!pw || pw.length < 10) { errEl.textContent = 'Password must be at least 10 characters.'; errEl.style.display = 'block'; return; }
+  if (pw !== confirmPw) { errEl.textContent = 'Passwords do not match.'; errEl.style.display = 'block'; return; }
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const result = await sbUpdatePassword(pw, window._token);
+    if (result.error || result.code || result.error_code) {
+      const code = result.error_code || result.code || '';
+      errEl.textContent = code === 'weak_password'
+        ? 'That password is too weak or has appeared in a data breach. Please choose a different one.'
+        : code === 'same_password'
+          ? 'Your new password must be different from your current one.'
+          : (result.msg || result.error_description || result.message || 'Could not update password. Please try again.');
+      errEl.style.display = 'block';
+      return;
+    }
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/complete_password_change`, {
+      method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: '{}'
+    });
+    const cleared = r.ok ? await r.json() : false;
+    if (cleared !== true) {
+      errEl.textContent = 'Password was updated, but the change could not be confirmed. Please sign out and sign in with your new password.';
+      errEl.style.display = 'block';
+      return;
+    }
+    document.getElementById('force-new-password').value = '';
+    document.getElementById('force-new-password-confirm').value = '';
+    document.getElementById('force-password-screen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    loadAll();
+  } catch (e) {
+    errEl.textContent = 'Network error: ' + (e.message || e);
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Set password & continue';
+  }
+};
+
 window.doLogin = async () => {
   const email = document.getElementById('login-email').value.trim();
   const password = document.getElementById('login-password').value;
@@ -3498,9 +3582,7 @@ window.doLogin = async () => {
 
   applyRoleUI(roleInfo);
   window.roleInfo = roleInfo;
-  document.getElementById('login-screen').style.display = 'none';
-  document.getElementById('app').style.display = 'block';
-  loadAll();
+  await enterAppOrForcePasswordChange(roleInfo);
 };
 
 // ── Forgot password / set new password flows ──
@@ -3601,8 +3683,8 @@ window.doPasswordUpdate = async () => {
   const errEl = document.getElementById('new-password-error');
   errEl.style.display = 'none';
 
-  if (!newPassword || newPassword.length < 6) {
-    errEl.textContent = 'Password must be at least 6 characters.';
+  if (!newPassword || newPassword.length < 10) {
+    errEl.textContent = 'Password must be at least 10 characters.';
     errEl.style.display = 'block';
     return;
   }
@@ -3708,9 +3790,7 @@ window.doSignOut = async () => {
     if (!roleInfo) { saveSession(null); return; }
     applyRoleUI(roleInfo);
     window.roleInfo = roleInfo;
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
-    loadAll();
+    await enterAppOrForcePasswordChange(roleInfo);
   } catch {
     // Token invalid — stay on login
     saveSession(null);
@@ -7492,7 +7572,7 @@ window.saveDriver = async () => {
 
   if (!id) {
     // Create new driver via Edge Function (needs service role)
-    if (!password || password.length < 6) { msg.style.color='var(--danger)'; msg.textContent = '⚠️ Password must be at least 6 characters.'; return; }
+    if (!password || password.length < 10) { msg.style.color='var(--danger)'; msg.textContent = '⚠️ Password must be at least 10 characters.'; return; }
     try {
       const res = await fetch(EDGE_URL, {
         method: 'POST',
