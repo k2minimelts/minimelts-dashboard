@@ -7638,7 +7638,7 @@ function renderMissedRow(r) {
     <button class="btn-sm" style="background:var(--gold);color:var(--bg);border:none;padding:6px 12px;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap"
       onclick="resolveMissedStop('${r.stop_id}','${r.kind}','${r.missed_kind || ''}')">${wasSkipped ? 'Mark handled' : (isOrder ? 'Revert to pending' : 'Mark resolved')}</button>
     <button class="btn-sm" style="background:transparent;color:var(--danger);border:1px solid var(--danger);padding:6px 10px;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap"
-      onclick="deleteMissedStop('${r.stop_id}','${r.kind}','${r.order_id || ''}')">Delete</button>
+      onclick="deleteMissedStop('${r.stop_id}','${r.kind}','${r.order_id || ''}','${r.missed_kind || ''}')">Delete</button>
   </div>`;
   return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid rgba(255,255,255,0.04)">
     <div style="flex:1;min-width:0">
@@ -7693,14 +7693,29 @@ window.resolveMissedStop = async (stopId, kind, missedKind) => {
 // Order stop: cancel the order; fn_order_cancel_cascade removes the linked stop
 // and blocks the pending-revert, leaving the order recorded as 'cancelled'.
 // Vending/other stop: delete the trip_stop row outright. No customer email.
-window.deleteMissedStop = async (stopId, kind, orderId) => {
-  const msg = (kind === 'order' && orderId)
+// EXCEPT a SKIPPED vending/other stop: stamp skip_resolved_at instead of
+// deleting. The view shows only the latest skip per machine/store; deleting
+// it surfaced the next-older skip for the same machine, so the row appeared
+// not to delete. Keeping the row (resolved) keeps older skips hidden and
+// preserves the visit history.
+window.deleteMissedStop = async (stopId, kind, orderId, missedKind) => {
+  const isOrderCancel = kind === 'order' && orderId;
+  const resolveInstead = !isOrderCancel && missedKind === 'skipped';
+  const msg = isOrderCancel
     ? 'This CANCELS the order and removes the stop entirely — it will NOT be rescheduled. Continue?'
-    : 'This removes this stop entirely. Continue?';
+    : resolveInstead
+      ? 'This removes this skipped stop from the Missed list. The visit record is kept. Continue?'
+      : 'This removes this stop entirely. Continue?';
   if (!confirm(msg)) return;
   try {
     let resp;
-    if (kind === 'order' && orderId) {
+    if (resolveInstead) {
+      resp = await fetch(`${SUPABASE_URL}/rest/v1/trip_stops?id=eq.${stopId}`, {
+        method: 'PATCH',
+        headers: { ...headers(), 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ skip_resolved_at: new Date().toISOString() })
+      });
+    } else if (isOrderCancel) {
       resp = await fetch(`${SUPABASE_URL}/rest/v1/orders?id=eq.${orderId}`, {
         method: 'PATCH',
         headers: { ...headers(), 'Prefer': 'return=minimal' },
