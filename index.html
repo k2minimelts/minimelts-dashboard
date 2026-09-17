@@ -5881,7 +5881,33 @@ window.saveStore = async () => {
   else { msg.style.color='var(--danger)'; msg.textContent = '❌ Error saving store. Try again.'; }
 };
 
-window.toggleStore = async (id, currentActive) => { await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ active: !currentActive }) }); loadStores(); };
+// Activating a store can be rejected by the DB (e.g. active_stores_require_address:
+// an active store must have ship_addr1 + ship_city + province). The old version
+// discarded the response, so a rejected activation looked like a dead button.
+// Now the reason is shown.
+window.toggleStore = async (id, currentActive) => {
+  let resp;
+  try {
+    resp = await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ active: !currentActive })
+    });
+  } catch (e) {
+    alert(`Could not ${currentActive ? 'deactivate' : 'activate'} this store.\n\nNetwork error: ${e.message || e}`);
+    return;
+  }
+  if (!resp.ok) {
+    let detail = '';
+    try { const j = await resp.json(); detail = j.message || j.error || j.hint || ''; } catch {}
+    const friendly = /active_stores_require_address/.test(detail)
+      ? 'This store needs a shipping address, city and province before it can be activated. Edit the store, fill those in, then activate.'
+      : (detail || `The server rejected the change (HTTP ${resp.status}).`);
+    alert(`Could not ${currentActive ? 'deactivate' : 'activate'} this store.\n\n${friendly}`);
+    return;
+  }
+  loadStores();
+};
 window.retrySync = async (id) => { await fetch(`${SUPABASE_URL}/rest/v1/stores?id=eq.${id}`, { method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ qb_sync_status: 'pending', qb_sync_error: null, qb_sync_retries: 0 }) }); alert('Store queued for retry.'); loadStores(); };
 // Manual override: mark a store synced WITHOUT re-sending to QuickBooks. For the
 // "already in use" (QB 3100) case where the customer is confirmed to exist in QB.
