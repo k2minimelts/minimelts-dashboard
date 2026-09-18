@@ -7901,7 +7901,7 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,product_type,shipped_at,invoiced_at,paid_at,cancel_reason,cancelled_at,cancelled_by_email,' +
+    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type,shipped_at,invoiced_at,paid_at,cancel_reason,cancelled_at,cancelled_by_email,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
     'store:stores!store_id(id,public_code,qb_name,ship_city,province,depot_id,phone,email,route:routes(delivery_method))'
   );
@@ -8164,7 +8164,21 @@ function totalUnitsBadge(units) {
 // Badge for an order that also includes sorbet. Stacks below the ice cream
 // stock badge in the Stock/Qty cell. Always pink so it's visually distinct
 // from the ice cream stock (which uses red/yellow/green by level).
-function sorbetBadge(sorbetStockLevel) {
+// Summarises what a sorbet order actually asks for. Orders placed from the
+// online form carry sorbet_lines (per-flavour CASES); older orders carry only a
+// freezer-fullness level. Prefer the lines — they are what the depot loads and
+// the driver delivers — and fall back to the legacy label for historical rows.
+// Returns '' when there is nothing meaningful to show.
+function sorbetSummaryText(order) {
+  const lines = Array.isArray(order && order.sorbet_lines) ? order.sorbet_lines : null;
+  if (lines && lines.length) {
+    const total = lines.reduce((n, l) => n + (Number(l.cases) || 0), 0);
+    const parts = lines
+      .slice()
+      .sort((a, b) => (Number(b.cases) || 0) - (Number(a.cases) || 0))
+      .map(l => `${String(l.flavour || '').replace(/^BIG /, '')} ${Number(l.cases) || 0}`);
+    return `${total} case${total === 1 ? '' : 's'} · ${parts.join(' · ')}`;
+  }
   const labelMap = {
     empty:         'Empty',
     almost_empty:  'Almost empty',
@@ -8172,8 +8186,13 @@ function sorbetBadge(sorbetStockLevel) {
     three_quarter: '3/4 full',
     own_freezer:   'Own freezer',
   };
-  const label = labelMap[sorbetStockLevel] || sorbetStockLevel || '—';
-  return `<span class="badge" style="background:rgba(232,123,181,0.15);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.45);font-weight:700" title="This order also includes Mini Melts BIG Sorbet (stock: ${label})">🍧 SORBET · ${label}</span>`;
+  const lvl = order && order.sorbet_stock_level;
+  return labelMap[lvl] || lvl || '—';
+}
+
+function sorbetBadge(order) {
+  const label = sorbetSummaryText(order);
+  return `<span class="badge" style="background:rgba(232,123,181,0.15);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.45);font-weight:700" title="This order includes Mini Melts BIG Sorbet (${label})">🍧 SORBET · ${label}</span>`;
 }
 
 function sourceBadge(src) {
@@ -8382,7 +8401,7 @@ function renderOrdersTable(orders, totalCount, alreadySorted) {
       <td>
         <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">
           ${o.source === 'staples_po' ? totalUnitsBadge(o.total_units) : stockLevelBadge(o.stock_level)}
-          ${o.includes_sorbet ? sorbetBadge(o.sorbet_stock_level) : ''}
+          ${o.includes_sorbet ? sorbetBadge(o) : ''}
         </div>
       </td>
       <td style="font-size:12px">${escapeHtml(contact) || '<span style="color:var(--muted)">—</span>'}</td>
@@ -11319,7 +11338,7 @@ async function loadMapData() {
     fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,no_cash_sales_7d,no_card_sales_7d,days_since_last_sale,days_since_last_visit,depot_id,depot_code'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
-    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,is_freezer_pickup,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level,product_type&order=submitted_at.desc'),
+    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,is_freezer_pickup,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type&order=submitted_at.desc'),
   ]);
   _mapStores = stores;
   _mapMachines = venues;
@@ -11885,10 +11904,10 @@ async function initMapboxGL() {
         : '';
       // Compact sorbet pill — pink so depot manager spots it at a glance.
       const sorbetLabel = o.includes_sorbet
-        ? `<span style="background:#fce7f3;color:#9d174d;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px" title="Order includes sorbet (stock: ${stockMap[o.sorbet_stock_level] || o.sorbet_stock_level || '—'})">🍧 SORBET</span>`
+        ? `<span style="background:#fce7f3;color:#9d174d;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px" title="Order includes sorbet (${sorbetSummaryText(o)})">🍧 SORBET</span>`
         : '';
       const sorbetStockLine = o.includes_sorbet
-        ? `<div style="font-size:11px;color:#9d174d;margin-top:2px;font-weight:600">🍧 Sorbet stock: <strong>${stockMap[o.sorbet_stock_level] || o.sorbet_stock_level || '—'}</strong></div>`
+        ? `<div style="font-size:11px;color:#9d174d;margin-top:2px;font-weight:600">🍧 Sorbet: <strong>${sorbetSummaryText(o)}</strong></div>`
         : '';
       const noteSnippet = o.notes ? `<div style="color:#666;font-size:11px;margin-top:2px;font-style:italic">${escapeHtmlMap(o.notes.slice(0, 80))}${o.notes.length > 80 ? '…' : ''}</div>` : '';
       return `<div style="border-left:3px solid ${o.is_freezer_pickup ? '#f5a623' : (o.is_new_install ? '#ff4d9d' : '#ef4444')};padding:6px 8px;margin-bottom:6px;background:${o.is_freezer_pickup ? '#fff8ec' : (o.is_new_install ? '#fdf2f8' : '#fef2f2')};border-radius:0 4px 4px 0">
@@ -13348,7 +13367,7 @@ async function schedLoadOrdersAndOverdue() {
   // source, stock level, total units, contact, install flag) so the order
   // pin's hover popup can show the depot manager useful context for scheduling.
   const ordersPromise = sbFetch(
-    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,includes_sorbet,sorbet_stock_level,product_type,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,route_id)` +
+    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,route_id)` +
     `&status=eq.pending&trip_stop_id=is.null` +
     `&limit=500`
   );
@@ -13458,6 +13477,7 @@ async function schedLoadOrdersAndOverdue() {
       order_submitted_by_phone: o.submitted_by_phone || null,
       order_includes_sorbet: !!o.includes_sorbet,
       order_sorbet_stock_level: o.sorbet_stock_level || null,
+      order_sorbet_lines: Array.isArray(o.sorbet_lines) ? o.sorbet_lines : null,
       order_product_type: o.product_type || null,
       route_delivery_method: s.route_id ? (_routeMethodById[s.route_id] || null) : null,
       is_new_install: !!o.is_new_install,
@@ -14131,7 +14151,7 @@ function schedRenderMarkers() {
       // so they bring sorbet to the venue. Pink-on-pink so it pops against
       // the rest of the popup; placed right after the source/stock line.
       const sorbetLine = store.order_includes_sorbet
-        ? `<div style="margin-top:5px;padding:4px 8px;background:#fce7f3;border:1px solid #f9a8d4;border-radius:4px;font-size:11px;color:#9d174d;font-weight:700">🍧 SORBET · ${stockMap[store.order_sorbet_stock_level] || store.order_sorbet_stock_level || '—'}</div>`
+        ? `<div style="margin-top:5px;padding:4px 8px;background:#fce7f3;border:1px solid #f9a8d4;border-radius:4px;font-size:11px;color:#9d174d;font-weight:700">🍧 SORBET · ${schedEscapeHtml(sorbetSummaryText({ sorbet_lines: store.order_sorbet_lines, sorbet_stock_level: store.order_sorbet_stock_level }))}</div>`
         : '';
       // Shipping-only banner. Distinct slate-grey to match the SHIPPED badge
       // pattern used elsewhere. Pre-NEW-INSTALL since shipping is a harder
