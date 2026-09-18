@@ -899,6 +899,17 @@
   .sched-cap-warning {
     color: #e54848; font-size: 10px; margin-top: 2px;
   }
+  /* Sorbet cases still to load for the day, per flavour. Pink to match the
+     sorbet-only store badge; only rendered when the day carries sorbet. */
+  .sched-sorbet-load {
+    color: var(--mm-pink);
+    font-size: 10px;
+    margin-top: 2px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .sched-cap-full {
     color: var(--gold);
     font-size: 10px; margin-top: 2px;
@@ -12933,6 +12944,7 @@ const schedState = {
   initialized: false,
   locations: [],            // route_locations (hotels + supply pickups)
   locationsIndex: new Map(),// route_location id → row
+  sorbetLoad: new Map(),    // trip_day_id → [{flavour, cases}] still to load
 };
 window.schedState = schedState; // expose for debugging
 
@@ -13288,7 +13300,7 @@ function schedShiftWeek(deltaDays) {
   schedState.weekStart = schedAddDays(schedState.weekStart, deltaDays);
   schedState.weekEnd = schedAddDays(schedState.weekStart, 6);
   schedRenderWeekLabel();
-  schedLoadTripsForWeek().then(() => schedRenderAll());
+  Promise.all([schedLoadTripsForWeek(), schedLoadSorbetForWeek()]).then(() => schedRenderAll());
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -13299,6 +13311,7 @@ async function schedRefreshData() {
     schedLoadOrdersAndOverdue(),
     schedLoadTripsForWeek(),
     schedLoadRouteLocations(),
+    schedLoadSorbetForWeek(),
   ]);
   schedRenderAll();
   schedFitMapToDepots();
@@ -13648,6 +13661,42 @@ async function schedLoadTripsForWeek() {
   } catch (e) {
     console.error('[sched] failed to load trips', e);
     schedState.trips = [];
+  }
+}
+
+// Sorbet cases a driver still has to load, per trip day and flavour, from the
+// trip_day_sorbet_load view. The view already excludes completed/skipped stops
+// and cancelled orders, so this figure falls as the day is worked — the depot
+// manager sees what still needs to go on the van, not a static total.
+// Sorbet ships in whole 24-pouch cases, which is why this is countable at all;
+// ice cream goes in loose and has no equivalent.
+async function schedLoadSorbetForWeek() {
+  const depotCodes = Array.from(schedState.activeDepots);
+  if (depotCodes.length === 0) { schedState.sorbetLoad = new Map(); return; }
+  let depotIds = schedState.userDepots
+    .filter(d => depotCodes.includes(d.code))
+    .map(d => d.id);
+  if (depotIds.length === 0) { schedState.sorbetLoad = new Map(); return; }
+  depotIds = schedExpandDepotIds(depotIds);
+  const depotIdList = depotIds.map(id => `"${id}"`).join(',');
+  const url = 'trip_day_sorbet_load?select=trip_day_id,day_date,depot_id,flavour,cases' +
+    `&depot_id=in.(${depotIdList})` +
+    `&day_date=gte.${schedState.weekStart}&day_date=lte.${schedState.weekEnd}`;
+  try {
+    const rows = await sbFetch(url);
+    const map = new Map();
+    if (Array.isArray(rows)) {
+      for (const r of rows) {
+        if (!map.has(r.trip_day_id)) map.set(r.trip_day_id, []);
+        map.get(r.trip_day_id).push({ flavour: r.flavour, cases: Number(r.cases) || 0 });
+      }
+      for (const list of map.values()) list.sort((a, b) => b.cases - a.cases);
+    }
+    schedState.sorbetLoad = map;
+  } catch (e) {
+    // Non-fatal: the grid must still render if this view is unavailable.
+    console.error('[sched] failed to load sorbet load', e);
+    schedState.sorbetLoad = new Map();
   }
 }
 
@@ -14649,6 +14698,19 @@ function schedRenderGrid() {
       // that; the manager calculates the real figure from the day-edit panel.
       const hasRealDrive = foundDay.estimated_drive_hours != null;
 
+      // Sorbet cases still to load for this day, per flavour. Only rendered
+      // when there is sorbet on the day, so nothing changes for ice-cream-only
+      // days. Abbreviated to fit the cell: "Cherry 4 · Mango 2".
+      const sorbetRows = schedState.sorbetLoad.get(foundDay.id) || [];
+      const sorbetCases = sorbetRows.reduce((n, r) => n + r.cases, 0);
+      const sorbetTag = sorbetCases > 0
+        ? `<div class="sched-sorbet-load" title="${schedEscapeHtml(
+              sorbetRows.map(r => `${r.flavour}: ${r.cases} case${r.cases === 1 ? '' : 's'}`).join('\n')
+            )}">🍧 ${sorbetCases} case${sorbetCases === 1 ? '' : 's'} · ${
+              sorbetRows.map(r => `${schedEscapeHtml(r.flavour.replace(/^BIG /, ''))} ${r.cases}`).join(' · ')
+            }</div>`
+        : '';
+
       cells.push(`<div class="sched-cell sched-day-cell has-stops ${capClass} ${tripClasses.join(' ')}"
         data-driver-id="${driver.id}" data-day-iso="${iso}" data-trip-day-id="${foundDay.id}">
         <div class="sched-day-summary">
@@ -14656,6 +14718,7 @@ function schedRenderGrid() {
           <span class="est">stops · ${schedFmtHours(productive)}${hasRealDrive ? '' : ' ~est'}</span>
         </div>
         <div class="sched-day-breakdown">${schedFmtHours(stopCount * schedState.workload.service_hours_per_stop)} svc + ${schedFmtHours(driveHours)} drive</div>
+        ${sorbetTag}
         ${overTag}
         ${tripBadge}
         ${tripCont}
