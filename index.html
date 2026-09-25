@@ -11813,7 +11813,11 @@ async function initMapboxGL() {
     const alertBadges = [];
     if (needsRestock) alertBadges.push(`<span style="background:#fee2e2;color:#9b1c1c;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ Needs restock</span>`);
     if (noSales3d) alertBadges.push(`<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ No sales ${daysSinceSale}d</span>`);
-    if (!online) alertBadges.push(`<span style="background:#e5e7eb;color:#374151;padding:2px 6px;border-radius:4px;font-size:11px">📵 Offline</span>`);
+    // 'Offline' badge removed 2026-09-25: it showed Lynx MachineMQTTStatus, which
+    // reports whether the device holds a live MQTT session, not whether the machine
+    // is working. 26 of 39 machines flagged offline had sold within 24h, while
+    // jammed or empty machines still reported online. Sales recency (No sales Nd)
+    // is the reliable signal. mqtt_online is still fetched but no longer shown.
     if (noCashSales7d) alertBadges.push(`<span style="background:#ffedd5;color:#9a3412;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">💵 No cash sales</span>`);
     if (noCardSales7d) alertBadges.push(`<span style="background:#fae8ff;color:#86198f;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">💳 No card sales</span>`);
 
@@ -13933,7 +13937,11 @@ function schedInitMap() {
       const alertBadges = [];
       if (needsRestock) alertBadges.push(`<span style="background:#fee2e2;color:#9b1c1c;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ Needs restock</span>`);
       if (noSales3d) alertBadges.push(`<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">⚠ No sales ${daysSinceSale}d</span>`);
-      if (!online) alertBadges.push(`<span style="background:#e5e7eb;color:#374151;padding:2px 6px;border-radius:4px;font-size:11px">📵 Offline</span>`);
+      // 'Offline' badge removed 2026-09-25: it showed Lynx MachineMQTTStatus, which
+      // reports whether the device holds a live MQTT session, not whether the machine
+      // is working. 26 of 39 machines flagged offline had sold within 24h, while
+      // jammed or empty machines still reported online. Sales recency (No sales Nd)
+      // is the reliable signal. mqtt_online is still fetched but no longer shown.
       if (assigned) alertBadges.push(`<span style="background:#e0e7ff;color:#3730a3;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">📅 Scheduled</span>`);
       if (needsScheduling && !assigned) alertBadges.push(`<span style="background:#eef2ff;color:#4338ca;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;border:1px solid #c7d2fe">🔵 Needs scheduling</span>`);
       if (noCashSales7d) alertBadges.push(`<span style="background:#ffedd5;color:#9a3412;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600">💵 No cash sales</span>`);
