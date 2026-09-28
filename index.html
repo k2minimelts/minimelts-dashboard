@@ -11178,8 +11178,15 @@ window.renderPadConversion = function () {
   PAD_CACHE.forEach(r => {
     if (tally[r.status] !== undefined) tally[r.status]++;
     if (r.pushed_to_qb) tally.pushed++;
-    if (Number(r.reminder_count || 0) > 0) tally.reminded++;
+    // Reminded counts only stores still being chased: an excluded store's
+    // reminder history (deactivated, EFT, freezer pickup...) is not campaign work.
+    if (r.status !== 'excluded' && Number(r.reminder_count || 0) > 0) tally.reminded++;
   });
+  // "In campaign" excludes stores taken out of the campaign, so Signed/Sent read
+  // against the real denominator. Excluded gets its own card so the total still
+  // reconciles with the table (campaign + excluded = all invitation rows).
+  tally.campaign = tally.total - tally.excluded;
+  const signedPct = tally.campaign ? Math.round(tally.signed / tally.campaign * 100) : 0;
   const stats = document.getElementById('pad-stats');
   if (stats) {
     const card = (label, val, color) =>
@@ -11188,14 +11195,15 @@ window.renderPadConversion = function () {
          <div style="font-size:12px;color:var(--muted);margin-top:2px">${label}</div>
        </div>`;
     stats.innerHTML =
-      card('In campaign', tally.total) +
-      card('Sent', tally.sent, '#58a6ff') +
-      card('Signed', tally.signed, '#3fb950') +
+      card('In campaign', tally.campaign) +
+      card('Sent (unsigned)', tally.sent, '#58a6ff') +
+      card(`Signed · ${signedPct}%`, tally.signed, '#3fb950') +
       card('Pushed to QB', tally.pushed, '#3fb950') +
       // 'Not sent' means the invitation exists but the email failed -- these are
       // the stores that will never sign because they were never asked.
       card('Not sent', tally.pending, tally.pending ? '#f85149' : undefined) +
-      card('Reminded', tally.reminded, '#d29922');
+      card('Reminded', tally.reminded, '#d29922') +
+      card('Excluded', tally.excluded, 'var(--muted)');
   }
 
   const rows = _padFilteredRows();
