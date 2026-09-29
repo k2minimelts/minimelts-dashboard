@@ -2045,6 +2045,15 @@
               <span class="num" id="sched-count-overdue">—</span>
               <span class="lbl">overdue for a visit</span>
             </div>
+            <!-- Lapsed: no visit in 120+ days (app deliveries + QuickBooks history).
+                 These need a check-in visit (still selling? new owner? freezer in
+                 use?), not a routine restock, so they are kept out of "overdue".
+                 Off by default so ~300 pins don't bury the routine schedule. -->
+            <div class="sched-counter" data-filter="lapsed">
+              <span class="sw" style="background:#5b8def"></span>
+              <span class="num" id="sched-count-lapsed">—</span>
+              <span class="lbl">lapsed · check-in</span>
+            </div>
             <div class="sched-counter active" data-filter="vending">
               <span class="sw" style="background:#e87bb5"></span>
               <span class="num" id="sched-count-vending">—</span>
@@ -2103,6 +2112,10 @@
             <div class="sched-legend-row">
               <span class="sw" style="background:#a371f7"></span>
               <span>⚠ Skipped — reschedule</span>
+            </div>
+            <div class="sched-legend-row">
+              <span class="sw" style="background:#5b8def"></span>
+              <span>Lapsed 120+ days — check-in visit</span>
             </div>
           </div>
           <div class="sched-map-overlay sched-lasso-hint">
@@ -13026,7 +13039,7 @@ window.removeDepotManagerRow = async (depot_manager_id, email, depot_code) => {
 const schedState = {
   userDepots: [],          // [{id, code, name, lat, lng}] in user's scope
   activeDepots: new Set(), // depot codes currently filtered ON
-  filters: { orders: true, overdue: true, vending: true, scheduled: false, skipped: true },
+  filters: { orders: true, overdue: true, vending: true, scheduled: false, skipped: true, lapsed: false },
   weekStart: null,         // ISO Monday
   weekEnd: null,           // ISO Sunday (= weekStart + 6)
   storesIndex: new Map(),  // store_id → store object
@@ -13161,6 +13174,7 @@ function schedPinInfo(store) {
       vending: true,
     };
   }
+  if (store.type === 'lapsed') return { color: '#5b8def', size: 'size-md', stale: false };
   return schedCadenceStyle(store.days_overdue || 0);
 }
 
@@ -13451,6 +13465,16 @@ async function schedLoadOrdersAndOverdue() {
     `&limit=2000`
   );
 
+  // Lapsed stores: no visit in 120+ days. The view returns days_until_due = null
+  // for these (they are deliberately not "overdue"), so they need their own query.
+  const lapsedPromise = sbFetch(
+    `stores_with_predicted_visit?select=store_id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,depot,route_id,last_visited_at` +
+    `&depot_id=in.(${depotIdList})` +
+    `&is_lapsed=is.true` +
+    `&lat=not.is.null&lng=not.is.null` +
+    `&limit=2000`
+  );
+
   // Pending unscheduled orders. We pull the full order metadata (date, notes,
   // source, stock level, total units, contact, install flag) so the order
   // pin's hover popup can show the depot manager useful context for scheduling.
@@ -13484,15 +13508,16 @@ async function schedLoadOrdersAndOverdue() {
     `&limit=2000`
   );
 
-  let overdueRows = [], orderRows = [], vendingRows = [], routesLite = [], skippedRows = [];
+  let overdueRows = [], orderRows = [], vendingRows = [], routesLite = [], skippedRows = [], lapsedRows = [];
   try {
-    [overdueRows, orderRows, vendingRows, routesLite, skippedRows] = await Promise.all([overduePromise, ordersPromise, vendingPromise, routesLitePromise, skippedPromise]);
+    [overdueRows, orderRows, vendingRows, routesLite, skippedRows, lapsedRows] = await Promise.all([overduePromise, ordersPromise, vendingPromise, routesLitePromise, skippedPromise, lapsedPromise]);
     await loadMachineNotes(); await loadStoreNotes();
     if (!Array.isArray(overdueRows)) overdueRows = [];
     if (!Array.isArray(orderRows)) orderRows = [];
     if (!Array.isArray(vendingRows)) vendingRows = [];
     if (!Array.isArray(routesLite)) routesLite = [];
     if (!Array.isArray(skippedRows)) skippedRows = [];
+    if (!Array.isArray(lapsedRows)) lapsedRows = [];
   } catch (e) {
     console.error('[sched] failed to load orders/overdue/vending', e);
     schedState.storesIndex = new Map();
@@ -13528,6 +13553,33 @@ async function schedLoadOrdersAndOverdue() {
       type: 'overdue',
       days_overdue: Math.max(0, days),
       assigned: false,
+      route_delivery_method: r.route_id ? (_routeMethodById[r.route_id] || null) : null,
+    });
+  }
+
+  // Lapsed stores (check-in visit). Added before orders so a store that has
+  // since placed an order shows as the order pin instead.
+  const _todayMs = Date.now();
+  for (const r of lapsedRows) {
+    if (r.lat == null || r.lng == null) continue;
+    if (r.route_id && _routeMethodById[r.route_id] === 'shipped') continue;
+    if (idx.has(r.store_id)) continue;
+    const lastMs = r.last_visited_at ? new Date(r.last_visited_at + 'T12:00:00').getTime() : null;
+    idx.set(r.store_id, {
+      id: r.store_id,
+      qb_name: r.qb_name,
+      ship_addr1: r.ship_addr1,
+      ship_city: r.ship_city,
+      province: r.province,
+      lat: Number(r.lat),
+      lng: Number(r.lng),
+      depot_id: r.depot_id,
+      depot: r.depot,
+      type: 'lapsed',
+      days_overdue: 0,
+      assigned: false,
+      last_visited_at: r.last_visited_at || null,
+      days_since_visit: lastMs ? Math.floor((_todayMs - lastMs) / 86400000) : null,
       route_delivery_method: r.route_id ? (_routeMethodById[r.route_id] || null) : null,
     });
   }
@@ -14277,6 +14329,12 @@ function schedRenderMarkers() {
         else             { badgeBg = '#fee2e2'; badgeColor = '#991b1b'; } // red
         overdueBadge = `<div style="margin-top:6px"><span style="background:${badgeBg};color:${badgeColor};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏱ ${d} day${d === 1 ? '' : 's'} overdue</span></div>`;
       }
+      if (store.type === 'lapsed') {
+        const lv = store.last_visited_at
+          ? `last visit ${new Date(store.last_visited_at + 'T12:00:00').toLocaleDateString('en-CA',{month:'short',day:'numeric',year:'numeric'})}${store.days_since_visit != null ? ` (${store.days_since_visit} days ago)` : ''}`
+          : 'no visit on record';
+        overdueBadge = `<div style="margin-top:6px"><span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🔎 Lapsed · ${lv}</span></div><div style="font-size:11px;color:#555;margin-top:4px">Check-in visit: still selling? new owner? freezer in use?</div>`;
+      }
       const overdueShippingBanner = store.route_delivery_method === 'shipped'
         ? '<div style="background:#475569;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:800;letter-spacing:0.5px;margin-bottom:4px;text-align:center">📦 SHIPPING-ONLY</div>'
         : '';
@@ -14534,6 +14592,7 @@ function schedIsFiltered(store) {
   if (store.type === 'order' && !schedState.filters.orders) return true;
   if (store.type === 'overdue' && !schedState.filters.overdue) return true;
   if (store.type === 'vending' && !schedState.filters.vending) return true;
+  if (store.type === 'lapsed' && !schedState.filters.lapsed) return true;
   return false;
 }
 
@@ -14620,6 +14679,7 @@ function schedLassoEnd(e) {
       if (store.type === 'order' && !schedState.filters.orders) continue;
       if (store.type === 'overdue' && !schedState.filters.overdue) continue;
       if (store.type === 'vending' && !schedState.filters.vending) continue;
+      if (store.type === 'lapsed' && !schedState.filters.lapsed) continue;
     }
     if (hitLng >= minLng && hitLng <= maxLng && hitLat >= minLat && hitLat <= maxLat) {
       if (!schedState.selected.has(store.id)) { schedState.selected.add(store.id); added++; }
@@ -14875,13 +14935,14 @@ function schedToggleDriverHighlight(driverId) {
 // COUNTERS
 // ════════════════════════════════════════════════════════════════════
 function schedRenderCounters() {
-  let orderCount = 0, overdueCount = 0, vendingCount = 0, scheduledCount = 0, skippedCount = 0;
+  let orderCount = 0, overdueCount = 0, vendingCount = 0, scheduledCount = 0, skippedCount = 0, lapsedCount = 0;
   for (const s of schedState.storesIndex.values()) {
     if (s.assigned) { scheduledCount++; continue; }
     if (s.skipped) { skippedCount++; continue; }  // purple "missed" — its own category, not double-counted
     if (s.type === 'order') orderCount++;
     else if (s.type === 'overdue') overdueCount++;
     else if (s.type === 'vending') vendingCount++;
+    else if (s.type === 'lapsed') lapsedCount++;
   }
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
   set('sched-count-orders', orderCount);
@@ -14889,6 +14950,7 @@ function schedRenderCounters() {
   set('sched-count-vending', vendingCount);
   set('sched-count-scheduled', scheduledCount);
   set('sched-count-skipped', skippedCount);
+  set('sched-count-lapsed', lapsedCount);
   const pubBtn = document.getElementById('sched-publish-btn');
   if (pubBtn) pubBtn.textContent = `Publish 0 plans →`;
   if (typeof schedUpdatePublishButton === 'function') schedUpdatePublishButton();
@@ -16291,6 +16353,7 @@ function schedSearchTag(s) {
   if (s.assigned)           return { label: 'Scheduled', color: '#3730a3', bg: '#e0e7ff' };
   if (s.type === 'order')   return { label: 'Order',     color: '#0e7490', bg: '#cffafe' };
   if (s.type === 'overdue') return { label: 'Overdue',   color: '#9a3412', bg: '#ffedd5' };
+  if (s.type === 'lapsed')  return { label: 'Lapsed',    color: '#1e40af', bg: '#dbeafe' };
   return { label: 'Stop', color: '#374151', bg: '#e5e7eb' };
 }
 window.schedSearch = function (q) {
