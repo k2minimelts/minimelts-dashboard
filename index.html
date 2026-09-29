@@ -1780,6 +1780,20 @@
      order to pending for rescheduling. Resolved rows drop off on refresh.
      ════════════════════════════════════════════════════════════════════ -->
     <div id="tab-missed" style="display:none">
+      <!-- Store follow-ups: raised by drivers from a "Visited, no order" stop
+           (new owner / freezer used for other products / no longer selling).
+           Rows come from store_visit_flags; depot managers see their own
+           depots (RLS). Resolve with a short note of what was done. -->
+      <div class="table-wrap" style="margin-bottom:18px">
+        <div class="table-header">
+          <span class="table-title">🔎 Store follow-ups</span>
+          <span class="table-count" id="followups-count">Loading...</span>
+          <label style="margin-left:auto;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="followups-show-resolved" onchange="loadStoreFollowups()"> Show resolved (30 days)
+          </label>
+        </div>
+        <div id="followups-body"><div class="loading">Loading…</div></div>
+      </div>
       <div class="filters">
         <div class="filter-group"><label>Show</label>
           <select id="missed-filter-kind" onchange="loadMissedStops()">
@@ -5975,7 +5989,7 @@ window.switchTab = (tab) => {
   if (tab==='drivers') loadDrivers();
   if (tab==='corrections') loadCorrections();
   if (tab==='orders') loadOrders();
-  if (tab==='missed') loadMissedStops();
+  if (tab==='missed') { loadMissedStops(); loadStoreFollowups(); }
   if (tab==='map') initMapTab();
   if (tab==='routes') loadRoutes();
   if (tab==='refills') loadRefills();
@@ -7872,16 +7886,130 @@ window.deleteMissedStop = async (stopId, kind, orderId, missedKind) => {
 async function updateMissedBadge() {
   const btn = document.getElementById('tab-btn-missed');
   if (!btn) return;
-  let count = 0;
+  let count = 0, fu = 0;
   try {
     const rows = await sbFetch('missed_stops?select=stop_id');
     count = Array.isArray(rows) ? rows.length : 0;
   } catch { /* leave at 0 */ }
-  btn.innerHTML = count > 0
-    ? `⏱️ Missed <span style="background:var(--warning);color:#000;border-radius:10px;padding:1px 7px;font-size:11px;font-weight:700;margin-left:4px">${count}</span>`
-    : '⏱️ Missed';
+  try {
+    const f = await sbFetch('store_visit_flags?select=id&resolved_at=is.null');
+    fu = Array.isArray(f) ? f.length : 0;
+  } catch { /* leave at 0 */ }
+  btn.innerHTML = '⏱️ Missed'
+    + (count > 0 ? ` <span style="background:var(--warning);color:#000;border-radius:10px;padding:1px 7px;font-size:11px;font-weight:700;margin-left:4px">${count}</span>` : '')
+    + (fu > 0 ? ` <span title="Store follow-ups" style="background:#5b8def;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;font-weight:700;margin-left:4px">🔎 ${fu}</span>` : '');
 }
 window.updateMissedBadge = updateMissedBadge;
+
+// ── Store follow-ups ────────────────────────────────────────────────────
+// Raised by the driver app ("Visited, no order") for outcomes the office has
+// to act on. Listed at the top of the Missed tab; the morning missed-stops
+// digest mentions new ones. Resolving stamps resolved_at + a short note of
+// what was done, so office and depot managers never double-handle one.
+let _storeFollowups = [];
+const FU_COLORS = {
+  'New owner': '#5b8def',
+  'Freezer used for other products': '#d29922',
+  'No longer selling - pick up freezer': '#f85149',
+};
+async function loadStoreFollowups() {
+  const body = document.getElementById('followups-body');
+  const showResolved = !!document.getElementById('followups-show-resolved')?.checked;
+  let q = 'store_visit_flags?select=id,outcome,note,visited_on,driver_name,created_at,resolved_at,resolution,store_id,'
+    + 'store:stores!store_visit_flags_store_id_fkey(id,public_code,qb_name,name,ship_addr1,ship_city,province,phone,email,sorbet_enrolled,sorbet_own_freezer)'
+    + '&order=created_at.desc&limit=200';
+  if (showResolved) {
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    q += `&or=(resolved_at.is.null,resolved_at.gte.${since})`;
+  } else {
+    q += '&resolved_at=is.null';
+  }
+  try {
+    const rows = await sbFetch(q);
+    _storeFollowups = Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    if (body) body.innerHTML = `<div class="loading">Error: ${escapeHtml(e.message || String(e))}</div>`;
+    return;
+  }
+  renderStoreFollowups();
+}
+window.loadStoreFollowups = loadStoreFollowups;
+
+function renderStoreFollowups() {
+  const body = document.getElementById('followups-body');
+  const countEl = document.getElementById('followups-count');
+  if (!body) return;
+  const open = _storeFollowups.filter(f => !f.resolved_at).length;
+  if (countEl) countEl.textContent = `${open} open`;
+  if (_storeFollowups.length === 0) {
+    body.innerHTML = '<div class="loading" style="color:var(--muted)">No store follow-ups. Drivers raise these from a "Visited, no order" stop.</div>';
+    return;
+  }
+  const rows = _storeFollowups.map(f => {
+    const s = f.store || {};
+    const color = FU_COLORS[f.outcome] || 'var(--muted)';
+    const where = [s.ship_city, s.province].filter(Boolean).join(', ');
+    const visited = f.visited_on ? new Date(f.visited_on + 'T12:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }) : '';
+    const actions = f.resolved_at
+      ? `<span style="color:#3fb950;font-size:12px">✓ ${escapeHtml(f.resolution || 'Resolved')}</span>`
+      : `${f.outcome === 'No longer selling - pick up freezer' ? `<button class="btn-sm" onclick="window.fuCreatePickup('${f.id}')" style="margin-right:6px">📦 Create freezer pickup</button>` : ''}`
+        + `<button class="btn-sm" onclick="window.fuResolve('${f.id}')">✓ Resolve</button>`;
+    return `<tr style="${f.resolved_at ? 'opacity:0.55' : ''}">
+      <td style="white-space:nowrap">${escapeHtml(visited)}</td>
+      <td><div style="font-weight:600">${escapeHtml(s.name || s.qb_name || '—')}</div>
+          <div style="font-size:12px;color:var(--muted)"><span style="font-family:monospace;color:var(--gold)">${escapeHtml(s.public_code || '')}</span>${where ? ' · ' + escapeHtml(where) : ''}${s.phone ? ' · ' + escapeHtml(s.phone) : ''}</div></td>
+      <td><span style="color:${color};font-weight:700">${escapeHtml(f.outcome)}</span>
+          ${f.note ? `<div style="font-size:12px;color:var(--text);margin-top:2px">“${escapeHtml(f.note)}”</div>` : ''}</td>
+      <td style="font-size:12px;color:var(--muted);white-space:nowrap">${escapeHtml(f.driver_name || '')}</td>
+      <td style="text-align:right;white-space:nowrap">${actions}</td>
+    </tr>`;
+  }).join('');
+  body.innerHTML = `<table><thead><tr><th>Visited</th><th>Store</th><th>Driver found</th><th>Driver</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+window.fuResolve = async (id, presetNote) => {
+  const f = _storeFollowups.find(x => x.id === id);
+  if (!f) return;
+  let note = presetNote;
+  if (!note) {
+    const hint = f.outcome === 'New owner' ? 'e.g. Account + PAD updated for new owner'
+      : f.outcome === 'Freezer used for other products' ? 'e.g. Called owner, freezer cleared'
+      : 'e.g. Freezer pickup order created';
+    note = prompt(`Resolve follow-up for ${(f.store && (f.store.name || f.store.qb_name)) || 'this store'}?\n\nWhat was done? (${hint})`);
+    if (note === null) return;           // cancelled
+    note = note.trim() || 'Resolved';
+  }
+  const who = window._role?.name || window._role?.email || '';
+  const resolution = who ? `${note} · ${who}` : note;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/store_visit_flags?id=eq.${id}`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ resolved_at: new Date().toISOString(), resolution }),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  } catch (e) {
+    alert('Could not resolve: ' + (e.message || e));
+    return;
+  }
+  await loadStoreFollowups();
+  updateMissedBadge();
+};
+
+// "No longer selling": open the normal New Order modal pre-set to a freezer
+// pickup for this store. Saving it resolves the follow-up automatically.
+window.fuCreatePickup = (id) => {
+  const f = _storeFollowups.find(x => x.id === id);
+  if (!f || !f.store) return;
+  window.showNewOrderModal('phone');
+  window.selectOrderStore(f.store.id, f.store);
+  const pickupEl = document.getElementById('order-is-pickup');
+  pickupEl.checked = true;
+  window.onOrderPickupToggle();
+  document.getElementById('order-notes').value =
+    `Freezer pickup: driver check-in ${f.visited_on || ''} found store no longer selling.${f.note ? ' Driver note: ' + f.note : ''}`;
+  window._fuPendingResolve = id;
+};
 
 let _ordersFiltersInit = false;
 async function loadOrders() {
@@ -8729,6 +8857,7 @@ window.markOrderPaid = async (id) => {
 
 // ── New Order Modal ──
 window.showNewOrderModal = (source) => {
+  window._fuPendingResolve = null;   // set again by fuCreatePickup when it opens this
   document.getElementById('order-source').value = source;
   document.getElementById('order-modal-title').textContent = source === 'staples_po' ? 'New Staples PO' : 'New Phone Order';
   const isStaples = source === 'staples_po';
@@ -9423,9 +9552,14 @@ window.saveOrder = async () => {
     return;
   }
 
+  const fuId = window._fuPendingResolve;
+  window._fuPendingResolve = null;
   closeOrderModal();
   await loadOrders();
   updateOrdersBadge();
+  if (fuId && isFreezerPickup) {
+    await window.fuResolve(fuId, 'Freezer pickup order created');
+  }
 };
 
 // ════════════════════════════════════════════════════════════════════
