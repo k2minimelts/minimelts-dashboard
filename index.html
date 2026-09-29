@@ -2043,7 +2043,7 @@
             <div class="sched-counter active" data-filter="overdue">
               <span class="sw" style="background:#ff7a3a"></span>
               <span class="num" id="sched-count-overdue">—</span>
-              <span class="lbl">overdue for a visit</span>
+              <span class="lbl">restock due</span>
             </div>
             <!-- Lapsed: no visit in 120+ days (app deliveries + QuickBooks history).
                  These need a check-in visit (still selling? new owner? freezer in
@@ -2052,7 +2052,7 @@
             <div class="sched-counter" data-filter="lapsed">
               <span class="sw" style="background:#5b8def"></span>
               <span class="num" id="sched-count-lapsed">—</span>
-              <span class="lbl">lapsed · check-in</span>
+              <span class="lbl">check-in · no orders 4+ mo</span>
             </div>
             <div class="sched-counter active" data-filter="vending">
               <span class="sw" style="background:#e87bb5"></span>
@@ -2100,10 +2100,10 @@
             </div>
             <div class="sched-legend-row">
               <span class="sw sw-gradient"></span>
-              <span>Overdue for a visit</span>
+              <span>Restock due</span>
             </div>
             <div class="sched-legend-row sched-legend-hint">
-              color & size grow with how overdue
+              color & size grow with how far past due
             </div>
             <div class="sched-legend-row">
               <span class="sw" style="background:var(--muted)"></span>
@@ -2115,7 +2115,7 @@
             </div>
             <div class="sched-legend-row">
               <span class="sw" style="background:#5b8def"></span>
-              <span>Lapsed 120+ days — check-in visit</span>
+              <span>Check-in — no orders in 4+ months</span>
             </div>
           </div>
           <div class="sched-map-overlay sched-lasso-hint">
@@ -14327,13 +14327,13 @@ function schedRenderMarkers() {
         if (d < 30)      { badgeBg = '#fef3c7'; badgeColor = '#92400e'; } // yellow
         else if (d < 90) { badgeBg = '#fed7aa'; badgeColor = '#9a3412'; } // orange
         else             { badgeBg = '#fee2e2'; badgeColor = '#991b1b'; } // red
-        overdueBadge = `<div style="margin-top:6px"><span style="background:${badgeBg};color:${badgeColor};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏱ ${d} day${d === 1 ? '' : 's'} overdue</span></div>`;
+        overdueBadge = `<div style="margin-top:6px"><span style="background:${badgeBg};color:${badgeColor};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏱ ${d} day${d === 1 ? '' : 's'} past due</span></div>`;
       }
       if (store.type === 'lapsed') {
         const lv = store.last_visited_at
           ? `last visit ${new Date(store.last_visited_at + 'T12:00:00').toLocaleDateString('en-CA',{month:'short',day:'numeric',year:'numeric'})}${store.days_since_visit != null ? ` (${store.days_since_visit} days ago)` : ''}`
           : 'no visit on record';
-        overdueBadge = `<div style="margin-top:6px"><span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🔎 Lapsed · ${lv}</span></div><div style="font-size:11px;color:#555;margin-top:4px">Check-in visit: still selling? new owner? freezer in use?</div>`;
+        overdueBadge = `<div style="margin-top:6px"><span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🔎 Check-in · ${lv}</span></div><div style="font-size:11px;color:#555;margin-top:4px">Check-in visit: still selling? new owner? freezer in use?</div>`;
       }
       const overdueShippingBanner = store.route_delivery_method === 'shipped'
         ? '<div style="background:#475569;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:800;letter-spacing:0.5px;margin-bottom:4px;text-align:center">📦 SHIPPING-ONLY</div>'
@@ -16352,8 +16352,8 @@ function schedSearchTag(s) {
   if (s.skipped)            return { label: 'Skipped',   color: '#5b21b6', bg: '#ede9fe' };
   if (s.assigned)           return { label: 'Scheduled', color: '#3730a3', bg: '#e0e7ff' };
   if (s.type === 'order')   return { label: 'Order',     color: '#0e7490', bg: '#cffafe' };
-  if (s.type === 'overdue') return { label: 'Overdue',   color: '#9a3412', bg: '#ffedd5' };
-  if (s.type === 'lapsed')  return { label: 'Lapsed',    color: '#1e40af', bg: '#dbeafe' };
+  if (s.type === 'overdue') return { label: 'Restock due', color: '#9a3412', bg: '#ffedd5' };
+  if (s.type === 'lapsed')  return { label: 'Check-in',  color: '#1e40af', bg: '#dbeafe' };
   return { label: 'Stop', color: '#374151', bg: '#e5e7eb' };
 }
 window.schedSearch = function (q) {
