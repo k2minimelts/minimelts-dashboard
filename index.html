@@ -2198,6 +2198,7 @@
       <!-- Kill-switch banner. Without this, an operator presses Run, gets
            'sending_disabled' from the function and has no idea why. -->
       <div id="pad-kill-banner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;font-size:13px"></div>
+      <div id="pad-void-banner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;font-size:13px"></div>
 
       <!-- Banking verification. Super-admin only: a VOID cheque is a plaintext
            image of a bank account, and Dylan can run the campaign without ever
@@ -10501,6 +10502,7 @@ window.loadPadWaves = async function (btn) {
     return;
   }
   await window.padRefreshKillBanner();
+  await window.padRefreshVoidBanner();
   window.renderPadWaves();
   if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
 };
@@ -10558,6 +10560,80 @@ window.padSetSending = async function (on) {
     alert('Could not change the sending flag: ' + (e?.message || e));
   }
   await window.padRefreshKillBanner();
+};
+
+// Banking-document requirement (VOID cheque / bank confirmation letter / direct
+// deposit form). Super admins only: get_pad_void_setting() and
+// set_pad_void_required() both raise 'forbidden' for anyone else, so the banner
+// is simply hidden for them. ON means required from the Oct 1 2026 cutover
+// (immediately once that has passed); OFF makes the upload optional again on
+// the signing page and in submit-pad-mandate. Every change is logged with who
+// made it (pad_setting_log).
+window.padRefreshVoidBanner = async function () {
+  const el = document.getElementById('pad-void-banner');
+  if (!el) return;
+  if (!window._role?.is_super_admin) { el.style.display = 'none'; return; }
+  let st = null;
+  try {
+    const res = await sbFetch('rpc/get_pad_void_setting', { method: 'POST', body: '{}' });
+    if (res && typeof res.enabled === 'boolean') st = res;
+  } catch (e) { st = null; }
+  el.style.display = '';
+  if (!st) {
+    el.style.background = 'rgba(248,81,73,0.08)';
+    el.style.border = '1px solid rgba(248,81,73,0.35)';
+    el.style.color = '#f85149';
+    el.innerHTML = '<strong>Banking document requirement:</strong> could not read the current setting. Refresh to try again.';
+    return;
+  }
+  const fmt = (iso) => {
+    try {
+      return new Date(iso).toLocaleString('en-CA', { timeZone: 'America/Toronto', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ET';
+    } catch (e) { return iso; }
+  };
+  const changed = st.last_changed_by
+    ? ` <span style="color:var(--muted);margin-left:6px">Last changed by ${escapeHtml(st.last_changed_by)}, ${fmt(st.last_changed_at)}.</span>`
+    : '';
+  let msg, btn;
+  if (st.enabled && st.in_effect) {
+    el.style.background = 'rgba(88,166,255,0.10)';
+    el.style.border = '1px solid rgba(88,166,255,0.35)';
+    el.style.color = '#58a6ff';
+    msg = '<strong>Banking document REQUIRED.</strong> Stores must attach a VOID cheque, bank confirmation letter or direct deposit form to sign a PAD.';
+    btn = '<button class="btn-sm" style="margin-left:10px" onclick="window.padSetVoidRequired(false)">Make optional</button>';
+  } else if (st.enabled) {
+    el.style.background = 'rgba(88,166,255,0.06)';
+    el.style.border = '1px solid rgba(88,166,255,0.25)';
+    el.style.color = '#58a6ff';
+    msg = `<strong>Banking document required from ${fmt(st.effective_from)}.</strong> Until then the upload stays optional.`;
+    btn = '<button class="btn-sm" style="margin-left:10px" onclick="window.padSetVoidRequired(false)">Cancel requirement</button>';
+  } else {
+    el.style.background = 'rgba(139,148,158,0.08)';
+    el.style.border = '1px solid rgba(139,148,158,0.30)';
+    el.style.color = 'var(--muted)';
+    msg = '<strong>Banking document OPTIONAL.</strong> Stores can sign a PAD without attaching a VOID cheque or bank letter.';
+    btn = '<button class="btn-sm" style="margin-left:10px" onclick="window.padSetVoidRequired(true)">Require it</button>';
+  }
+  el.innerHTML = msg + btn + changed;
+};
+
+window.padSetVoidRequired = async function (on) {
+  const q = on
+    ? 'Require a banking document to sign a PAD?\n\nFrom Oct 1 (immediately if that date has passed), stores must attach a VOID cheque, bank confirmation letter or direct deposit form, or they cannot sign.'
+    : 'Make the banking document optional?\n\nStores will be able to sign a PAD without attaching one. This takes effect immediately.';
+  if (!confirm(q)) return;
+  try {
+    const res = await sbFetch('rpc/set_pad_void_required', {
+      method: 'POST',
+      body: JSON.stringify({ p_on: !!on }),
+    });
+    // Raises 'forbidden' for a non-super-admin, which PostgREST returns as an
+    // error body rather than the setting object.
+    if (!res || typeof res.enabled !== 'boolean') throw new Error(res?.message || 'refused');
+  } catch (e) {
+    alert('Could not change the banking document setting: ' + (e?.message || e));
+  }
+  await window.padRefreshVoidBanner();
 };
 
 // Progress for a sent wave: how many still owe us a signature, and how far
