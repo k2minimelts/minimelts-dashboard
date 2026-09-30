@@ -2753,9 +2753,11 @@
 
       <!-- Total Units ordered (shown only for Staples PO; matches the PO line item count) -->
       <div class="field" id="order-total-units-row" style="display:none">
-        <label>Total Units Ordered <span style="color:var(--danger)">*</span></label>
-        <input type="number" id="order-total-units" min="1" step="1" placeholder="e.g. 24" inputmode="numeric" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
-        <div style="margin-top:4px;font-size:11px;color:var(--muted)">Number of units listed on the Staples PO.</div>
+        <label>🍦 Ice Cream Units Ordered</label>
+        <input type="number" id="order-total-units" min="0" step="1" placeholder="e.g. 24" inputmode="numeric" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
+        <label style="margin-top:12px;display:block">🍧 Sorbet Packs Ordered</label>
+        <input type="number" id="order-sorbet-units" min="0" step="1" placeholder="e.g. 100" inputmode="numeric" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
+        <div style="margin-top:4px;font-size:11px;color:var(--muted)">Enter the units on the Staples PO for each: ice cream, and sorbet (one SKU, any flavour, single packs). At least one is required.</div>
       </div>
 
       <!-- New Freezer Install flag — visual indicator only, no workflow change -->
@@ -8060,7 +8062,7 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,total_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type,shipped_at,invoiced_at,paid_at,cancel_reason,cancelled_at,cancelled_by_email,' +
+    'id,source,stock_level,total_units,sorbet_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type,shipped_at,invoiced_at,paid_at,cancel_reason,cancelled_at,cancelled_by_email,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
     'store:stores!store_id(id,public_code,qb_name,ship_city,province,depot_id,phone,email,route:routes(delivery_method))'
   );
@@ -8559,7 +8561,10 @@ function renderOrdersTable(orders, totalCount, alreadySorted) {
       <td>${sourceBadge(o.source)}</td>
       <td>
         <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start">
-          ${o.source === 'staples_po' ? totalUnitsBadge(o.total_units) : stockLevelBadge(o.stock_level)}
+          ${o.source === 'staples_po'
+              ? ((o.total_units != null || !o.sorbet_units) ? totalUnitsBadge(o.total_units) : '')
+                + (o.sorbet_units ? `<span class="badge" style="background:rgba(232,123,181,0.15);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.45);font-weight:700">🍧 ${o.sorbet_units} sorbet packs</span>` : '')
+              : stockLevelBadge(o.stock_level)}
           ${o.includes_sorbet ? sorbetBadge(o) : ''}
         </div>
       </td>
@@ -8886,6 +8891,7 @@ window.showNewOrderModal = (source) => {
   document.getElementById('order-stock-level').value = '';
   document.getElementById('order-sorbet-stock-level').value = '';
   document.getElementById('order-total-units').value = '';
+  document.getElementById('order-sorbet-units').value = '';
   document.getElementById('order-contact-name').value = '';
   document.getElementById('order-contact-phone').value = '';
   document.getElementById('order-contact-email').value = '';
@@ -9459,6 +9465,9 @@ window.saveOrder = async () => {
   const sorbetStockLevel = document.getElementById('order-sorbet-stock-level').value || null;
   const totalUnitsRaw = document.getElementById('order-total-units').value.trim();
   const totalUnits = totalUnitsRaw ? parseInt(totalUnitsRaw, 10) : null;
+  // Staples PO: sorbet is a single SKU ordered in packs, separate from ice cream.
+  const sorbetUnitsRaw = (document.getElementById('order-sorbet-units')?.value || '').trim();
+  const sorbetUnits = sorbetUnitsRaw ? parseInt(sorbetUnitsRaw, 10) : null;
   const contactName = document.getElementById('order-contact-name').value.trim() || null;
   const contactPhone = document.getElementById('order-contact-phone').value.trim() || null;
   const contactEmail = document.getElementById('order-contact-email').value.trim() || null;
@@ -9469,10 +9478,12 @@ window.saveOrder = async () => {
   // Staples PO is always ice cream today; the product-type chooser is hidden
   // for it. For other sources, read the selected radio.
   const productType = source === 'staples_po'
-    ? 'ice_cream'
+    ? ((totalUnits > 0 && sorbetUnits > 0) ? 'both' : (sorbetUnits > 0 ? 'sorbet' : 'ice_cream'))
     : (document.querySelector('input[name="order-product-type"]:checked')?.value || 'ice_cream');
   const includesIceCream = productType === 'ice_cream' || productType === 'both';
-  const includesSorbet = productType === 'sorbet' || productType === 'both';
+  // Staples sorbet is carried in orders.sorbet_units (packs, one SKU), not the
+  // per-flavour sorbet_lines/stock level, so includes_sorbet stays false for it.
+  const includesSorbet = source !== 'staples_po' && (productType === 'sorbet' || productType === 'both');
 
   if (!storeId) { errEl.textContent = 'Please select a store.'; errEl.style.display = 'block'; return; }
 
@@ -9510,10 +9521,18 @@ window.saveOrder = async () => {
 
   if (source === 'staples_po') {
     if (!poNumber) { errEl.textContent = 'PO number is required for Staples orders.'; errEl.style.display = 'block'; return; }
-    if (totalUnits === null || isNaN(totalUnits) || totalUnits < 1) {
-      errEl.textContent = 'Total Units is required for Staples PO and must be a positive whole number.';
-      errEl.style.display = 'block';
-      return;
+    const bad = (v) => v !== null && (isNaN(v) || v < 0);
+    if (!isFreezerPickup) {
+      if (bad(totalUnits) || bad(sorbetUnits)) {
+        errEl.textContent = 'Units must be whole numbers (0 or more).';
+        errEl.style.display = 'block';
+        return;
+      }
+      if (!(totalUnits > 0) && !(sorbetUnits > 0)) {
+        errEl.textContent = 'Enter the ice cream units and/or sorbet packs from the Staples PO.';
+        errEl.style.display = 'block';
+        return;
+      }
     }
   }
   // Sorbet consistency: if the order includes sorbet, we need a sorbet stock
@@ -9535,8 +9554,13 @@ window.saveOrder = async () => {
     store_id: storeId,
     source,
     stock_level: isFreezerPickup ? null : (isStaples ? null : (includesIceCream ? stockLevel : null)),
-    total_units: isFreezerPickup ? null : (isStaples ? totalUnits : null),
-    notes,
+    total_units: isFreezerPickup ? null : (isStaples ? (totalUnits > 0 ? totalUnits : null) : null),
+    sorbet_units: isFreezerPickup ? null : (isStaples ? (sorbetUnits > 0 ? sorbetUnits : null) : null),
+    // Drivers see order notes; lead with the sorbet pack count so the exact PO
+    // quantity reaches them even before the driver app shows sorbet_units.
+    notes: (isStaples && !isFreezerPickup && sorbetUnits > 0)
+      ? (`🍧 Sorbet: ${sorbetUnits} packs (any flavour)` + (notes ? ' | ' + notes : ''))
+      : notes,
     submitted_by_name: contactName,
     submitted_by_phone: contactPhone,
     submitted_by_email: contactEmail,
@@ -11586,7 +11610,7 @@ async function loadMapData() {
     fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,no_cash_sales_7d,no_card_sales_7d,days_since_last_sale,days_since_last_visit,depot_id,depot_code'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
-    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,notes,po_number,is_new_install,is_freezer_pickup,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type&order=submitted_at.desc'),
+    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,sorbet_units,notes,po_number,is_new_install,is_freezer_pickup,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type&order=submitted_at.desc'),
   ]);
   _mapStores = stores;
   _mapMachines = venues;
@@ -12139,8 +12163,9 @@ async function initMapboxGL() {
       // Staples PO orders carry an exact total_units count; others carry a
       // rough stock_level. Show whichever applies for this order.
       let detailLabel;
-      if (o.source === 'staples_po' && o.total_units != null) {
-        detailLabel = `📦 <strong>${o.total_units} units</strong>`;
+      if (o.source === 'staples_po' && (o.total_units != null || o.sorbet_units)) {
+        detailLabel = [o.total_units != null ? `📦 <strong>${o.total_units} units</strong>` : '',
+                       o.sorbet_units ? `🍧 <strong>${o.sorbet_units} sorbet packs</strong>` : ''].filter(Boolean).join(' · ');
       } else {
         const stockLabel = stockMap[o.stock_level] || o.stock_level || '—';
         detailLabel = `Stock: <strong>${stockLabel}</strong>`;
@@ -13630,7 +13655,7 @@ async function schedLoadOrdersAndOverdue() {
   // source, stock level, total units, contact, install flag) so the order
   // pin's hover popup can show the depot manager useful context for scheduling.
   const ordersPromise = sbFetch(
-    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,submitted_by_name,submitted_by_phone,is_new_install,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,route_id)` +
+    `orders?select=id,store_id,submitted_at,notes,source,stock_level,total_units,sorbet_units,submitted_by_name,submitted_by_phone,is_new_install,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type,store:stores(id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,route_id)` +
     `&status=eq.pending&trip_stop_id=is.null` +
     `&limit=500`
   );
@@ -13764,6 +13789,7 @@ async function schedLoadOrdersAndOverdue() {
       order_source: o.source || null,
       order_stock_level: o.stock_level || null,
       order_total_units: o.total_units != null ? Number(o.total_units) : null,
+      order_sorbet_units: o.sorbet_units != null ? Number(o.sorbet_units) : null,
       order_submitted_by_name: o.submitted_by_name || null,
       order_submitted_by_phone: o.submitted_by_phone || null,
       order_includes_sorbet: !!o.includes_sorbet,
@@ -14431,8 +14457,9 @@ function schedRenderMarkers() {
       // Staples PO uses Total Units, others use Stock Level. Build the detail
       // fragment so we don't show "Stock: —" for Staples or "Units: —" for phone.
       let qtyOrStockFragment = '';
-      if (store.order_source === 'staples_po' && store.order_total_units != null) {
-        qtyOrStockFragment = `📦 <strong>${store.order_total_units} units</strong>`;
+      if (store.order_source === 'staples_po' && (store.order_total_units != null || store.order_sorbet_units)) {
+        qtyOrStockFragment = [store.order_total_units != null ? `📦 <strong>${store.order_total_units} units</strong>` : '',
+                              store.order_sorbet_units ? `🍧 <strong>${store.order_sorbet_units} sorbet packs</strong>` : ''].filter(Boolean).join(' · ');
       } else if (stockLabel) {
         qtyOrStockFragment = `Stock: <strong>${stockLabel}</strong>`;
       }
