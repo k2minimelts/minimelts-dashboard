@@ -4739,6 +4739,16 @@ const IIF_QB_ITEM_MAP = {
   'BIG Kiwi':        { item: 'Mini Melts BIG:Mini Melts BIG Kiwi (24 pack)',   desc: 'Mini Melts BIG Kiwi (24 pack)' },
 };
 
+// Staples buy sorbet by the single pack (their SKU is a single unit; POs aren't
+// multiples of 24): drivers enter packs, big_unit_price is the per-pack price,
+// and the invoice uses the single-pack items. Mirrors server.js
+// (QB_BIG_SINGLE_MAP / bigSoldAsPacks) and the driver app's utils/iif.js.
+const IIF_QB_BIG_SINGLE_MAP = {
+  'BIG Cherry': { item: 'Mini Melts BIG:MMBIGCherry', desc: 'MM BIG Cherry Pack' },
+  'BIG Mango':  { item: 'Mini Melts BIG:MMBIGMango',  desc: 'MM BIG Mango Pack' },
+  'BIG Kiwi':   { item: 'Mini Melts BIG:MMBIGKiwi',   desc: 'MM BIG Kiwi Pack' },
+};
+
 // Fetch QB customer fields for a set of store ids in one request.
 // Returns a map: store_id -> { id, qb_name, is_edi, province }.
 async function fetchStoresForIIF(storeIds) {
@@ -4771,7 +4781,9 @@ function buildDeliveryIIF(d, store) {
   (Array.isArray(d.items) ? d.items : []).forEach((item) => {
     const qty = parseInt(item.qtyDelivered) || 0;
     if (qty <= 0) return;
-    const mapped = IIF_QB_ITEM_MAP[item.product];
+    const packs = IIF_BIG_PRODUCTS.includes(item.product)
+      && /^\s*staples\b/i.test(qbCustomer || '') && IIF_QB_BIG_SINGLE_MAP[item.product];
+    const mapped = packs ? IIF_QB_BIG_SINGLE_MAP[item.product] : IIF_QB_ITEM_MAP[item.product];
     const qbItem = mapped ? mapped.item : item.product;
     const qbDesc = mapped ? mapped.desc : item.product;
     const price = IIF_BIG_PRODUCTS.includes(item.product) ? bigUnitPrice : unitPrice;
