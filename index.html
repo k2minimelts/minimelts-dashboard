@@ -2715,13 +2715,16 @@
 
       <!-- Sorbet gate (soft): shown when Sorbet/Both is picked for a store that
            isn't sorbet-enrolled. Office discretion — enroll & continue. -->
+      <!-- Sorbet freezer question (Oct 2026): shown on a store's FIRST sorbet
+           order (phone or Staples PO). Same three answers as the customer
+           order form; the DB trigger flags "needs a sorbet freezer" as a new
+           freezer install and remembers the answer on the store. -->
       <div id="order-sorbet-gate" style="display:none;margin-bottom:14px;background:rgba(232,123,181,0.08);border:1px solid rgba(232,123,181,0.4);border-radius:8px;padding:12px 14px">
-        <div style="font-size:13px;color:var(--text);font-weight:600;margin-bottom:4px">⚠️ <span id="order-sorbet-gate-store"></span> isn't set up for sorbet</div>
-        <div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:10px">Sorbet needs the separate <strong>-18°C</strong> sorbet freezer — it can't go in the <strong>-35°C</strong> Mini Melts freezer. Confirm they have the sorbet freezer before adding it.</div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px">
-          <button type="button" onclick="window.enrollSelectedStoreSorbet(false)" style="background:var(--mm-pink);color:#fff;border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer">✓ Mini Melts sorbet freezer — enroll &amp; continue</button>
-          <button type="button" onclick="window.enrollSelectedStoreSorbet(true)" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer">🧊 Their own freezer — enroll (no freezer, no contract)</button>
-        </div>
+        <div style="font-size:13px;color:var(--text);font-weight:700;margin-bottom:4px">🍧 First sorbet order for <span id="order-sorbet-gate-store"></span>: where will they keep it?</div>
+        <div style="font-size:12px;color:#f85149;font-weight:600;line-height:1.5;margin-bottom:10px">⚠️ Sorbet cannot be sold in the Mini Melts ice cream freezer — the temperature is too cold.</div>
+        <label style="display:flex;align-items:center;gap:8px;margin:0 0 6px;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);cursor:pointer"><input type="radio" name="order-sorbet-freezer" value="ours" style="accent-color:var(--mm-pink)"> They already have a Mini Melts sorbet freezer</label>
+        <label style="display:flex;align-items:center;gap:8px;margin:0 0 6px;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);cursor:pointer"><input type="radio" name="order-sorbet-freezer" value="needs_ours" style="accent-color:var(--mm-pink)"> They need a sorbet freezer <span style="color:var(--muted);font-size:11px">(flags this order as a new freezer install)</span></label>
+        <label style="display:flex;align-items:center;gap:8px;margin:0;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);cursor:pointer"><input type="radio" name="order-sorbet-freezer" value="own" style="accent-color:var(--mm-pink)"> They'll sell sorbet in their own −18°C freezer</label>
       </div>
 
       <!-- Ice Cream Stock Level (shown when product type is ice_cream or both) -->
@@ -2756,7 +2759,7 @@
         <label>🍦 Ice Cream Units Ordered</label>
         <input type="number" id="order-total-units" min="0" step="1" placeholder="e.g. 24" inputmode="numeric" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
         <label style="margin-top:12px;display:block">🍧 Sorbet Packs Ordered</label>
-        <input type="number" id="order-sorbet-units" min="0" step="1" placeholder="e.g. 100" inputmode="numeric" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
+        <input type="number" id="order-sorbet-units" min="0" step="1" placeholder="e.g. 100" inputmode="numeric" oninput="window.updateSorbetGate&&window.updateSorbetGate()" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;color:var(--text);font-size:14px;outline:none"/>
         <div style="margin-top:4px;font-size:11px;color:var(--muted)">Enter the units on the Staples PO for each: ice cream, and sorbet (one SKU, any flavour, single packs). At least one is required.</div>
       </div>
 
@@ -8875,6 +8878,8 @@ window.markOrderPaid = async (id) => {
 // ── New Order Modal ──
 window.showNewOrderModal = (source) => {
   window._fuPendingResolve = null;   // set again by fuCreatePickup when it opens this
+  window._orderSorbetGate = 'ok';
+  document.querySelectorAll('input[name="order-sorbet-freezer"]').forEach(r => { r.checked = false; });
   document.getElementById('order-source').value = source;
   document.getElementById('order-modal-title').textContent = source === 'staples_po' ? 'New Staples PO' : 'New Phone Order';
   const isStaples = source === 'staples_po';
@@ -8932,25 +8937,41 @@ window.onOrderProductTypeChange = () => {
   if (window.updateSorbetGate) window.updateSorbetGate();
 };
 
-// Sorbet gate (admin phone order): when Sorbet/Both is chosen for a store that
-// isn't sorbet-enrolled, surface a freezer explainer + one-click enroll. Soft
-// gate — office keeps discretion; enrolling flips stores.sorbet_enrolled so the
-// store is never gated again (here or on the customer order form).
+// Sorbet freezer question (Oct 2026). Sorbet is open to every store; on a
+// store's first sorbet order (get_store_sorbet_gate = 'ask') the office records
+// where it will be kept. Applies to phone orders (Sorbet/Both) and Staples POs
+// (sorbet packs > 0). Freezer pickups carry no product, so never ask.
+window._orderSorbetGate = 'ok';
 window.updateSorbetGate = () => {
   const gate = document.getElementById('order-sorbet-gate');
   if (!gate) return;
+  const isStaples = document.getElementById('order-source').value === 'staples_po';
   const checked = document.querySelector('input[name="order-product-type"]:checked');
   const value = checked ? checked.value : 'ice_cream';
-  const wantsSorbet = value === 'sorbet' || value === 'both';
+  const wantsSorbet = isStaples
+    ? (parseInt(document.getElementById('order-sorbet-units')?.value || '0', 10) > 0)
+    : (value === 'sorbet' || value === 'both');
   const store = window._selectedOrderStore;
   const pickupEl = document.getElementById('order-is-pickup');
   const isPickup = pickupEl && pickupEl.checked;
-  if (wantsSorbet && store && !store.sorbet_enrolled && !isPickup) {
-    document.getElementById('order-sorbet-gate-store').textContent = store.qb_name || store.public_code || 'This store';
+  if (wantsSorbet && store && !isPickup && window._orderSorbetGate === 'ask') {
+    document.getElementById('order-sorbet-gate-store').textContent = store.qb_name || store.public_code || 'this store';
     gate.style.display = 'block';
   } else {
     gate.style.display = 'none';
   }
+};
+window.loadOrderSorbetGate = async (store) => {
+  window._orderSorbetGate = 'ok';
+  document.querySelectorAll('input[name="order-sorbet-freezer"]').forEach(r => { r.checked = false; });
+  if (store && store.public_code) {
+    try {
+      const r = await sbFetch('rpc/get_store_sorbet_gate', { method: 'POST', body: JSON.stringify({ p_code: store.public_code }) });
+      // Ignore a stale answer if the office switched stores meanwhile.
+      if (window._selectedOrderStore === store) window._orderSorbetGate = (r === 'ask') ? 'ask' : 'ok';
+    } catch (e) { window._orderSorbetGate = 'ok'; }
+  }
+  window.updateSorbetGate();
 };
 
 // Office-discretion enroll: mark the selected store sorbet-enrolled without an
@@ -9093,7 +9114,7 @@ window.selectOrderStore = (id, storeJson) => {
   // Prefill contact from the store record if empty
   if (!document.getElementById('order-contact-phone').value && s.phone) document.getElementById('order-contact-phone').value = s.phone;
   if (!document.getElementById('order-contact-email').value && s.email) document.getElementById('order-contact-email').value = s.email;
-  if (window.updateSorbetGate) window.updateSorbetGate();
+  window.loadOrderSorbetGate(s);
 };
 
 // ── Recurring Weekly Customers ───────────────────────────────────────────
@@ -9501,13 +9522,17 @@ window.saveOrder = async () => {
     }
   } catch (e) { /* non-fatal: if the check fails, fall through and let the insert proceed */ }
 
-  // Soft sorbet gate (office discretion): if the order includes sorbet for a
-  // store that isn't sorbet-enrolled (and wasn't just enrolled via the inline
-  // banner), make the office consciously confirm before saving.
-  if (includesSorbet && !isFreezerPickup && window._selectedOrderStore && !window._selectedOrderStore.sorbet_enrolled) {
-    if (!confirm(`${window._selectedOrderStore.qb_name || 'This store'} isn't set up for sorbet — it needs the separate -18°C freezer (not the -35°C Mini Melts freezer).\n\nSave the sorbet order anyway without enrolling them?`)) {
-      return;
-    }
+  // Sorbet freezer question (Oct 2026): required on a store's first sorbet
+  // order (the panel is only shown then). The DB trigger applies the answer.
+  const sorbetGateEl = document.getElementById('order-sorbet-gate');
+  const askingFreezer = !isFreezerPickup && sorbetGateEl && sorbetGateEl.style.display !== 'none';
+  const sorbetFreezerAnswer = askingFreezer
+    ? (document.querySelector('input[name="order-sorbet-freezer"]:checked')?.value || null)
+    : null;
+  if (askingFreezer && !sorbetFreezerAnswer) {
+    errEl.textContent = 'First sorbet order for this store: choose where they will keep the sorbet.';
+    errEl.style.display = 'block';
+    return;
   }
 
   // BYO sorbet: a store using their own -18°C freezer never needs a Mini Melts
@@ -9556,6 +9581,7 @@ window.saveOrder = async () => {
     stock_level: isFreezerPickup ? null : (isStaples ? null : (includesIceCream ? stockLevel : null)),
     total_units: isFreezerPickup ? null : (isStaples ? (totalUnits > 0 ? totalUnits : null) : null),
     sorbet_units: isFreezerPickup ? null : (isStaples ? (sorbetUnits > 0 ? sorbetUnits : null) : null),
+    sorbet_freezer_answer: sorbetFreezerAnswer,
     // Drivers see order notes; lead with the sorbet pack count so the exact PO
     // quantity reaches them even before the driver app shows sorbet_units.
     notes: (isStaples && !isFreezerPickup && sorbetUnits > 0)
