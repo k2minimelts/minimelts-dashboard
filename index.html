@@ -5981,7 +5981,10 @@ window.markStoreSynced = async (id) => {
   loadStores();
 };
 window.syncShipTo = () => { document.getElementById('store-ship-addr1').value = document.getElementById('store-addr1').value; document.getElementById('store-ship-city').value = document.getElementById('store-city').value; document.getElementById('store-ship-postal').value = document.getElementById('store-postal').value; };
-window.autoSetTaxCode = () => { const m = { 'AB':'G','BC':'G','MB':'G','SK':'G','ON':'H13','QC':'Q-S','NS':'H14','NB':'H15','NL':'H15','PE':'H15','WA':'E' }; const tc = document.getElementById('store-taxcode'); if (tc) tc.value = m[document.getElementById('store-province').value]||'G'; };
+// Quebec is GST-only ('G'): frozen desserts are zero-rated for QST, so Mini
+// Melts never charges QST. The old QC -> 'Q-S' default put 6 new stores on
+// GST+QST (Oct 2026: receipt 101046 billed $103.47 QST the customer never saw).
+window.autoSetTaxCode = () => { const m = { 'AB':'G','BC':'G','MB':'G','SK':'G','ON':'H13','QC':'G','NS':'H14','NB':'H15','NL':'H15','PE':'H15','WA':'E' }; const tc = document.getElementById('store-taxcode'); if (tc) tc.value = m[document.getElementById('store-province').value]||'G'; };
 window.closeStoreModal = () => document.getElementById('store-modal').classList.remove('open');
 document.getElementById('store-modal').addEventListener('click', e => { if (e.target===e.currentTarget) closeStoreModal(); });
 
