@@ -5743,6 +5743,7 @@ window.searchStores = async () => {
 window.showAddStore = () => {
   window._pendingAppConversion = null;
   ['store-edit-id','store-name','store-qbname','store-firstname','store-lastname','store-phone','store-email','store-addr1','store-city','store-postal','store-ship-addr1','store-ship-city','store-ship-postal','store-save-msg'].forEach(id => document.getElementById(id).value='');
+  document.getElementById('store-email').dataset.orig = '';
   const _so = document.getElementById('store-sorbet-only'); if (_so) _so.checked = false;
   document.getElementById('store-modal-title').textContent = 'Add New Store';
   document.getElementById('store-province').value = 'AB';
@@ -5870,6 +5871,7 @@ window.editStore = (id) => {
   document.getElementById('store-lastname').value = s.last_name || '';
   document.getElementById('store-phone').value = s.phone || '';
   document.getElementById('store-email').value = s.email || '';
+  document.getElementById('store-email').dataset.orig = s.email || '';
   document.getElementById('store-addr1').value = s.addr1 || '';
   document.getElementById('store-city').value = s.city || '';
   document.getElementById('store-postal').value = s.postal || '';
@@ -5879,6 +5881,64 @@ window.editStore = (id) => {
   document.getElementById('store-sorbet-only').checked = !!s.sorbet_only;
   document.getElementById('store-save-msg').textContent = '';
   document.getElementById('store-modal').classList.add('open');
+};
+
+// ── Email typo guard (Oct 2026) ─────────────────────────────────────────
+// Look-alike domains (gmai.com, gmail.con, hotmial.com …) are registered by
+// people who collect mistyped mail, so a typo can hand a PAD signing link or a
+// refund e-transfer to a stranger. The DB triggers (check_email_typos) block
+// these on save; these helpers just show the reason before/after saving.
+// checkEmailTypos fails OPEN (null) on a network error — the trigger still holds.
+window.checkEmailTypos = async function (value) {
+  const v = String(value || '').trim();
+  if (!v) return null;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/check_email_typos`, {
+      method: 'POST', headers: headers(), body: JSON.stringify({ p_emails: v })
+    });
+    if (!r.ok) return null;
+    const msg = await r.json();
+    return msg || null;
+  } catch (e) { return null; }
+};
+// Readable message from a failed PostgREST response (falls back to raw text).
+window.dbErrorText = async function (resp) {
+  let t = '';
+  try { t = await resp.text(); const j = JSON.parse(t); return j.message || j.error || t; }
+  catch (e) { return t || ('HTTP ' + resp.status); }
+};
+// Red warning box for a record whose stored email looks mistyped.
+window.emailTypoBanner = function (msg, editOnclick, extra) {
+  if (!msg) return '';
+  const e = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return '<div style="background:rgba(248,81,73,0.12);border:1px solid rgba(248,81,73,0.5);border-radius:8px;padding:10px 12px;margin:0 0 14px">' +
+    '<div style="font-weight:700;color:#f85149;margin-bottom:4px">⚠️ This email address looks mistyped</div>' +
+    '<div style="color:#e6edf3;font-size:13px;line-height:1.45">' + e(msg) + (extra ? ' ' + e(extra) : '') + '</div>' +
+    (editOnclick ? '<button class="ld-btn ghost" style="margin-top:8px" onclick="' + editOnclick + '">✏️ Correct email</button>' : '') +
+    '</div>';
+};
+
+// Correct a lead's / application's email. kind: 'lead' (Leads tab) or 'app'
+// (Applications tab) — only decides which panel to refresh afterwards.
+window.leadEditEmail = async function (id, kind) {
+  let cur = '';
+  try { const a = await sbFetch(`leads?select=email&id=eq.${id}&limit=1`); cur = (Array.isArray(a) && a[0] && a[0].email) || ''; } catch (e) {}
+  const next = prompt('Correct email address:', cur);
+  if (next == null) return;
+  const v = next.trim().toLowerCase();
+  if (!v || v === cur) return;
+  const typo = await window.checkEmailTypos(v);
+  if (typo) { alert(typo); return; }
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/leads?id=eq.${id}`, {
+    method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' }, body: JSON.stringify({ email: v })
+  });
+  if (!r.ok) { alert('Could not update email: ' + await window.dbErrorText(r)); return; }
+  await fetch(`${SUPABASE_URL}/rest/v1/lead_activity`, {
+    method: 'POST', headers: { ...headers(), 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ lead_id: id, actor: (window._session && window._session.user_id) || null, activity_type: 'note', note: 'Email corrected: ' + cur + ' → ' + v })
+  });
+  if (kind === 'app') { if (window.loadApplications) await window.loadApplications(); if (window.selectApplication) await window.selectApplication(id); }
+  else { if (window.loadLeads) await window.loadLeads(); if (window.selectLead) await window.selectLead(id); }
 };
 
 window.saveStore = async () => {
@@ -5896,6 +5956,14 @@ window.saveStore = async () => {
   if (isNew) payload.qb_sync_status = 'pending';
   if (!payload.name || !payload.qb_name) { document.getElementById('store-save-msg').textContent = '⚠️ Store name and QB name are required.'; return; }
   const msg = document.getElementById('store-save-msg');
+  // Only check the email when it was added or changed, so an old bad address
+  // on file never blocks an unrelated edit (the DB trigger works the same way).
+  const _emailEl = document.getElementById('store-email');
+  if (payload.email !== (_emailEl.dataset.orig || '')) {
+    const typoMsg = await window.checkEmailTypos(payload.email);
+    if (typoMsg) { msg.style.color = 'var(--danger)'; msg.textContent = '⚠️ ' + typoMsg; return; }
+  }
+  msg.style.color = '';
   msg.textContent = 'Saving...';
   // When "Set up customer" armed a conversion, we need the new row's id back.
   const pendingConv = (isNew && window._pendingAppConversion) ? window._pendingAppConversion : null;
@@ -5939,7 +6007,7 @@ window.saveStore = async () => {
       }
     }
   }
-  else { msg.style.color='var(--danger)'; msg.textContent = '❌ Error saving store. Try again.'; }
+  else { msg.style.color='var(--danger)'; msg.textContent = '❌ Error saving store: ' + await window.dbErrorText(r); }
 };
 
 // Activating a store can be rejected by the DB (e.g. active_stores_require_address:
@@ -6356,7 +6424,7 @@ window.switchTab = (tab) => {
     detail.innerHTML = '<div class="leads-detail-empty">Loading…</div>';
     let leadArr, activity;
     try {
-      leadArr = await sbFetch(`leads?select=*&id=eq.${id}&limit=1`);
+      leadArr = await sbFetch(`leads?select=*,email_typo&id=eq.${id}&limit=1`);
       activity = await sbFetch(`lead_activity?select=*&lead_id=eq.${id}&order=created_at.desc`);
     } catch (e) { detail.innerHTML = '<div class="leads-detail-empty">Could not load lead.</div>'; return; }
     const lead = Array.isArray(leadArr) ? leadArr[0] : null;
@@ -6389,7 +6457,10 @@ window.switchTab = (tab) => {
     detail.innerHTML =
       '<h2 class="ld-name">' + displayName + '</h2>' +
       '<p class="ld-contact"><a href="mailto:' + esc(lead.email) + '">' + esc(lead.email) + '</a>' +
-        (lead.phone ? " · " + esc(lead.phone) : "") + " · received " + fmtDateTime(lead.created_at) + '</p>' +
+        (lead.phone ? " · " + esc(lead.phone) : "") + " · received " + fmtDateTime(lead.created_at) +
+        ' · <a href="#" onclick="window.leadEditEmail(\'' + lead.id + '\',\'lead\');return false" style="font-size:12px">edit email</a></p>' +
+      window.emailTypoBanner(lead.email_typo, "window.leadEditEmail('" + lead.id + "','lead')",
+        "Replies and signing links go to this address — confirm it with them before sending anything.") +
       '<div class="ld-section-label">Their message</div>' +
       '<div class="ld-message">' + esc(lead.message || "(no message)") + '</div>' +
       '<div class="ld-section-label">Status</div>' +
@@ -6753,7 +6824,7 @@ window.switchTab = (tab) => {
     await ensureDepots();
     let arr, activity, agreements=[];
     try {
-      arr = await sbFetch("leads?select=*&id=eq."+id+"&limit=1");
+      arr = await sbFetch("leads?select=*,email_typo&id=eq."+id+"&limit=1");
       activity = await sbFetch("lead_activity?select=*&lead_id=eq."+id+"&order=created_at.desc");
     } catch(e){ detail.innerHTML='<div class="leads-detail-empty">Could not load application.</div>'; return; }
     // Agreements are admin-read; fetch separately so a permission/empty result
@@ -6853,9 +6924,12 @@ window.switchTab = (tab) => {
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h2 class="ld-name" style="margin:0">'+nm+'</h2>'+pipelinePill(a.status)+'</div>'+
       '<p class="ld-contact">'+esc(a.legal_name||"")+' · received '+fmtDateTime(a.created_at)+'</p>'+
       flagsHtml +
+      window.emailTypoBanner(a.email_typo, "window.leadEditEmail('"+a.id+"','app')",
+        "The signing link goes to this address — correct it before sending for signing.") +
       '<div class="ld-section-label">Contact</div>'+
       row("Name", esc(a.name||((a.first_name||"")+" "+(a.last_name||"")).trim()) + (a.applicant_title? " ("+esc(a.applicant_title)+")":"")) +
-      row("Email", '<a href="mailto:'+esc(a.email)+'">'+esc(a.email)+'</a>') +
+      row("Email", '<a href="mailto:'+esc(a.email)+'">'+esc(a.email)+'</a>'+
+        ' <a href="#" onclick="window.leadEditEmail(\''+a.id+'\',\'app\');return false" style="font-size:12px;margin-left:6px">edit</a>') +
       row("Phone", esc(a.phone)) +
       '<div class="ld-section-label">Business</div>'+
       row("Legal name", esc(a.legal_name)) +
@@ -7245,7 +7319,7 @@ window.switchTab = (tab) => {
     const filter = (document.getElementById("refunds-status-filter")||{}).value || "open";
     listEl.innerHTML = '<div class="leads-empty">Loading…</div>';
 
-    let q = "refund_requests?select=id,name,email,refund_amount,status,location_text,created_at,archived_at&order=created_at.desc";
+    let q = "refund_requests?select=id,name,email,refund_amount,status,location_text,created_at,archived_at,email_typo&order=created_at.desc";
     // Active (non-archived) unless explicitly viewing archived.
     if (filter === "archived") q += "&archived_at=not.is.null";
     else {
@@ -7278,7 +7352,9 @@ window.switchTab = (tab) => {
         '<div class="lead-row-top"><span class="lead-row-name">'+esc(r.name)+'</span>'+
         '<span class="lead-row-when">'+timeAgo(r.created_at)+'</span></div>'+
         '<div class="lead-row-email">'+money(r.refund_amount)+' · '+esc(r.location_text||"—")+'</div>'+
-        '<span class="lead-pill '+esc(r.status)+'">'+esc(r.status.replace("_"," "))+'</span></div>';
+        '<span class="lead-pill '+esc(r.status)+'">'+esc(r.status.replace("_"," "))+'</span>'+
+        (r.email_typo ? ' <span title="'+esc(r.email_typo)+'" style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;background:rgba(248,81,73,0.15);color:#f85149">⚠️ check email</span>' : '')+
+        '</div>';
     }).join("");
   }
 
@@ -7288,7 +7364,7 @@ window.switchTab = (tab) => {
     detail.innerHTML = '<div class="leads-detail-empty">Loading…</div>';
     let arr, activity, venue=null;
     try {
-      arr = await sbFetch(`refund_requests?select=*&id=eq.${id}&limit=1`);
+      arr = await sbFetch(`refund_requests?select=*,email_typo&id=eq.${id}&limit=1`);
       activity = await sbFetch(`refund_activity?select=*&refund_id=eq.${id}&order=created_at.desc`);
     } catch(e){ detail.innerHTML='<div class="leads-detail-empty">Could not load.</div>'; return; }
     const r = Array.isArray(arr)?arr[0]:null;
@@ -7329,7 +7405,10 @@ window.switchTab = (tab) => {
     detail.innerHTML =
       '<h2 class="ld-name">'+esc(r.name)+'</h2>'+
       '<p class="ld-contact"><a href="mailto:'+esc(r.email)+'">'+esc(r.email)+'</a>'+
-        (r.phone?" · "+esc(r.phone):"")+" · received "+fmtDateTime(r.created_at)+'</p>'+
+        (r.phone?" · "+esc(r.phone):"")+" · received "+fmtDateTime(r.created_at)+
+        ' · <a href="#" onclick="window.rfEditEmail(\''+r.id+'\');return false" style="font-size:12px">edit email</a></p>'+
+      window.emailTypoBanner(r.email_typo, "window.rfEditEmail('"+r.id+"')",
+        "Don’t send an e-transfer to this address — confirm the correct email with the customer first.")+
       '<div class="ld-amount">'+money(r.refund_amount)+'</div>'+
       '<dl class="ld-grid">'+
         '<dt>Paid by</dt><dd>'+pm+'</dd>'+
@@ -7373,6 +7452,23 @@ window.switchTab = (tab) => {
       '<div class="ld-section-label">Activity</div>'+
       '<div class="ld-timeline">'+(activity.length?activity.map(rfRenderEvent).join(""):'<div class="leads-empty">No activity yet.</div>')+'</div>';
   }
+
+  // Correct a refund's email (e.g. after confirming with the customer). The DB
+  // trigger re-checks it, so a second typo is rejected with the reason.
+  window.rfEditEmail = async function(id){
+    const cur = (RF_CACHE.find(function(x){ return x.id===id; })||{}).email || "";
+    const next = prompt("Correct email for this refund request:", cur);
+    if (next == null) return;
+    const v = next.trim().toLowerCase();
+    if (!v || v === cur) return;
+    const typo = await window.checkEmailTypos(v);
+    if (typo) { alert(typo); return; }
+    const r = await rfWrite(`refund_requests?id=eq.${id}`, 'PATCH', { email: v });
+    if (!r.ok) { alert("Could not update email: " + await window.dbErrorText(r)); return; }
+    await rfWrite('refund_activity', 'POST', { refund_id: id, actor: rfUserId(), activity_type: 'note', note: 'Email corrected: ' + cur + ' → ' + v });
+    await window.loadRefundRequests();
+    await window.rfSelect(id);
+  };
 
   // Show/hide refund-method fields live as the dropdown changes.
   window.rfStatusChanged = function(){
@@ -9511,6 +9607,10 @@ window.saveOrder = async () => {
 
   if (!storeId) { errEl.textContent = 'Please select a store.'; errEl.style.display = 'block'; return; }
 
+  // Email typo guard: the order confirmation goes to this address.
+  const contactTypo = await window.checkEmailTypos(contactEmail);
+  if (contactTypo) { errEl.textContent = contactTypo; errEl.style.display = 'block'; return; }
+
   // Warn (but allow) if this store already has an open order. Admins are
   // exempt from the hard block the customer form enforces, but should be aware
   // they're creating a second concurrent order.
@@ -9611,8 +9711,7 @@ window.saveOrder = async () => {
   });
 
   if (!resp.ok) {
-    const text = await resp.text();
-    errEl.textContent = `Save failed: ${text}`;
+    errEl.textContent = 'Save failed: ' + await window.dbErrorText(resp);
     errEl.style.display = 'block';
     return;
   }
