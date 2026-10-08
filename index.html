@@ -5017,8 +5017,76 @@ window.showDetail = async (id) => {
     ${sigHtml}
     ${(d.qb_status && d.qb_status !== 'pending') ? `<div class="section-title">QuickBooks IIF (backup)</div><button class="btn-modal" style="background:var(--bg3);width:100%;margin-bottom:8px" onclick="window.previewIIF('${d.id}')">Generate IIF preview</button><pre id="iif-preview-${d.id}" class="iif-preview" style="display:none;white-space:pre-wrap;word-break:break-word"></pre>` : ''}
     ${editSection}
+    ${window.receiptSendToHtml(d)}
     ${actions}`;
   document.getElementById('detail-modal').classList.add('open');
+  window.receiptLoadOnFile(d);
+};
+
+// ── Send receipt to a different address (Oct 2026) ──────────────────────
+// Optional "Email receipt to" box in the delivery modal. Blank = the store's
+// email on file (unchanged behaviour). Filled = Resend Receipt and Send
+// Corrected Receipt go there instead (or as well, with the tick box).
+// resend-delivery-email v12 typo-checks the address server-side and only
+// lets admin / depot-manager logins redirect a receipt; billing@ stays CC'd.
+window.receiptSendToHtml = function (d) {
+  const id = d.id;
+  return `<div class="section-title">Email receipt to</div>
+    <div id="rcpt-onfile-${id}" style="font-size:12px;color:var(--muted);margin-bottom:6px">On file: ${escapeHtml(d.store_email || '…')}</div>
+    <input id="rcpt-to-${id}" type="email" autocomplete="off" placeholder="Leave blank to send to the email on file" oninput="window.receiptToChanged('${id}')" style="width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-size:14px"/>
+    <label id="rcpt-also-wrap-${id}" style="display:none;align-items:center;gap:6px;margin:8px 0 0;font-size:13px;color:var(--text);cursor:pointer"><input id="rcpt-also-${id}" type="checkbox"/> Also send to the email on file</label>
+    <div id="rcpt-typo-${id}" style="margin-top:10px"></div>`;
+};
+// Show the store's CURRENT email (what a blank resend actually uses); the
+// delivery's snapshot is only the fallback, same as the edge function.
+window.receiptLoadOnFile = async function (d) {
+  const el = document.getElementById(`rcpt-onfile-${d.id}`);
+  if (!el) return;
+  let cur = '';
+  if (d.store_id) {
+    try { const a = await sbFetch(`stores?select=email&id=eq.${d.store_id}&limit=1`); cur = (Array.isArray(a) && a[0] && a[0].email) || ''; } catch (e) {}
+  }
+  const shown = cur || d.store_email || '';
+  el.textContent = shown ? `On file: ${shown}` : 'No email on file — enter an address below to send the receipt.';
+};
+window.receiptToChanged = function (id) {
+  const v = (document.getElementById(`rcpt-to-${id}`)?.value || '').trim();
+  const wrap = document.getElementById(`rcpt-also-wrap-${id}`);
+  if (wrap) wrap.style.display = v ? 'flex' : 'none';
+  const box = document.getElementById(`rcpt-typo-${id}`);
+  if (box) box.innerHTML = '';
+};
+// Extra request fields for the edge function, or {} when the box is blank.
+window.receiptRecipientOpts = function (id) {
+  const v = (document.getElementById(`rcpt-to-${id}`)?.value || '').trim();
+  if (!v) return {};
+  const also = !!document.getElementById(`rcpt-also-${id}`)?.checked;
+  return { to: v, include_store: also };
+};
+// Plain-words destination for the confirm prompt.
+window.receiptDestText = function (id) {
+  const o = window.receiptRecipientOpts(id);
+  if (!o.to) return 'the customer (email on file)';
+  return o.include_store ? `${o.to} AND the email on file` : `${o.to} (instead of the email on file)`;
+};
+// Server said the typed address looks wrong: red box with a one-click fix.
+window.receiptShowTypo = function (id, data) {
+  const box = document.getElementById(`rcpt-typo-${id}`);
+  if (!box) { alert(data?.error || 'Please check the email address.'); return; }
+  box.innerHTML = window.emailTypoBanner(data?.error || 'Please check the email address.');
+  if (data?.suggestion && data?.bad) {
+    const btn = document.createElement('button');
+    btn.className = 'btn-modal btn-modal-outline';
+    btn.style.cssText = 'margin:-6px 0 4px;border-color:var(--mm-cyan);color:var(--mm-cyan);padding:8px 12px;font-size:13px';
+    btn.textContent = `Use ${data.suggestion}`;
+    btn.onclick = () => {
+      const inp = document.getElementById(`rcpt-to-${id}`);
+      if (inp) inp.value = inp.value.split(data.bad).join(data.suggestion);
+      box.innerHTML = '';
+    };
+    box.appendChild(btn);
+  }
+  document.getElementById(`rcpt-to-${id}`)?.focus();
 };
 
 // Reissue a receipt for any delivery. Prefers the PDF the app generated at
@@ -5104,7 +5172,8 @@ document.getElementById('detail-modal').addEventListener('click', e => { if (e.t
 window.resendDeliveryReceipt = async (id) => {
   const d = allDeliveries.find(x => x.id === id);
   if (!d) { alert('Could not find that delivery. Refresh and try again.'); return; }
-  if (!confirm(`Resend the delivery receipt for ${d.receipt_number} — ${d.store_name} to the customer?\n\nThis emails the stored receipt PDF with the original delivery details.`)) return;
+  const rcptOpts = window.receiptRecipientOpts(id);
+  if (!confirm(`Resend the delivery receipt for ${d.receipt_number} — ${d.store_name} to ${window.receiptDestText(id)}?\n\nThis emails the stored receipt PDF with the original delivery details.`)) return;
 
   const session = window._session;
   if (!session?.access_token) { alert('Your session has expired. Please refresh and sign in again.'); return; }
@@ -5117,12 +5186,16 @@ window.resendDeliveryReceipt = async (id) => {
         'apikey': SUPABASE_ANON_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ delivery_id: id }),
+      body: JSON.stringify({ delivery_id: id, ...rcptOpts }),
     });
     const data = await res.json();
     if (!data?.ok) {
-      if (data?.code === 'no_email') {
-        alert(`Can't resend: no email on file for ${d.store_name}.\n\nAdd their email in the Stores tab first.`);
+      if (data?.code === 'email_typo' || data?.code === 'invalid_email') {
+        window.receiptShowTypo(id, data);
+      } else if (data?.code === 'forbidden') {
+        alert(data.error);
+      } else if (data?.code === 'no_email') {
+        alert(`Can't resend: no email on file for ${d.store_name}.\n\nAdd their email in the Stores tab, or type an address in "Email receipt to".`);
       } else if (data?.code === 'not_found') {
         alert('That delivery could not be found on the server. Refresh and try again.');
       } else {
@@ -5144,8 +5217,9 @@ window.resendDeliveryReceipt = async (id) => {
 window.sendCorrectedReceipt = async (id) => {
   const d = allDeliveries.find(x => x.id === id);
   if (!d) { alert('Could not find that delivery. Refresh and try again.'); return; }
+  const rcptOpts = window.receiptRecipientOpts(id);
   const note = prompt(
-    `Send a CORRECTED receipt for ${d.receipt_number} — ${d.store_name}?\n\n` +
+    `Send a CORRECTED receipt for ${d.receipt_number} — ${d.store_name} to ${window.receiptDestText(id)}?\n\n` +
     `The email shows the current totals (Total Due $${parseFloat(d.total||0).toFixed(2)}) and tells the customer the receipt was adjusted. No PDF is attached.\n\n` +
     `Make sure you've saved the pricing correction first.\n\n` +
     `Optional: briefly describe the adjustment (shown in the email), or leave blank:`,
@@ -5164,12 +5238,16 @@ window.sendCorrectedReceipt = async (id) => {
         'apikey': SUPABASE_ANON_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ delivery_id: id, adjusted: true, adjustment_note: note.trim() || null }),
+      body: JSON.stringify({ delivery_id: id, adjusted: true, adjustment_note: note.trim() || null, ...rcptOpts }),
     });
     const data = await res.json();
     if (!data?.ok) {
-      if (data?.code === 'no_email') {
-        alert(`Can't send: no email on file for ${d.store_name}.\n\nAdd their email in the Stores tab first.`);
+      if (data?.code === 'email_typo' || data?.code === 'invalid_email') {
+        window.receiptShowTypo(id, data);
+      } else if (data?.code === 'forbidden') {
+        alert(data.error);
+      } else if (data?.code === 'no_email') {
+        alert(`Can't send: no email on file for ${d.store_name}.\n\nAdd their email in the Stores tab, or type an address in "Email receipt to".`);
       } else if (data?.code === 'not_found') {
         alert('That delivery could not be found on the server. Refresh and try again.');
       } else {
