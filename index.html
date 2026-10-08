@@ -11441,6 +11441,121 @@ window.padRemindStore = async function (invitationId, code) {
   window.loadPadConversion();
 };
 
+// ── Send link on request (Oct 2026) ───────────────────────────────────────
+// For a customer who calls in and can't find their email. Unlike Remind there
+// is no 5-day spacing and no campaign kill switch: one store, now, to the email
+// on file or an address typed while on the phone. send-pad-link reuses the
+// store's existing signing token, typo-checks a typed address, refuses signed /
+// excluded / inactive stores, and logs who sent it. Any office admin may use it.
+function _padSendLinkBtn(r) {
+  if (!window._role || window._role.role !== 'admin') return '';
+  if (r.status !== 'sent' && r.status !== 'pending') return '';
+  if (r.has_mandate || r.store_active === false) return '';
+  return `<button class="btn-sm" style="border-color:var(--mm-cyan);color:var(--mm-cyan);margin-right:6px" title="Email this store its signing link now (customer request)" onclick="window.padSendLinkOpen('${r.store_id}')">🔗 Send link</button>`;
+}
+
+function _padCallSendLink(payload) {
+  const token = window._session?.access_token;
+  return fetch(`${SUPABASE_URL}/functions/v1/send-pad-link`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'apikey': SUPABASE_ANON_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  }).then(r => r.json()).catch(e => ({ ok: false, error: e.message }));
+}
+
+window.padSendLinkOpen = function (storeId) {
+  const r = (PAD_CACHE || []).find(x => x.store_id === storeId && (x.status === 'sent' || x.status === 'pending'));
+  const modal = document.getElementById('pad-send-modal');
+  const body = document.getElementById('pad-send-body');
+  const title = document.getElementById('pad-send-title');
+  if (!r || !modal || !body) { alert('Could not find that store. Refresh the tab and try again.'); return; }
+  modal.style.display = 'flex';
+  title.textContent = 'Send PAD sign-up link';
+  const onFile = String(r.email || '').trim();
+  const bounced = !!r.bounced_at;
+  const onFileLine = !onFile
+    ? `<span style="color:#d29922">No email on file — type the customer's address below.</span>`
+    : bounced
+      ? `<span style="color:#f85149">${escapeHtmlDash(onFile)} — bounced${r.bounce_reason ? ` (${escapeHtmlDash(String(r.bounce_reason).replace(/[.\s]+$/, ''))})` : ''}. Type a working address below.</span>`
+      : escapeHtmlDash(onFile);
+  body.innerHTML = `
+    <div style="font-size:14px;margin-bottom:4px"><strong>${escapeHtmlDash(r.store_name || r.qb_name)}</strong>
+      <span style="color:var(--muted)">${escapeHtmlDash(r.public_code)}</span></div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:16px">
+      Emails their existing signing link right away ("As requested, here is your link…"). Earlier links keep working.
+      ${r.complained_at ? '<br><span style="color:#d29922">Note: this address once marked our email as spam — only send if the customer asked.</span>' : ''}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:4px">EMAIL ON FILE</div>
+    <div style="font-size:13px;margin-bottom:14px">${onFileLine}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:4px">SEND TO A DIFFERENT ADDRESS (optional)</div>
+    <input id="pad-link-to" type="email" autocomplete="off" placeholder="${onFile && !bounced ? 'Leave blank to send to the email on file' : 'customer@example.com'}"
+      oninput="window.padSendLinkChanged()" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:9px;color:var(--text);font-size:14px"/>
+    <label id="pad-link-also-wrap" style="display:none;align-items:center;gap:6px;margin:8px 0 0;font-size:13px;cursor:pointer">
+      <input id="pad-link-also" type="checkbox"/> Also send to the email on file</label>
+    <div id="pad-link-msg" style="margin-top:12px"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn-sm" onclick="window.padCloseSendModal()">Cancel</button>
+      <button class="btn-sm" id="pad-link-go" style="background:var(--mm-cyan);border-color:var(--mm-cyan);color:#0d1117;font-weight:700" onclick="window.padSendLinkGo('${r.store_id}')">🔗 Send link</button>
+    </div>`;
+  modal.dataset.padLinkCanAlso = (onFile && !bounced) ? '1' : '';
+  document.getElementById('pad-link-to')?.focus();
+};
+
+window.padSendLinkChanged = function () {
+  const v = (document.getElementById('pad-link-to')?.value || '').trim();
+  const canAlso = !!document.getElementById('pad-send-modal')?.dataset.padLinkCanAlso;
+  const wrap = document.getElementById('pad-link-also-wrap');
+  if (wrap) wrap.style.display = (v && canAlso) ? 'flex' : 'none';
+  const msg = document.getElementById('pad-link-msg');
+  if (msg) msg.innerHTML = '';
+};
+
+window.padSendLinkGo = async function (storeId) {
+  const btn = document.getElementById('pad-link-go');
+  const msg = document.getElementById('pad-link-msg');
+  const to = (document.getElementById('pad-link-to')?.value || '').trim();
+  const also = !!document.getElementById('pad-link-also')?.checked;
+  const payload = { store_id: storeId };
+  if (to) { payload.to = to; payload.include_store = also; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  const res = await _padCallSendLink(payload);
+  if (btn) { btn.disabled = false; btn.textContent = '🔗 Send link'; }
+  if (res?.ok) {
+    const sentTo = (res.sent_to || []).join(', ');
+    document.getElementById('pad-send-body').innerHTML = `
+      <div style="font-size:15px;color:#3fb950;font-weight:700;margin-bottom:8px">✓ Link sent</div>
+      <div style="font-size:13px;margin-bottom:16px">Sent to <strong>${escapeHtmlDash(sentTo)}</strong> for ${escapeHtmlDash(res.store?.name)} (${escapeHtmlDash(res.store?.code)}).
+        Ask the customer to check their inbox and spam folder for "Your pre-authorized debit agreement".</div>
+      ${to ? `<div style="font-size:12px;color:var(--muted);margin-bottom:16px">The store's email on file was not changed. If this is their new address, update it in the Stores tab.</div>` : ''}
+      <div style="display:flex;justify-content:flex-end"><button class="btn-sm" onclick="window.padCloseSendModal()">Close</button></div>`;
+    return;
+  }
+  if (res?.code === 'email_typo' || res?.code === 'invalid_email') {
+    if (msg) {
+      msg.innerHTML = window.emailTypoBanner(res.error || 'Please check the email address.');
+      if (res.suggestion && res.bad) {
+        const fix = document.createElement('button');
+        fix.className = 'btn-sm';
+        fix.style.cssText = 'margin-top:-6px;border-color:var(--mm-cyan);color:var(--mm-cyan)';
+        fix.textContent = `Use ${res.suggestion}`;
+        fix.onclick = () => {
+          const inp = document.getElementById('pad-link-to');
+          if (inp) inp.value = inp.value.split(res.bad).join(res.suggestion);
+          msg.innerHTML = '';
+        };
+        msg.appendChild(fix);
+      }
+    }
+    document.getElementById('pad-link-to')?.focus();
+    return;
+  }
+  if (msg) msg.innerHTML = `<div style="background:rgba(248,81,73,0.12);border:1px solid rgba(248,81,73,0.5);border-radius:8px;padding:10px 12px;color:#e6edf3;font-size:13px">Not sent: ${escapeHtmlDash(res?.error || 'unknown error')}</div>`;
+};
+
 window.padRemindWave = async function (waveId) {
   const modal = document.getElementById('pad-send-modal');
   const body = document.getElementById('pad-send-body');
@@ -11732,7 +11847,7 @@ window.renderPadConversion = function () {
       <td style="text-align:center">${flag(r.confirmation_sent)}</td>
       <td style="text-align:center">${flag(r.pushed_to_qb)}</td>
       <td style="color:var(--muted);font-size:11px">${r.excluded_reason ? escapeHtml(r.excluded_reason) : ''}</td>
-      <td style="text-align:right;white-space:nowrap">${remindBtn}${excludeBtn}</td>
+      <td style="text-align:right;white-space:nowrap">${_padSendLinkBtn(r)}${remindBtn}${excludeBtn}</td>
     </tr>`;
   }).join('');
 
