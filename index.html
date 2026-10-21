@@ -2644,6 +2644,16 @@
             </label>
             <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:6px;margin-left:28px">Store sells BIG Sorbet only. The online order form hides the ice cream question and the sorbet application. Enabling this also enrols the store in sorbet automatically.</div>
           </div>
+          <!-- Ownership change (Oct 2026). Admin-only, existing stores only — shown by
+               editStore(), never by the global data-admin-only toggle (it must stay
+               hidden on Add New Store). -->
+          <div id="store-owner-row" style="display:none;margin-top:16px;background:rgba(79,195,212,0.06);border:1px solid rgba(79,195,212,0.35);border-radius:8px;padding:12px 14px">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span style="font-size:13px;color:var(--text);font-weight:600">🔁 Store sold to a new owner?</span>
+              <button type="button" id="store-owner-btn" class="btn-sm" style="margin-left:auto;border-color:var(--mm-cyan);color:var(--mm-cyan)" onclick="window.ownerChangeOpen()">Change owner…</button>
+            </div>
+            <div id="store-owner-status" style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:6px">Cancels the old owner's PAD, pauses online ordering and emails the new owner their agreements + PAD. Store code, freezer, route and history stay.</div>
+          </div>
           <div style="display:flex;gap:10px;margin-top:20px">
             <button class="btn-modal btn-modal-primary" onclick="saveStore()" style="flex:2">Save Store</button>
             <button class="btn-modal btn-modal-outline" onclick="closeStoreModal()" style="flex:1">Cancel</button>
@@ -2652,6 +2662,17 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- Change Owner Modal (Oct 2026) -->
+<div id="owner-change-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1100;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;max-width:620px;width:100%;max-height:88vh;overflow:auto">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+      <span style="font-weight:700;font-size:15px">🔁 Change store owner</span>
+      <button class="btn-sm" style="margin-left:auto" onclick="window.ownerChangeClose()">✕ Close</button>
+    </div>
+    <div id="owner-change-body" style="padding:18px 20px"></div>
   </div>
 </div>
 
@@ -5824,6 +5845,7 @@ window.showAddStore = () => {
   document.getElementById('store-email').dataset.orig = '';
   const _so = document.getElementById('store-sorbet-only'); if (_so) _so.checked = false;
   document.getElementById('store-modal-title').textContent = 'Add New Store';
+  const _own = document.getElementById('store-owner-row'); if (_own) _own.style.display = 'none';
   document.getElementById('store-province').value = 'AB';
   document.getElementById('store-price').value = '2.89';
   document.getElementById('store-big-price').value = '68.88';
@@ -5958,6 +5980,7 @@ window.editStore = (id) => {
   document.getElementById('store-ship-postal').value = s.ship_postal || s.postal || '';
   document.getElementById('store-sorbet-only').checked = !!s.sorbet_only;
   document.getElementById('store-save-msg').textContent = '';
+  if (window.ownerChangeRefreshRow) window.ownerChangeRefreshRow(s);
   document.getElementById('store-modal').classList.add('open');
 };
 
@@ -11554,6 +11577,211 @@ window.padSendLinkGo = async function (storeId) {
     return;
   }
   if (msg) msg.innerHTML = `<div style="background:rgba(248,81,73,0.12);border:1px solid rgba(248,81,73,0.5);border-radius:8px;padding:10px 12px;color:#e6edf3;font-size:13px">Not sent: ${escapeHtmlDash(res?.error || 'unknown error')}</div>`;
+};
+
+// ── Change store owner (Oct 2026) ─────────────────────────────────────────
+// A store is sold: the location (code, freezer, route, history, QB customer)
+// stays, the owner + agreements + banking change. The change-store-owner edge
+// function does the work in one call: logs the old owner, cancels their PAD,
+// PAD -> COD (the order form's PAD block then pauses online orders), replaces
+// the store contact, optionally cancels open orders (no email), and emails the
+// new owner their freezer agreement(s) + PAD via send-for-signing. When they
+// sign, their PAD lands on this same store and terms flip back to PAD.
+// Two steps here: Preview (dry run) -> Confirm. Admins only.
+function _ownerCall(payload) {
+  const token = window._session?.access_token;
+  return fetch(`${SUPABASE_URL}/functions/v1/change-store-owner`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'apikey': SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(r => r.json()).catch(e => ({ ok: false, error: e.message }));
+}
+function _ownerStore() {
+  const id = document.getElementById('store-edit-id')?.value;
+  return id ? (allStoresData || []).find(x => x.id === id) : null;
+}
+function _ownerBox(color, html) {
+  const c = color === 'red' ? '248,81,73' : color === 'amber' ? '210,153,34' : '63,185,80';
+  return `<div style="background:rgba(${c},0.10);border:1px solid rgba(${c},0.45);border-radius:8px;padding:10px 12px;color:#e6edf3;font-size:13px;line-height:1.5">${html}</div>`;
+}
+
+// Store modal row: plain button, or "waiting on X to sign" + Resend.
+window.ownerChangeRefreshRow = async function (s) {
+  const row = document.getElementById('store-owner-row');
+  const status = document.getElementById('store-owner-status');
+  const btn = document.getElementById('store-owner-btn');
+  if (!row) return;
+  const isAdmin = window._role && window._role.role === 'admin';
+  row.style.display = (isAdmin && s && s.active !== false) ? '' : 'none';
+  if (row.style.display === 'none') return;
+  if (btn) { btn.style.display = ''; }
+  status.innerHTML = "Cancels the old owner's PAD, pauses online ordering and emails the new owner their agreements + PAD. Store code, freezer, route and history stay.";
+  let rows = [];
+  try { rows = await sbFetch(`store_ownership_changes?select=id,created_at,status,new_owner,changed_by_name,signing_email_sent&store_id=eq.${s.id}&order=created_at.desc&limit=1`); } catch (e) { return; }
+  const c = Array.isArray(rows) ? rows[0] : null;
+  if (!c || document.getElementById('store-edit-id')?.value !== s.id) return;
+  const when = String(c.created_at || '').slice(0, 10);
+  const who = escapeHtmlDash((c.new_owner && (c.new_owner.email || '')) || '');
+  if (c.status === 'sent' || c.status === 'failed') {
+    if (btn) btn.style.display = 'none';
+    status.innerHTML = `<span style="color:${c.status === 'failed' ? '#f85149' : '#d29922'};font-weight:600">${c.status === 'failed' ? '⚠️ Agreements email failed' : '⏳ Waiting for the new owner to sign'}</span>
+      — ${who}, started ${escapeHtmlDash(when)} by ${escapeHtmlDash(c.changed_by_name || '')}. Online ordering is paused until they sign the PAD.
+      <button type="button" class="btn-sm" style="margin-left:6px;border-color:var(--mm-cyan);color:var(--mm-cyan)" onclick="window.ownerChangeResend('${s.id}', this)">📧 Resend agreements</button>`;
+  } else if (c.status === 'signed') {
+    status.innerHTML = `<span style="color:#3fb950;font-weight:600">✓ Last ownership change signed</span> — ${who} (started ${escapeHtmlDash(when)}). ` + status.innerHTML;
+  }
+};
+
+window.ownerChangeResend = async function (storeId, el) {
+  if (el) { el.disabled = true; el.textContent = 'Sending…'; }
+  const res = await _ownerCall({ store_id: storeId, resend: true });
+  if (el) { el.disabled = false; el.textContent = '📧 Resend agreements'; }
+  if (res?.ok) { alert(`Agreements re-sent to ${res.resent_to}.`); const s = _ownerStore(); if (s) window.ownerChangeRefreshRow(s); }
+  else alert('Not sent: ' + (res?.error || 'unknown error'));
+};
+
+window.ownerChangeClose = function () {
+  const m = document.getElementById('owner-change-modal');
+  if (m) m.style.display = 'none';
+};
+
+window.ownerChangeOpen = function () {
+  const s = _ownerStore();
+  if (!s) { alert('Save the store first.'); return; }
+  const m = document.getElementById('owner-change-modal');
+  const body = document.getElementById('owner-change-body');
+  const inp = (id, ph, type) => `<input id="${id}" type="${type || 'text'}" autocomplete="off" placeholder="${ph}" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:9px;color:var(--text);font-size:14px"/>`;
+  const lbl = t => `<div style="font-size:12px;color:var(--muted);margin:10px 0 4px">${t}</div>`;
+  const prevName = [s.first_name, s.last_name].filter(Boolean).join(' ') || s.full_name || '—';
+  body.innerHTML = `
+    <div style="font-size:14px;margin-bottom:4px"><strong>${escapeHtmlDash(s.name)}</strong> <span style="color:var(--muted)">${escapeHtmlDash(s.public_code || '')}</span></div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:6px">Current owner: ${escapeHtmlDash(prevName)} · ${escapeHtmlDash(s.email || 'no email')}</div>
+    <div style="font-size:11px;color:var(--gold);letter-spacing:2px;text-transform:uppercase;margin-top:14px">New owner</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div>${lbl('First name *')}${inp('oc-first', 'Jane')}</div>
+      <div>${lbl('Last name')}${inp('oc-last', 'Doe')}</div>
+    </div>
+    ${lbl('Email * — agreements + PAD are sent here')}${inp('oc-email', 'newowner@example.com', 'email')}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div>${lbl('Store phone (leave blank to keep)')}${inp('oc-phone', s.phone || '403-555-1234')}</div>
+      <div>${lbl('Owner cell (optional)')}${inp('oc-cell', '403-555-9876')}</div>
+    </div>
+    ${lbl('Legal / company name (optional)')}${inp('oc-legal', 'e.g. 1234567 Alberta Ltd.')}
+    <div style="font-size:11px;color:var(--gold);letter-spacing:2px;text-transform:uppercase;margin-top:16px">Agreements</div>
+    <label style="display:flex;align-items:center;gap:8px;margin:8px 0 0;font-size:13px;cursor:pointer;text-transform:none;letter-spacing:0"><input id="oc-ice" type="checkbox" ${s.sorbet_only ? '' : 'checked'}/> 🍦 Ice cream freezer agreement</label>
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0 0;font-size:13px;cursor:pointer;text-transform:none;letter-spacing:0"><input id="oc-sorbet" type="checkbox" ${s.sorbet_enrolled ? 'checked' : ''}/> 🍧 Sorbet freezer agreement</label>
+    <div style="font-size:11px;color:var(--muted);margin:4px 0 0 24px">${s.is_edi ? 'EDI store — no PAD is sent (billed through EDI).' : 'The PAD agreement is always included.'}</div>
+    <label style="display:flex;align-items:center;gap:8px;margin:12px 0 0;font-size:13px;cursor:pointer;text-transform:none;letter-spacing:0"><input id="oc-cancel-orders" type="checkbox" checked/> Cancel open orders (no email is sent — reschedule after they sign)</label>
+    <div id="oc-msg" style="margin-top:14px"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn-sm" onclick="window.ownerChangeClose()">Cancel</button>
+      <button class="btn-sm" id="oc-go" style="background:var(--mm-cyan);border-color:var(--mm-cyan);color:#0d1117;font-weight:700" onclick="window.ownerChangePreview()">Review changes →</button>
+    </div>`;
+  // ← Back from the review step: keep what was typed.
+  const prev = window._ownerPending;
+  if (prev && prev.store_id === s.id) {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+    set('oc-first', prev.first_name); set('oc-last', prev.last_name); set('oc-email', prev.email);
+    set('oc-phone', prev.phone); set('oc-cell', prev.cell); set('oc-legal', prev.legal_name);
+    document.getElementById('oc-ice').checked = !!prev.ice_cream;
+    document.getElementById('oc-sorbet').checked = !!prev.sorbet;
+    document.getElementById('oc-cancel-orders').checked = !!prev.cancel_open_orders;
+  } else {
+    window._ownerPending = null;
+  }
+  m.style.display = 'flex';
+  document.getElementById('oc-first')?.focus();
+};
+
+function _ownerPayload() {
+  const s = _ownerStore();
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  return {
+    store_id: s && s.id,
+    first_name: v('oc-first'), last_name: v('oc-last'), email: v('oc-email').toLowerCase(),
+    phone: v('oc-phone'), cell: v('oc-cell'), legal_name: v('oc-legal'),
+    ice_cream: !!document.getElementById('oc-ice')?.checked,
+    sorbet: !!document.getElementById('oc-sorbet')?.checked,
+    cancel_open_orders: !!document.getElementById('oc-cancel-orders')?.checked,
+  };
+}
+
+window.ownerChangePreview = async function () {
+  const msg = document.getElementById('oc-msg');
+  const btn = document.getElementById('oc-go');
+  const payload = _ownerPayload();
+  if (!payload.first_name || !payload.email) { msg.innerHTML = _ownerBox('red', "Enter the new owner's first name and email."); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+  const res = await _ownerCall({ ...payload, dry_run: true });
+  if (btn) { btn.disabled = false; btn.textContent = 'Review changes →'; }
+  if (!res?.ok) {
+    if ((res?.code === 'email_typo' || res?.code === 'invalid_email') && res.suggestion) {
+      msg.innerHTML = window.emailTypoBanner(res.error);
+      const fix = document.createElement('button');
+      fix.className = 'btn-sm'; fix.style.cssText = 'margin-top:-6px;border-color:var(--mm-cyan);color:var(--mm-cyan)';
+      fix.textContent = `Use ${res.suggestion}`;
+      fix.onclick = () => { document.getElementById('oc-email').value = res.suggestion; msg.innerHTML = ''; };
+      msg.appendChild(fix);
+    } else {
+      msg.innerHTML = _ownerBox('red', escapeHtmlDash(res?.error || 'Could not check this change.'));
+    }
+    return;
+  }
+  window._ownerPending = payload;
+  const progLabel = { ice_cream: '🍦 Ice cream agreement', sorbet: '🍧 Sorbet agreement', pad: '🏦 PAD' };
+  const li = t => `<li style="margin:3px 0">${t}</li>`;
+  const orders = res.open_orders || [];
+  const items = [
+    res.cancel_mandates?.length
+      ? li(`<strong>Cancel the old owner's PAD:</strong> ${res.cancel_mandates.map(escapeHtmlDash).join(', ')} — nothing more is debited from their account`)
+      : li('No active PAD on file to cancel'),
+    li(`<strong>Terms:</strong> ${escapeHtmlDash(res.terms)}`),
+    li('<strong>Online ordering paused</strong> until the new owner signs the PAD'),
+    li(`<strong>Store contact →</strong> ${escapeHtmlDash(res.new_owner?.name)} · ${escapeHtmlDash(res.new_owner?.email)} (old email kept as "previous")`),
+    orders.length
+      ? li(`<strong>Open orders:</strong> ${orders.length} — ${res.cancel_open_orders ? 'will be cancelled (no email)' : 'left as-is'}`)
+      : li('No open orders'),
+    li(`<strong>Email to ${escapeHtmlDash(res.new_owner?.email)}:</strong> ${(res.agreements_to_sign || []).map(p => progLabel[p] || p).join(' + ')}`),
+  ];
+  document.getElementById('owner-change-body').innerHTML = `
+    <div style="font-size:14px;margin-bottom:10px"><strong>${escapeHtmlDash(res.store?.name)}</strong> <span style="color:var(--muted)">${escapeHtmlDash(res.store?.code)}</span></div>
+    <div style="font-size:13px;margin-bottom:6px">From <strong>${escapeHtmlDash(res.previous_owner?.name || 'previous owner')}</strong> to <strong>${escapeHtmlDash(res.new_owner?.name)}</strong>. This will:</div>
+    <ul style="font-size:13px;line-height:1.5;margin:0 0 12px 18px;padding:0">${items.join('')}</ul>
+    ${_ownerBox('amber', "QuickBooks still has the old owner's banking until the new owner signs — don't run a PAD debit on this customer in between. Settle any balance the old owner owes separately.")}
+    <div id="oc-msg" style="margin-top:12px"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn-sm" onclick="window.ownerChangeOpen()">← Back</button>
+      <button class="btn-sm" id="oc-confirm" style="background:var(--mm-pink);border-color:var(--mm-pink);color:#fff;font-weight:700" onclick="window.ownerChangeGo()">Confirm owner change</button>
+    </div>`;
+};
+
+window.ownerChangeGo = async function () {
+  const payload = window._ownerPending;
+  const btn = document.getElementById('oc-confirm');
+  const msg = document.getElementById('oc-msg');
+  if (!payload) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+  const res = await _ownerCall(payload);
+  if (btn) { btn.disabled = false; btn.textContent = 'Confirm owner change'; }
+  if (!res?.change_id) { if (msg) msg.innerHTML = _ownerBox('red', 'Nothing was changed: ' + escapeHtmlDash(res?.error || 'unknown error')); return; }
+  window._ownerPending = null;
+  const lines = [
+    `${res.cancelled_mandates} old PAD cancelled`,
+    `terms now ${escapeHtmlDash(res.terms_now)}`,
+    `${res.cancelled_orders} open order(s) cancelled`,
+  ].join(' · ');
+  document.getElementById('owner-change-body').innerHTML = res.ok
+    ? `<div style="font-size:15px;color:#3fb950;font-weight:700;margin-bottom:8px">✓ Owner changed</div>
+       <div style="font-size:13px;margin-bottom:10px">Agreements sent to <strong>${escapeHtmlDash(res.sent_to)}</strong>. Ask them to check their inbox (and spam) for "Your Mini Melts freezer agreement — ready to sign".</div>
+       <div style="font-size:12px;color:var(--muted);margin-bottom:16px">${lines}. When they sign, their PAD attaches to this store, terms switch back to PAD and online ordering reopens — then schedule their delivery.</div>
+       <div style="display:flex;justify-content:flex-end"><button class="btn-sm" onclick="window.ownerChangeClose()">Close</button></div>`
+    : `${_ownerBox('red', `<strong>The store was updated, but the agreements email failed.</strong> ${escapeHtmlDash(res.error || '')}`)}
+       <div style="font-size:12px;color:var(--muted);margin:10px 0 16px">${lines}. Use "📧 Resend agreements" on the store to try the email again.</div>
+       <div style="display:flex;justify-content:flex-end"><button class="btn-sm" onclick="window.ownerChangeClose()">Close</button></div>`;
+  // The store record changed underneath the open Edit Store form — close it and
+  // reload the list so a later Save can't write the old owner back.
+  if (window.closeStoreModal) window.closeStoreModal();
+  if (window.searchStores) { try { await window.searchStores(); } catch (e) {} }
 };
 
 window.padRemindWave = async function (waveId) {
