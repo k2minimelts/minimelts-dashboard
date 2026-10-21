@@ -2317,6 +2317,13 @@
         </div>
         <div id="access-dms-body" style="padding:14px"><div class="loading">Loading...</div></div>
       </div>
+      <div class="table-wrap" style="margin-bottom:16px">
+        <div class="table-header">
+          <span class="table-title">🔬 Plant Users</span>
+          <button class="btn-export" onclick="window.showInvitePlantModal()" style="margin-left:auto">+ Invite Plant User</button>
+        </div>
+        <div id="access-plant-body" style="padding:14px"><div class="loading">Loading...</div></div>
+      </div>
       <div class="table-wrap">
         <div class="table-header">
           <span class="table-title">📋 Access Audit Log</span>
@@ -2492,6 +2499,32 @@
     </div>
 
     <!-- Invite Depot Manager Modal -->
+    <div class="modal-overlay" id="invite-plant-modal">
+      <div class="modal" style="max-width:460px">
+        <div class="modal-header">
+          <span class="modal-title">Invite Plant User</span>
+          <button class="modal-close" onclick="window.closeInvitePlantModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div style="font-size:12px;color:var(--muted);background:var(--bg2);padding:10px 12px;border-radius:6px;margin-bottom:14px;line-height:1.5">
+            They'll receive an email invite. Plant users see only the 🔬 Lot Lookup tab — lot codes, products, quantities, dates, store/venue, driver and receipt #. No prices, payments, banking or customer contacts.
+          </div>
+          <div class="field" style="margin-bottom:14px">
+            <label style="display:block;font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">Full Name</label>
+            <input type="text" id="invite-plant-name" placeholder="Jane Doe" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:9px 12px;color:var(--text);font-size:14px"/>
+          </div>
+          <div class="field" style="margin-bottom:14px">
+            <label style="display:block;font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">Email</label>
+            <input type="email" id="invite-plant-email" placeholder="jane@minimelts.ca" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:9px 12px;color:var(--text);font-size:14px"/>
+          </div>
+          <div id="invite-plant-error" style="display:none;background:rgba(248,81,73,0.1);color:#f85149;border:1px solid rgba(248,81,73,0.3);border-radius:6px;padding:8px 12px;font-size:13px;margin-bottom:12px"></div>
+          <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button class="btn-sm" onclick="window.closeInvitePlantModal()">Cancel</button>
+            <button class="btn-export" id="invite-plant-submit" onclick="window.submitInvitePlant()">Send Invite</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="modal-overlay" id="invite-dm-modal">
       <div class="modal" style="max-width:460px">
         <div class="modal-header">
@@ -3438,6 +3471,18 @@ async function fetchUserRole() {
       depots: dm.map(r => r.depot_id),
     };
   }
+  // Plant users (Oct 2026) — see only plant tools (Lot Lookup). Their lot
+  // searches go through lot_lookup_* RPCs that return traceability fields only.
+  const pu = await sbFetch(`plant_users?select=user_id,name,email&user_id=eq.${authUserId}&active=eq.true&limit=1`);
+  if (Array.isArray(pu) && pu.length > 0) {
+    return {
+      role: 'plant',
+      auth_user_id: pu[0].user_id,
+      email: pu[0].email,
+      name: pu[0].name || pu[0].email,
+      is_super_admin: false,
+    };
+  }
   return null;
 }
 
@@ -3453,6 +3498,8 @@ function applyRoleUI(roleInfo) {
   } else if (roleInfo.role === 'depot_manager') {
     const depots = (roleInfo.depots || []).join(', ');
     emailEl.innerHTML = `${roleInfo.email} <span style="background:rgba(226,176,74,0.15);color:var(--gold);border:1px solid rgba(226,176,74,0.3);border-radius:10px;padding:1px 8px;font-size:10px;font-weight:700;letter-spacing:1px;margin-left:6px" title="Depot${(roleInfo.depots||[]).length>1?'s':''}: ${depots}">DEPOT MGR</span>`;
+  } else if (roleInfo.role === 'plant') {
+    emailEl.innerHTML = `${roleInfo.email} <span style="background:rgba(63,185,80,0.15);color:var(--success);border:1px solid rgba(63,185,80,0.35);border-radius:10px;padding:1px 8px;font-size:10px;font-weight:700;letter-spacing:1px;margin-left:6px">PLANT</span>`;
   }
   const isAdmin = roleInfo.role === 'admin';
   // Hide top-level admin-only buttons
@@ -3497,7 +3544,14 @@ function applyRoleUI(roleInfo) {
   // redirect them to Schedule (their main workspace) if they'd otherwise land
   // on the now-hidden Overview. Only fires when Overview is the active tab, so
   // it never interferes with normal navigation or with admins.
-  if (!isAdmin) {
+  if (roleInfo.role === 'plant') {
+    // Plant users see ONLY Lot Lookup: hide every other tab button, show Lot.
+    document.querySelectorAll('.tabs .tab').forEach(el => {
+      const isLot = /switchTab\('lot'\)/.test(el.getAttribute('onclick') || '');
+      el.style.display = isLot ? '' : 'none';
+    });
+    if (typeof switchTab === 'function') switchTab('lot');
+  } else if (!isAdmin) {
     const overviewTab = document.getElementById('tab-overview');
     if (overviewTab && overviewTab.style.display !== 'none' && typeof switchTab === 'function') {
       switchTab('schedule');
@@ -3575,6 +3629,9 @@ async function enterAppOrForcePasswordChange(roleInfo) {
   }
   document.getElementById('force-password-screen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
+  // Plant users never load the delivery list (they can't read it, and Lot
+  // Lookup fetches only what it needs per search).
+  if (roleInfo.role === 'plant') { switchTab('lot'); return; }
   loadAll();
 }
 
@@ -3612,7 +3669,7 @@ window.doForcedPasswordChange = async () => {
     document.getElementById('force-new-password-confirm').value = '';
     document.getElementById('force-password-screen').style.display = 'none';
     document.getElementById('app').style.display = 'block';
-    loadAll();
+    if (window._role && window._role.role === 'plant') { switchTab('lot'); } else { loadAll(); }
   } catch (e) {
     errEl.textContent = 'Network error: ' + (e.message || e);
     errEl.style.display = 'block';
@@ -5421,6 +5478,22 @@ function normalizeLot(s) {
   return String(s || '').replace(/\D/g, '');
 }
 
+// Plant users (Oct 2026) can't read deliveries / refills directly. For them the
+// two sources come from lot_lookup_deliveries / lot_lookup_refills, which return
+// the same rows trimmed to traceability fields (lots, products, qty, store/venue,
+// driver, receipt #). The matching and rendering below are unchanged, so a
+// plant user sees exactly what an admin sees. Admins keep the original path.
+const _lotIsPlant = () => !!(window._role && window._role.role === 'plant');
+async function _lotRpc(fn, needle) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_lot: needle }),
+  });
+  if (!r.ok) throw new Error(await window.dbErrorText(r));
+  const rows = await r.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
 window.searchLot = async () => {
   const rawInput = document.getElementById('lot-input').value.trim();
   if (!rawInput) { alert('Please enter a lot/batch code.'); return; }
@@ -5433,6 +5506,14 @@ window.searchLot = async () => {
   // Pull both tables in parallel. Refills include their machine + venue.
   let deliveries = allDeliveries;
   let refills = [];
+  if (_lotIsPlant()) {
+    try {
+      [deliveries, refills] = await Promise.all([_lotRpc('lot_lookup_deliveries', needle), _lotRpc('lot_lookup_refills', needle)]);
+    } catch (e) {
+      resultsEl.innerHTML = `<div class="lot-result-card"><div class="lot-result-title">Search failed</div><div style="color:var(--muted);font-size:13px">${escapeHtmlDash(e.message || String(e))}. Try again, or sign out and back in.</div></div>`;
+      return;
+    }
+  } else
   try {
     refills = await sbFetch(
       'vending_refills_list?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
@@ -5590,6 +5671,12 @@ window.exportLotCSV = async (rawInput) => {
   // We don't keep a global `lastMatches` state because this avoids stale data
   // if the user changes search input but exports before re-searching.
   let refills = [];
+  let lotDeliveries = allDeliveries;
+  if (_lotIsPlant()) {
+    try {
+      [lotDeliveries, refills] = await Promise.all([_lotRpc('lot_lookup_deliveries', needle), _lotRpc('lot_lookup_refills', needle)]);
+    } catch (e) { alert('Export failed: ' + (e.message || e)); return; }
+  } else
   try {
     refills = await sbFetch(
       'vending_refills_list?select=*,machine:vending_machines(id,nayax_machine_number,nayax_machine_name,venue:vending_venues(id,name,city,province))&order=serviced_at.desc'
@@ -5600,7 +5687,7 @@ window.exportLotCSV = async (rawInput) => {
   const rows = [['Source','Location','Date','Driver','Product','Qty Delivered','Lot Code','Receipt #']];
 
   // Deliveries (item-level + column-level)
-  allDeliveries.forEach(d => {
+  lotDeliveries.forEach(d => {
     const dateStr = d.delivered_at ? new Date(d.delivered_at).toLocaleDateString('en-CA') : '';
     const seenColumnProducts = new Set();
     if (Array.isArray(d.items)) {
@@ -13471,6 +13558,7 @@ async function loadAccess() {
   _accessState = result;
   renderAccessAdmins();
   renderAccessDepotManagers();
+  renderAccessPlantUsers();
   renderAccessAuditLog();
   populateInviteDepotDropdown();
 }
@@ -13563,6 +13651,68 @@ function renderAccessDepotManagers() {
     </table>`;
 }
 
+// Plant users (Oct 2026): Lot Lookup only.
+function renderAccessPlantUsers() {
+  const el = document.getElementById('access-plant-body');
+  if (!el) return;
+  const pus = _accessState.plant_users || [];
+  if (pus.length === 0) { el.innerHTML = '<div class="empty">No plant users.</div>'; return; }
+  const rows = pus.map(u => {
+    const status = u.active
+      ? `<span class="badge" style="background:rgba(63,185,80,0.15);color:var(--success);border:1px solid rgba(63,185,80,0.3);cursor:pointer" onclick="window.togglePlantUserActive('${u.id}', false)" title="Click to deactivate">ACTIVE</span>`
+      : `<span class="badge" style="background:rgba(139,148,158,0.15);color:var(--muted);border:1px solid rgba(139,148,158,0.3);cursor:pointer" onclick="window.togglePlantUserActive('${u.id}', true)" title="Click to activate">INACTIVE</span>`;
+    return `<tr>
+      <td><strong style="color:var(--text)">${escapeHtml(u.name||'')}</strong></td>
+      <td><span style="font-family:monospace;color:var(--text);font-size:12px">${escapeHtml(u.email)}</span></td>
+      <td>${status} <span style="color:var(--muted);font-size:11px;margin-left:6px">🔬 Lot Lookup only</span></td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn-sm" onclick="window.openResetPasswordModal('${u.user_id || ''}','${escapeHtmlAttr(u.name||'')}','${escapeHtmlAttr(u.email)}')" ${!u.user_id ? 'disabled' : ''}>🔑 Reset Password</button>
+        <button class="btn-sm" onclick="window.removePlantUser('${u.id}','${escapeHtmlAttr(u.email)}')" style="border-color:rgba(248,81,73,0.3);color:#f85149">✕ Revoke</button>
+      </td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px;padding:0 4px">Click the status badge to turn access off/on without deleting the login.</div>
+    <table>
+      <thead><tr><th>Name</th><th>Email</th><th>Access</th><th style="text-align:right">Actions</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+window.showInvitePlantModal = () => {
+  document.getElementById('invite-plant-name').value = '';
+  document.getElementById('invite-plant-email').value = '';
+  document.getElementById('invite-plant-error').style.display = 'none';
+  document.getElementById('invite-plant-modal').classList.add('open');
+};
+window.closeInvitePlantModal = () => document.getElementById('invite-plant-modal').classList.remove('open');
+window.submitInvitePlant = async () => {
+  const btn = document.getElementById('invite-plant-submit');
+  const errEl = document.getElementById('invite-plant-error');
+  const name = document.getElementById('invite-plant-name').value.trim();
+  const email = document.getElementById('invite-plant-email').value.trim().toLowerCase();
+  errEl.style.display = 'none';
+  if (!name || !email) { errEl.textContent = 'Name and email are required.'; errEl.style.display = 'block'; return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { errEl.textContent = 'Please enter a valid email address.'; errEl.style.display = 'block'; return; }
+  btn.disabled = true; btn.textContent = 'Sending...';
+  const result = await callManageAccess({ action: 'invite_plant_user', email, name });
+  btn.disabled = false; btn.textContent = 'Send Invite';
+  if (result?.error) { errEl.textContent = result.error; errEl.style.display = 'block'; return; }
+  window.closeInvitePlantModal();
+  alert(`✓ Invitation sent to ${email}`);
+  await loadAccess();
+};
+window.togglePlantUserActive = async (plant_user_id, makeActive) => {
+  const result = await callManageAccess({ action: 'update_plant_user', plant_user_id, active: makeActive });
+  if (result?.error) { alert(`Error: ${result.error}`); return; }
+  await loadAccess();
+};
+window.removePlantUser = async (plant_user_id, email) => {
+  if (!confirm(`Revoke plant access for ${email}?\n\nThis deletes their login. They will no longer be able to sign in.`)) return;
+  const result = await callManageAccess({ action: 'remove_plant_user', plant_user_id });
+  if (result?.error) { alert(`Error: ${result.error}`); return; }
+  await loadAccess();
+};
+
 function renderAccessAuditLog() {
   const log = _accessState.audit_log || [];
   if (log.length === 0) {
@@ -13581,6 +13731,10 @@ function renderAccessAuditLog() {
     depot_manager_removed: { label: '✕ Depot manager removed', color: '#f85149' },
     depot_manager_activated:   { label: '✓ DM activated',      color: 'var(--success)' },
     depot_manager_deactivated: { label: '⊘ DM deactivated',    color: 'var(--muted)' },
+    plant_user_added:          { label: '+ Plant user added',  color: 'var(--success)' },
+    plant_user_removed:        { label: '✕ Plant user removed', color: '#f85149' },
+    plant_user_activated:      { label: '✓ Plant user activated', color: 'var(--success)' },
+    plant_user_deactivated:    { label: '⊘ Plant user deactivated', color: 'var(--muted)' },
   };
   const rows = log.map(e => {
     const meta = actionLabels[e.action] || { label: e.action, color: 'var(--muted)' };
