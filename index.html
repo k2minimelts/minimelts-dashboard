@@ -12185,16 +12185,18 @@ window.renderPadConversion = function () {
       <td style="font-size:12px">${_padDate(r.last_reminder_at)}</td>
       <td style="text-align:center">${flag(r.confirmation_sent)}</td>
       <td style="text-align:center">${flag(r.pushed_to_qb)}</td>
-      <td style="color:var(--muted);font-size:11px">${r.excluded_reason ? escapeHtml(r.excluded_reason) : ''}</td>
+      <td style="color:var(--muted);font-size:11px;max-width:220px;white-space:normal;overflow-wrap:anywhere;line-height:1.35">${r.excluded_reason ? escapeHtml(r.excluded_reason) : ''}</td>
       <td style="text-align:right;white-space:nowrap">${_padSendLinkBtn(r)}${remindBtn}${excludeBtn}</td>
     </tr>`;
   }).join('');
 
-  body.innerHTML = `<table><thead><tr>
+  // Wrapped in a horizontal scroller: 14 columns + the action buttons don't
+  // fit a laptop screen, and .table-wrap clips overflow (Oct 2026).
+  body.innerHTML = `<div style="overflow-x:auto"><table><thead><tr>
     <th style="text-align:center"><input type="checkbox" id="pad-pick-all" onchange="window.padToggleAllPicks(this)" title="Select all eligible on this page"></th>
     <th>ST-Code</th><th>Store</th><th>Location</th><th>Depot</th><th>Terms</th>
     <th>Status</th><th>Sent</th><th>Signed</th><th>Reminded</th><th>Conf.</th><th>QB</th><th>Note</th><th></th>
-  </tr></thead><tbody>${tr}</tbody></table>`;
+  </tr></thead><tbody>${tr}</tbody></table></div>`;
   window.padUpdatePickCount();
 
   _renderPadPager(_padPage, totalPages, rows.length);
