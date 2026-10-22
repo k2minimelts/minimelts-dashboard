@@ -1573,11 +1573,61 @@
       <button class="tab" onclick="switchTab('schedule')" data-scheduler-only style="display:none">📅 Schedule</button>
       <button class="tab" onclick="switchTab('lot')" data-hide-from-depot-manager>🔬 Lot Lookup</button>
       <button class="tab" onclick="switchTab('drivers')">👤 Drivers</button>
+      <button class="tab" onclick="switchTab('reports')" id="tab-btn-reports" data-admin-only style="display:none">📊 Reports</button>
       <button class="tab" onclick="switchTab('leads')" id="tab-btn-leads" data-admin-only style="display:none">📥 Leads <span id="leads-new-badge" class="leads-badge" style="display:none">0</span></button>
       <button class="tab" onclick="switchTab('applications')" id="tab-btn-applications" data-admin-only style="display:none">📋 Applications <span id="apps-new-badge" class="leads-badge" style="display:none">0</span></button>
       <button class="tab" onclick="switchTab('pad')" id="tab-btn-pad" data-admin-only style="display:none">🏦 PAD</button>
       <button class="tab" onclick="switchTab('refunds')" id="tab-btn-refunds" data-refund-only style="display:none">💸 Refunds <span id="refunds-new-badge" class="leads-badge" style="display:none">0</span></button>
       <button class="tab" onclick="switchTab('access')" data-super-admin-only style="display:none">🔐 Access</button>
+    </div>
+
+    <!-- Reports Tab (Oct 2026): admin/sales reporting built on app deliveries
+         (from May 12, 2026). Data comes from the report_* RPCs, which apply the
+         access rule server-side. Test stores are always excluded. -->
+    <div id="tab-reports" style="display:none">
+      <div class="rpt-kinds" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+        <button class="btn-sm rpt-kind" data-kind="history" onclick="window.rptSetKind('history')">🧾 Customer history</button>
+        <button class="btn-sm rpt-kind" data-kind="flavours" onclick="window.rptSetKind('flavours')">🍦 Flavour sales</button>
+        <button class="btn-sm rpt-kind" data-kind="sales" onclick="window.rptSetKind('sales')">📈 Sales by depot / driver / route</button>
+        <button class="btn-sm rpt-kind" data-kind="health" onclick="window.rptSetKind('health')">🩺 Customer health</button>
+      </div>
+      <div class="filters" style="margin-bottom:12px;flex-wrap:wrap">
+        <div class="filter-group" data-rpt-for="history flavours sales"><label>Period</label>
+          <select id="rpt-preset" onchange="window.rptPreset(this.value)">
+            <option value="all">All app data (since May 12)</option>
+            <option value="month">This month</option>
+            <option value="lastmonth">Last month</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </div>
+        <div class="filter-group" data-rpt-for="history flavours sales"><label>From</label><input type="date" id="rpt-from" onchange="document.getElementById('rpt-preset').value='custom'"/></div>
+        <div class="filter-group" data-rpt-for="history flavours sales"><label>To</label><input type="date" id="rpt-to" onchange="document.getElementById('rpt-preset').value='custom'"/></div>
+        <div class="filter-group"><label>Depot</label><select id="rpt-depot"><option value="">All depots</option></select></div>
+        <div class="filter-group"><label>Customer group</label><select id="rpt-group"><option value="">All customers</option></select></div>
+        <div class="filter-group" data-rpt-for="flavours sales"><label>Group by</label>
+          <select id="rpt-bucket"><option value="week">Week</option><option value="month" selected>Month</option></select>
+        </div>
+        <div class="filter-group" data-rpt-for="sales"><label>Show</label>
+          <select id="rpt-dim"><option value="depot">Depot</option><option value="driver">Driver</option><option value="route">Route</option><option value="group">Customer group</option></select>
+        </div>
+        <div class="filter-group" data-rpt-for="history flavours" style="position:relative;min-width:240px"><label>Stores <span style="text-transform:none;letter-spacing:0;color:var(--muted)">(optional)</span></label>
+          <input type="text" id="rpt-store-q" placeholder="Add a store by name or ST-code…" autocomplete="off" oninput="window.rptStoreSearch()"/>
+          <div id="rpt-store-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--bg2);border:1px solid var(--border);border-radius:0 0 8px 8px;max-height:260px;overflow-y:auto;z-index:20"></div>
+        </div>
+        <div class="filter-group" style="justify-content:flex-end"><label>&nbsp;</label>
+          <div style="display:flex;gap:8px">
+            <button class="btn-export" onclick="window.rptRun()">Run report</button>
+            <button class="btn-sm" onclick="window.rptExport()" title="Download what's shown as a spreadsheet (CSV)">⬇ CSV</button>
+          </div>
+        </div>
+      </div>
+      <div id="rpt-store-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 12px"></div>
+      <div id="rpt-note" style="font-size:12px;color:var(--muted);margin:0 0 12px"></div>
+      <div id="rpt-cards" class="stats-grid" style="margin-bottom:16px"></div>
+      <div id="rpt-chart-wrap" class="table-wrap" style="display:none;padding:16px;margin-bottom:16px"><div style="position:relative;height:300px"><canvas id="rpt-chart"></canvas></div></div>
+      <div id="rpt-body"></div>
     </div>
 
     <!-- Overview Tab -->
@@ -2674,6 +2724,10 @@
               <select id="store-rep" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px">
                 <option value="DM">DM</option><option value="KP">KP</option><option value="WK">WK</option>
               </select></div>
+          </div>
+          <div class="field" style="margin-top:12px"><label>Customer group <span style="text-transform:none;letter-spacing:0;color:var(--muted);font-weight:400">(chain / banner for reports — blank = independent)</span></label>
+            <input type="text" id="store-account-group" list="store-account-group-list" placeholder="e.g. Staples, Centex, Sobeys – Needs" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:14px"/>
+            <datalist id="store-account-group-list"></datalist>
           </div>
           <!-- Sorbet-only toggle (admin-only). Turning this ON also enrols the store
                in sorbet (a sorbet-only store must be able to order sorbet), so the
@@ -4547,6 +4601,470 @@ function renderUnpaid() {
 
 let _shippingUnpaid = [];
 
+
+// ════════════════════════════════════════════════════════════════════
+// 📊 REPORTS TAB (Oct 2026)
+// Built on app deliveries (May 12, 2026 onward) via the report_* RPCs, which
+// enforce access server-side (admins: all; depot managers: their depots).
+// "Sales" = pre-tax subtotal (product + delivery fee − cup credits). Flavour $
+// = units × that delivery's price. Test stores (customer group 'Test') are
+// always excluded. Store depot / route / group are the store's CURRENT ones.
+// ════════════════════════════════════════════════════════════════════
+const RPT_FLAVOURS = [
+  ['cotton_candy','Cotton Candy','CC'], ['cookies_cream','Cookies & Cream','C&C'], ['cookie_dough','Cookie Dough','CD'],
+  ['banana_split','Banana Split','BS'], ['mint_chocolate','Mint Chocolate','MC'], ['rainbow','Rainbow','RB'],
+  ['orange','Orange','OR'], ['big_cherry','BIG Cherry','B-Ch'], ['big_mango','BIG Mango','B-Mg'], ['big_kiwi','BIG Kiwi','B-Kw'],
+];
+const RPT_FLAVOUR_COLORS = {
+  'Cotton Candy':'#e87bb5', 'Cookies & Cream':'#8b949e', 'Cookie Dough':'#c69c6d', 'Banana Split':'#e3c341',
+  'Mint Chocolate':'#3fb950', 'Rainbow':'#a371f7', 'Orange':'#f0883e',
+  'BIG Cherry':'#f85149', 'BIG Mango':'#ffb340', 'BIG Kiwi':'#7ee787',
+};
+const RPT_SERIES = ['#4fc3d4','#e87bb5','#e2b04a','#3fb950','#a371f7','#f0883e','#58a6ff','#f85149','#8b949e','#7ee787'];
+const RPT_ROW_LIMIT = 300;
+const RPT_START = '2026-05-01';
+let _rpt = { inited: false, kind: 'history', stores: [], csv: null, chart: null, health: null, healthFilter: 'Flagged', lastRun: 0 };
+
+const _rptMoney = (v) => '$' + Number(v || 0).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const _rptMoney0 = (v) => '$' + Math.round(Number(v || 0)).toLocaleString('en-CA');
+const _rptNum = (v) => Math.round(Number(v || 0)).toLocaleString('en-CA');
+const _rptDate = (iso) => iso ? new Date(String(iso).slice(0, 10) + 'T12:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+const _rptPeriodLabel = (iso, bucket) => {
+  const d = new Date(String(iso).slice(0, 10) + 'T12:00:00');
+  return bucket === 'week'
+    ? 'Wk of ' + d.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })
+    : d.toLocaleDateString('en-CA', { month: 'short', year: 'numeric' });
+};
+const _rptYmd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const _rptCard = (label, value, sub) =>
+  `<div class="stat-card"><div class="stat-label">${label}</div><div class="stat-value">${value}</div>${sub ? `<div class="stat-sub">${sub}</div>` : ''}</div>`;
+
+async function _rptRpc(name, body) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${name}`, {
+    method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await window.dbErrorText(r));
+  return r.json();
+}
+
+window.rptPreset = (v) => {
+  const today = new Date();
+  let from = RPT_START, to = _rptYmd(today);
+  if (v === 'month') from = _rptYmd(new Date(today.getFullYear(), today.getMonth(), 1));
+  else if (v === 'lastmonth') {
+    from = _rptYmd(new Date(today.getFullYear(), today.getMonth() - 1, 1));
+    to = _rptYmd(new Date(today.getFullYear(), today.getMonth(), 0));
+  } else if (v === '30') from = _rptYmd(new Date(today.getTime() - 29 * 864e5));
+  else if (v === '90') from = _rptYmd(new Date(today.getTime() - 89 * 864e5));
+  else if (v === 'custom') return;
+  if (from < RPT_START) from = RPT_START;
+  document.getElementById('rpt-from').value = from;
+  document.getElementById('rpt-to').value = to;
+  document.getElementById('rpt-preset').value = v;
+};
+
+// Customer-group list, shared with the Stores edit form's datalist.
+let _rptGroups = null;
+async function _rptLoadGroups() {
+  if (_rptGroups) return _rptGroups;
+  try {
+    const rows = await sbFetchAll('stores?select=account_group&account_group=not.is.null');
+    _rptGroups = [...new Set((rows || []).map(r => r.account_group))].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  } catch (e) { _rptGroups = []; }
+  return _rptGroups;
+}
+window.fillAccountGroupList = async () => {
+  const dl = document.getElementById('store-account-group-list');
+  if (!dl || dl.dataset.filled) return;
+  const groups = await _rptLoadGroups();
+  dl.innerHTML = groups.map(g => `<option value="${escapeHtml(g)}"></option>`).join('');
+  dl.dataset.filled = '1';
+};
+
+window.initReportsTab = async () => {
+  if (!_rpt.inited) {
+    _rpt.inited = true;
+    window.rptPreset('all');
+    try {
+      const deps = await sbFetch('depots?select=id,code,name&order=code.asc');
+      document.getElementById('rpt-depot').innerHTML = '<option value="">All depots</option>' +
+        (Array.isArray(deps) ? deps : []).map(d => `<option value="${d.id}">${escapeHtml(d.code)} — ${escapeHtml(d.name)}</option>`).join('');
+    } catch (e) { /* keep "All depots" */ }
+    const groups = (await _rptLoadGroups()).filter(g => g !== 'Test');
+    document.getElementById('rpt-group').innerHTML =
+      '<option value="">All customers</option><option value="Independent">Independent (no group)</option><option value="Sobeys (all)">Sobeys — all banners</option>' +
+      groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
+  }
+  window.rptSetKind(_rpt.kind);
+};
+
+window.rptSetKind = (kind) => {
+  _rpt.kind = kind;
+  document.querySelectorAll('.rpt-kind').forEach(b => {
+    const on = b.dataset.kind === kind;
+    b.style.background = on ? 'var(--gold)' : '';
+    b.style.color = on ? '#1a1a1a' : '';
+    b.style.borderColor = on ? 'var(--gold)' : '';
+    b.style.fontWeight = on ? '700' : '';
+  });
+  document.querySelectorAll('[data-rpt-for]').forEach(el => {
+    el.style.display = el.dataset.rptFor.split(' ').includes(kind) ? '' : 'none';
+  });
+  document.getElementById('rpt-store-chips').style.display = (kind === 'history' || kind === 'flavours') ? 'flex' : 'none';
+  window.rptRun();
+};
+
+// ── Store picker ──
+let _rptStoreTimer = null;
+window.rptStoreSearch = () => {
+  clearTimeout(_rptStoreTimer);
+  const q = document.getElementById('rpt-store-q').value.trim();
+  const box = document.getElementById('rpt-store-results');
+  if (q.length < 2) { box.style.display = 'none'; return; }
+  _rptStoreTimer = setTimeout(async () => {
+    const term = encodeURIComponent('*' + q.replace(/[,()*]/g, ' ') + '*');
+    let rows = [];
+    try { rows = await sbFetch(`stores?select=id,qb_name,public_code,ship_city,province&or=(qb_name.ilike.${term},public_code.ilike.${term})&order=qb_name.asc&limit=15`); } catch (e) {}
+    rows = Array.isArray(rows) ? rows : [];
+    box.innerHTML = rows.length
+      ? rows.map(r => `<div style="padding:8px 12px;cursor:pointer;border-top:1px solid var(--border);font-size:13px" onmousedown="window.rptAddStore('${r.id}', ${JSON.stringify(r.qb_name || '').replace(/"/g, '&quot;')}, '${escapeHtml(r.public_code || '')}')">
+          <div style="font-weight:600">${escapeHtml(r.qb_name || '')}</div>
+          <div style="font-size:11px;color:var(--muted)"><span style="font-family:monospace;color:var(--gold)">${escapeHtml(r.public_code || '')}</span> · ${escapeHtml([r.ship_city, r.province].filter(Boolean).join(', '))}</div></div>`).join('')
+      : '<div style="padding:10px 12px;color:var(--muted);font-size:13px">No stores found.</div>';
+    box.style.display = 'block';
+  }, 250);
+};
+document.addEventListener('click', (e) => {
+  const box = document.getElementById('rpt-store-results');
+  if (box && !e.target.closest('#rpt-store-results') && e.target.id !== 'rpt-store-q') box.style.display = 'none';
+});
+window.rptAddStore = (id, name, code) => {
+  if (!_rpt.stores.some(s => s.id === id)) _rpt.stores.push({ id, name, code });
+  document.getElementById('rpt-store-q').value = '';
+  document.getElementById('rpt-store-results').style.display = 'none';
+  _rptRenderChips();
+  window.rptRun();
+};
+window.rptRemoveStore = (id) => {
+  _rpt.stores = _rpt.stores.filter(s => s.id !== id);
+  _rptRenderChips();
+  window.rptRun();
+};
+function _rptRenderChips() {
+  const el = document.getElementById('rpt-store-chips');
+  el.innerHTML = _rpt.stores.map(s => `<span style="display:inline-flex;align-items:center;gap:6px;background:rgba(79,195,212,0.12);border:1px solid rgba(79,195,212,0.4);border-radius:14px;padding:3px 10px;font-size:12px">
+      <span style="font-family:monospace;color:var(--gold)">${escapeHtml(s.code)}</span> ${escapeHtml(s.name)}
+      <button onclick="window.rptRemoveStore('${s.id}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0" title="Remove">×</button></span>`).join('') +
+    (_rpt.stores.length > 1 ? `<button class="btn-sm" onclick="window._rptClearStores()">Clear stores</button>` : '');
+}
+window._rptClearStores = () => { _rpt.stores = []; _rptRenderChips(); window.rptRun(); };
+
+function _rptParams() {
+  return {
+    from: document.getElementById('rpt-from').value || RPT_START,
+    to: document.getElementById('rpt-to').value || _rptYmd(new Date()),
+    depot: document.getElementById('rpt-depot').value || null,
+    group: document.getElementById('rpt-group').value || null,
+    bucket: document.getElementById('rpt-bucket').value || 'month',
+    dim: document.getElementById('rpt-dim').value || 'depot',
+    storeIds: _rpt.stores.map(s => s.id),
+  };
+}
+
+function _rptChart(config) {
+  if (_rpt.chart) { try { _rpt.chart.destroy(); } catch (e) {} _rpt.chart = null; }
+  const wrap = document.getElementById('rpt-chart-wrap');
+  if (!config || typeof Chart === 'undefined') { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  _rpt.chart = new Chart(document.getElementById('rpt-chart'), config);
+}
+const _rptAxes = (money) => ({
+  x: { stacked: false, ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+  y: { ticks: { color: '#8b949e', callback: v => money ? '$' + Number(v).toLocaleString('en-CA') : Number(v).toLocaleString('en-CA') }, grid: { color: 'rgba(255,255,255,0.05)' } },
+});
+
+window.rptRun = async () => {
+  const run = ++_rpt.lastRun;
+  const body = document.getElementById('rpt-body');
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  document.getElementById('rpt-cards').innerHTML = '';
+  document.getElementById('rpt-note').textContent = '';
+  _rpt.csv = null;
+  const p = _rptParams();
+  if (p.from > p.to) { body.innerHTML = '<div class="empty">The From date is after the To date.</div>'; _rptChart(null); return; }
+  try {
+    if (_rpt.kind === 'history') await _rptHistory(p, run);
+    else if (_rpt.kind === 'flavours') await _rptFlavours(p, run);
+    else if (_rpt.kind === 'sales') await _rptSales(p, run);
+    else await _rptHealth(p, run);
+  } catch (e) {
+    if (run !== _rpt.lastRun) return;
+    body.innerHTML = `<div class="empty" style="color:var(--danger)">Could not load the report: ${escapeHtml(e.message || String(e))}</div>`;
+    _rptChart(null);
+  }
+};
+
+function _rptTable(cols, rows, opts = {}) {
+  const shown = rows.slice(0, opts.limit || RPT_ROW_LIMIT);
+  const more = rows.length - shown.length;
+  return `<div class="table-wrap"${opts.title ? '' : ''}>
+    ${opts.title ? `<div class="table-header"><span class="table-title">${opts.title}</span><span class="table-count">${rows.length.toLocaleString('en-CA')} row${rows.length === 1 ? '' : 's'}</span></div>` : ''}
+    <div class="pad-scroll"><table class="pad-table"><thead><tr>${cols.map(c => `<th style="${c.num ? 'text-align:right;' : ''}white-space:nowrap" ${c.title ? `title="${escapeHtml(c.title)}"` : ''}>${c.label}</th>`).join('')}</tr></thead>
+    <tbody>${shown.map(r => `<tr>${cols.map(c => `<td style="${c.num ? 'text-align:right;' : ''}${c.style || ''}">${c.html ? c.html(r) : escapeHtml(String(r[c.key] ?? ''))}</td>`).join('')}</tr>`).join('')}</tbody>
+    ${opts.footer ? `<tfoot><tr>${opts.footer}</tr></tfoot>` : ''}
+    </table></div>
+    ${more > 0 ? `<div style="padding:8px 16px;font-size:12px;color:var(--muted)">Showing the first ${shown.length.toLocaleString('en-CA')} — download the CSV for all ${rows.length.toLocaleString('en-CA')}.</div>` : ''}
+  </div>`;
+}
+
+// ── 1. Customer / group history ──
+async function _rptHistory(p, run) {
+  const rows = await _rptRpc('report_customer_history', {
+    p_from: p.from, p_to: p.to, p_depot: p.depot, p_group: p.group, p_store_ids: p.storeIds.length ? p.storeIds : null,
+  });
+  if (run !== _rpt.lastRun) return;
+  const body = document.getElementById('rpt-body');
+  if (!rows.length) { body.innerHTML = '<div class="empty">No deliveries match these filters.</div>'; _rptChart(null); return; }
+  const sum = (k) => rows.reduce((n, r) => n + Number(r[k] || 0), 0);
+  const stores = new Map();
+  rows.forEach(r => {
+    const s = stores.get(r.store_id) || { store_name: r.store_name, public_code: r.public_code, account_group: r.account_group, depot_code: r.depot_code, deliveries: 0, ic: 0, sb: 0, sales: 0, first: r.day, last: r.day };
+    s.deliveries++; s.ic += r.ice_cream_units; s.sb += r.sorbet_units; s.sales += Number(r.subtotal || 0);
+    if (r.day < s.first) s.first = r.day; if (r.day > s.last) s.last = r.day;
+    stores.set(r.store_id, s);
+  });
+  const sales = sum('subtotal');
+  document.getElementById('rpt-cards').innerHTML =
+    _rptCard('Sales (pre-tax)', _rptMoney0(sales), `${_rptMoney(sum('total'))} incl. tax`) +
+    _rptCard('Deliveries', _rptNum(rows.length), `${_rptNum(stores.size)} store${stores.size === 1 ? '' : 's'}`) +
+    _rptCard('Ice cream units', _rptNum(sum('ice_cream_units')), sum('sorbet_units') ? `+ ${_rptNum(sum('sorbet_units'))} sorbet` : '') +
+    _rptCard('Avg per delivery', _rptMoney0(sales / rows.length), `${_rptNum(sum('ice_cream_units') / rows.length)} cups`);
+  document.getElementById('rpt-note').textContent =
+    `${_rptDate(p.from)} – ${_rptDate(p.to)} · App deliveries only (from May 12, 2026). Sales = pre-tax subtotal incl. delivery fee, less cup credits.`;
+
+  // Monthly sales chart for the selection
+  const byMonth = new Map();
+  rows.forEach(r => { const m = r.day.slice(0, 7); byMonth.set(m, (byMonth.get(m) || 0) + Number(r.subtotal || 0)); });
+  const months = [...byMonth.keys()].sort();
+  _rptChart({ type: 'bar', data: { labels: months.map(m => _rptPeriodLabel(m + '-01', 'month')),
+    datasets: [{ label: 'Sales', data: months.map(m => Math.round(byMonth.get(m))), backgroundColor: '#4fc3d4', borderRadius: 6 }] },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: _rptAxes(true) } });
+
+  let html = '';
+  if (stores.size > 1) {
+    const srows = [...stores.values()].sort((a, b) => b.sales - a.sales);
+    html += _rptTable([
+      { label: 'Store', html: r => `<div style="font-weight:600">${escapeHtml(r.store_name || '—')}</div><div style="font-size:11px;font-family:monospace;color:var(--gold)">${escapeHtml(r.public_code || '')}</div>` },
+      { label: 'Group', key: 'account_group', style: 'font-size:12px;color:var(--muted)' },
+      { label: 'Depot', key: 'depot_code' },
+      { label: 'Deliveries', num: true, html: r => _rptNum(r.deliveries) },
+      { label: 'Ice cream', num: true, html: r => _rptNum(r.ic) },
+      { label: 'Sorbet', num: true, html: r => r.sb ? _rptNum(r.sb) : '—' },
+      { label: 'Sales', num: true, html: r => _rptMoney(r.sales) },
+      { label: 'Avg / delivery', num: true, html: r => _rptMoney0(r.sales / r.deliveries) },
+      { label: 'First', html: r => _rptDate(r.first), style: 'white-space:nowrap;font-size:12px' },
+      { label: 'Last', html: r => _rptDate(r.last), style: 'white-space:nowrap;font-size:12px' },
+    ], srows, { title: 'By store' });
+    html += '<div style="height:16px"></div>';
+  }
+  html += _rptTable([
+    { label: 'Date', html: r => _rptDate(r.day), style: 'white-space:nowrap;font-size:12px' },
+    { label: 'Receipt', key: 'receipt_number', style: 'font-family:monospace;font-size:12px;color:var(--muted)' },
+    { label: 'Store', html: r => `<div style="font-weight:600;font-size:13px">${escapeHtml(r.store_name || '—')}</div><div style="font-size:11px;color:var(--muted)">${escapeHtml(r.public_code || '')} · ${escapeHtml(r.depot_code || '')}</div>` },
+    { label: 'Driver', key: 'driver_name', style: 'font-size:12px' },
+    { label: 'Payment', key: 'payment_type', style: 'font-size:12px' },
+    ...RPT_FLAVOURS.map(([k, name, short]) => ({ label: short, title: name, num: true, html: r => r[k] ? _rptNum(r[k]) : '<span style="color:var(--muted)">·</span>', style: 'font-size:12px' })),
+    { label: 'Cups', num: true, html: r => _rptNum(r.ice_cream_units), style: 'font-weight:700' },
+    { label: 'Sales', num: true, html: r => _rptMoney(r.subtotal), style: 'font-weight:700;white-space:nowrap' },
+  ], rows, { title: 'Deliveries' });
+  body.innerHTML = html;
+
+  _rpt.csv = {
+    name: 'customer-history',
+    cols: ['day','receipt_number','public_code','store_name','account_group','depot_code','route_code','driver_name','payment_type',
+           ...RPT_FLAVOURS.map(f => f[0]), 'ice_cream_units','sorbet_units','subtotal','tax','total'],
+    rows,
+  };
+}
+
+// ── 2. Flavour sales ──
+async function _rptFlavours(p, run) {
+  const rows = await _rptRpc('report_flavour_sales', {
+    p_from: p.from, p_to: p.to, p_depot: p.depot, p_group: p.group, p_store_ids: p.storeIds.length ? p.storeIds : null, p_bucket: p.bucket,
+  });
+  if (run !== _rpt.lastRun) return;
+  const body = document.getElementById('rpt-body');
+  if (!rows.length) { body.innerHTML = '<div class="empty">No sales match these filters.</div>'; _rptChart(null); return; }
+  const periods = [...new Set(rows.map(r => r.period))].sort();
+  const order = RPT_FLAVOURS.map(f => f[1]);
+  const products = [...new Set(rows.map(r => r.product))].sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+  const tot = new Map();
+  rows.forEach(r => {
+    const t = tot.get(r.product) || { product: r.product, is_sorbet: r.is_sorbet, units: 0, amount: 0, byPeriod: {} };
+    t.units += Number(r.units); t.amount += Number(r.amount); t.byPeriod[r.period] = Number(r.units);
+    tot.set(r.product, t);
+  });
+  const ic = products.filter(x => !tot.get(x).is_sorbet), sb = products.filter(x => tot.get(x).is_sorbet);
+  const icUnits = ic.reduce((n, x) => n + tot.get(x).units, 0), sbUnits = sb.reduce((n, x) => n + tot.get(x).units, 0);
+  const amount = [...tot.values()].reduce((n, t) => n + t.amount, 0);
+  const top = ic.slice().sort((a, b) => tot.get(b).units - tot.get(a).units)[0];
+  document.getElementById('rpt-cards').innerHTML =
+    _rptCard('Ice cream cups', _rptNum(icUnits), `${ic.length} flavours`) +
+    _rptCard('Sorbet (BIG)', _rptNum(sbUnits), sb.length ? 'cases (Staples: single units)' : '—') +
+    _rptCard('Product sales', _rptMoney0(amount), 'units × price, before fees/credits') +
+    _rptCard('Top flavour', top ? escapeHtml(top) : '—', top ? `${(100 * tot.get(top).units / icUnits).toFixed(1)}% of cups` : '');
+  document.getElementById('rpt-note').textContent =
+    `${_rptDate(p.from)} – ${_rptDate(p.to)} · by ${p.bucket}. App deliveries only (from May 12, 2026).`;
+
+  _rptChart({ type: 'bar', data: { labels: periods.map(x => _rptPeriodLabel(x, p.bucket)),
+      datasets: ic.map(prod => ({ label: prod, data: periods.map(per => tot.get(prod).byPeriod[per] || 0), backgroundColor: RPT_FLAVOUR_COLORS[prod] || '#8b949e', stack: 'u' })) },
+    options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#8b949e', font: { size: 11 } } }, tooltip: { mode: 'index' } },
+      scales: { ..._rptAxes(false), x: { ..._rptAxes(false).x, stacked: true }, y: { ..._rptAxes(false).y, stacked: true } } } });
+
+  const lastP = periods[periods.length - 1], prevP = periods[periods.length - 2];
+  const trows = products.map(x => tot.get(x));
+  const cols = [
+    { label: 'Flavour', html: r => `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${RPT_FLAVOUR_COLORS[r.product] || '#8b949e'};margin-right:8px"></span><strong>${escapeHtml(r.product)}</strong>` },
+    { label: 'Units', num: true, html: r => _rptNum(r.units), style: 'font-weight:700' },
+    { label: 'Share', num: true, title: 'Share of ice cream cups (sorbet: share of sorbet)', html: r => ((100 * r.units / ((r.is_sorbet ? sbUnits : icUnits) || 1)).toFixed(1) + '%') },
+    { label: 'Sales', num: true, html: r => _rptMoney0(r.amount) },
+    ...(prevP ? [{ label: 'Last vs prev', num: true, title: `${_rptPeriodLabel(lastP, p.bucket)} vs ${_rptPeriodLabel(prevP, p.bucket)}`, html: r => {
+        const a = r.byPeriod[lastP] || 0, b = r.byPeriod[prevP] || 0;
+        if (!b) return '—';
+        const ch = 100 * (a - b) / b;
+        return `<span style="color:${ch >= 0 ? 'var(--success)' : 'var(--danger)'}">${ch >= 0 ? '+' : ''}${ch.toFixed(0)}%</span>`;
+      } }] : []),
+    ...periods.map(per => ({ label: _rptPeriodLabel(per, p.bucket), num: true, html: r => r.byPeriod[per] ? _rptNum(r.byPeriod[per]) : '·', style: 'font-size:12px;color:var(--muted)' })),
+  ];
+  body.innerHTML = _rptTable(cols, trows, { title: 'Units by flavour', limit: 50 }) +
+    (sb.length ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">BIG sorbet quantities are cases, except Staples deliveries which are single units.</div>' : '');
+  _rpt.csv = { name: 'flavour-sales', cols: ['period','product','is_sorbet','units','amount','stores'], rows };
+}
+
+// ── 3. Sales by depot / driver / route / group ──
+async function _rptSales(p, run) {
+  const rows = await _rptRpc('report_sales_by', {
+    p_from: p.from, p_to: p.to, p_dim: p.dim, p_depot: p.depot, p_group: p.group, p_bucket: p.bucket,
+  });
+  if (run !== _rpt.lastRun) return;
+  const body = document.getElementById('rpt-body');
+  if (!rows.length) { body.innerHTML = '<div class="empty">No sales match these filters.</div>'; _rptChart(null); return; }
+  const periods = [...new Set(rows.map(r => r.period))].sort();
+  const keys = new Map();
+  rows.forEach(r => {
+    const k = keys.get(r.key) || { label: r.label, deliveries: 0, ic: 0, sb: 0, sales: 0, byPeriod: {} };
+    k.deliveries += Number(r.deliveries); k.ic += Number(r.ice_cream_units); k.sb += Number(r.sorbet_units); k.sales += Number(r.sales);
+    k.byPeriod[r.period] = Number(r.sales);
+    keys.set(r.key, k);
+  });
+  const list = [...keys.values()].sort((a, b) => b.sales - a.sales);
+  const total = list.reduce((n, k) => n + k.sales, 0);
+  const dimName = { depot: 'Depot', driver: 'Driver', route: 'Route', group: 'Customer group' }[p.dim];
+  const lastP = periods[periods.length - 1], prevP = periods[periods.length - 2];
+  const lastTot = list.reduce((n, k) => n + (k.byPeriod[lastP] || 0), 0), prevTot = prevP ? list.reduce((n, k) => n + (k.byPeriod[prevP] || 0), 0) : 0;
+  document.getElementById('rpt-cards').innerHTML =
+    _rptCard('Sales (pre-tax)', _rptMoney0(total), `${list.length} ${dimName.toLowerCase()}${list.length === 1 ? '' : 's'}`) +
+    _rptCard('Deliveries', _rptNum(list.reduce((n, k) => n + k.deliveries, 0)), `${_rptNum(list.reduce((n, k) => n + k.ic, 0))} cups`) +
+    _rptCard(`Latest ${p.bucket}`, _rptMoney0(lastTot), _rptPeriodLabel(lastP, p.bucket) + (p.bucket === 'week' || p.bucket === 'month' ? ' (may be partial)' : '')) +
+    _rptCard(`Previous ${p.bucket}`, prevP ? _rptMoney0(prevTot) : '—', prevP ? _rptPeriodLabel(prevP, p.bucket) : '');
+  document.getElementById('rpt-note').textContent =
+    `${_rptDate(p.from)} – ${_rptDate(p.to)} · by ${p.bucket}. Depot and route are each store's current assignment.`;
+
+  const topN = list.slice(0, 8);
+  _rptChart({ type: 'line', data: { labels: periods.map(x => _rptPeriodLabel(x, p.bucket)),
+      datasets: topN.map((k, i) => ({ label: k.label, data: periods.map(per => Math.round(k.byPeriod[per] || 0)), borderColor: RPT_SERIES[i % RPT_SERIES.length], backgroundColor: RPT_SERIES[i % RPT_SERIES.length], tension: 0.25, pointRadius: 3 })) },
+    options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#8b949e', font: { size: 11 } } }, tooltip: { mode: 'index', intersect: false } }, scales: _rptAxes(true) } });
+
+  const cols = [
+    { label: dimName, html: r => `<strong>${escapeHtml(r.label)}</strong>` },
+    { label: 'Sales', num: true, html: r => _rptMoney0(r.sales), style: 'font-weight:700' },
+    { label: 'Share', num: true, html: r => (100 * r.sales / (total || 1)).toFixed(1) + '%' },
+    { label: 'Deliveries', num: true, html: r => _rptNum(r.deliveries) },
+    { label: 'Cups', num: true, html: r => _rptNum(r.ic) },
+    { label: 'Avg / delivery', num: true, html: r => _rptMoney0(r.sales / (r.deliveries || 1)) },
+    ...(prevP ? [{ label: 'Last vs prev', num: true, title: `${_rptPeriodLabel(lastP, p.bucket)} vs ${_rptPeriodLabel(prevP, p.bucket)}`, html: r => {
+        const a = r.byPeriod[lastP] || 0, b = r.byPeriod[prevP] || 0;
+        if (!b) return '—';
+        const ch = 100 * (a - b) / b;
+        return `<span style="color:${ch >= 0 ? 'var(--success)' : 'var(--danger)'}">${ch >= 0 ? '+' : ''}${ch.toFixed(0)}%</span>`;
+      } }] : []),
+    ...periods.map(per => ({ label: _rptPeriodLabel(per, p.bucket), num: true, html: r => r.byPeriod[per] ? _rptMoney0(r.byPeriod[per]) : '·', style: 'font-size:12px;color:var(--muted);white-space:nowrap' })),
+  ];
+  body.innerHTML = _rptTable(cols, list, { title: `Sales by ${dimName.toLowerCase()}` });
+  _rpt.csv = { name: `sales-by-${p.dim}`, cols: ['period','label','deliveries','stores','ice_cream_units','sorbet_units','sales'], rows };
+}
+
+// ── 4. Customer health ──
+const RPT_HEALTH = {
+  'Overdue':    { color: '#f0a020', hint: 'Past 1.5× their usual time between orders' },
+  'Declining':  { color: '#f85149', hint: 'Still buying, but well below their own trend after allowing for the depot-wide seasonal dip' },
+  'Quiet':      { color: '#58a6ff', hint: 'No sale in 8–17 weeks' },
+  'Gone quiet': { color: '#a371f7', hint: 'No sale in 4+ months (the Schedule tab check-in list)' },
+  'No history': { color: '#8b949e', hint: 'Active store with no sale on record' },
+  'OK':         { color: '#3fb950', hint: 'On rhythm' },
+};
+async function _rptHealth(p, run) {
+  const rows = await _rptRpc('report_store_health', { p_depot: p.depot, p_group: p.group });
+  if (run !== _rpt.lastRun) return;
+  _rpt.health = rows;
+  _rptRenderHealth();
+}
+window.rptHealthFilter = (f) => { _rpt.healthFilter = f; _rptRenderHealth(); };
+function _rptRenderHealth() {
+  const rows = _rpt.health || [];
+  const counts = {}; rows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  const flagged = rows.filter(r => r.status !== 'OK').length;
+  const f = _rpt.healthFilter;
+  const pill = (key, label, n, color) => `<button class="btn-sm" onclick="window.rptHealthFilter('${key}')" title="${escapeHtml((RPT_HEALTH[key] || {}).hint || '')}"
+      style="${f === key ? `background:${color};color:#1a1a1a;border-color:${color};font-weight:700` : `border-color:${color};color:${color}`}">${label} · ${_rptNum(n)}</button>`;
+  document.getElementById('rpt-cards').innerHTML =
+    `<div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap">${
+      pill('Flagged', 'All flagged', flagged, '#e2b04a') +
+      ['Overdue','Declining','Quiet','Gone quiet','No history','OK'].map(k => pill(k, k, counts[k] || 0, RPT_HEALTH[k].color)).join('')}</div>`;
+  document.getElementById('rpt-note').innerHTML =
+    'Compares each active store with its own rhythm, using app deliveries <em>and</em> QuickBooks invoices. Shipped-route stores are left out. ' +
+    '<strong>Declining</strong> allows for the seasonal dip in that store\'s depot. Latest driver check-in outcome is shown when there is one.';
+  _rptChart(null);
+  const list = rows.filter(r => f === 'Flagged' ? r.status !== 'OK' : r.status === f);
+  const order = { 'Declining': 0, 'Overdue': 1, 'Quiet': 2, 'Gone quiet': 3, 'No history': 4, 'OK': 5 };
+  list.sort((a, b) => (order[a.status] - order[b.status]) || (Number(b.sales_90d) - Number(a.sales_90d)) || ((b.days_since || 0) - (a.days_since || 0)));
+  const body = document.getElementById('rpt-body');
+  if (!list.length) { body.innerHTML = '<div class="empty">No stores in this group. 🎉</div>'; _rpt.csv = null; return; }
+  body.innerHTML = _rptTable([
+    { label: 'Status', html: r => `<span style="color:${RPT_HEALTH[r.status].color};font-weight:700;white-space:nowrap">${escapeHtml(r.status)}</span>` },
+    { label: 'Store', html: r => `<div style="font-weight:600">${escapeHtml(r.store_name || '—')}</div><div style="font-size:11px;color:var(--muted)"><span style="font-family:monospace;color:var(--gold)">${escapeHtml(r.public_code || '')}</span> · ${escapeHtml(r.city || '')}</div>` },
+    { label: 'Group', key: 'account_group', style: 'font-size:12px;color:var(--muted)' },
+    { label: 'Depot', html: r => escapeHtml([r.depot_code, r.route_code].filter(Boolean).join(' · ')), style: 'font-size:12px;white-space:nowrap' },
+    { label: 'Why', key: 'reason', style: 'font-size:12px' },
+    { label: 'Last sale', html: r => _rptDate(r.last_sale), style: 'font-size:12px;white-space:nowrap' },
+    { label: 'Usual gap', num: true, html: r => r.usual_gap != null ? r.usual_gap + 'd' : '—', style: 'font-size:12px' },
+    { label: 'Cups 8w', num: true, title: 'Ice cream + sorbet units, last 8 weeks', html: r => _rptNum(r.units_last_8w) },
+    { label: 'Prev 8w', num: true, title: 'The 8 weeks before that', html: r => _rptNum(r.units_prev_8w), style: 'color:var(--muted)' },
+    { label: 'Sales 90d', num: true, html: r => _rptMoney0(r.sales_90d) },
+    { label: 'Phone', key: 'phone', style: 'font-size:12px;white-space:nowrap' },
+    { label: 'Latest check-in', html: r => r.last_visit_note ? `<div style="max-width:220px;white-space:normal;font-size:11px;color:var(--muted)">${escapeHtml(r.last_visit_note)}</div>` : '', style: '' },
+  ], list, { title: f === 'Flagged' ? 'Stores needing attention' : f });
+  _rpt.csv = { name: 'customer-health', cols: ['status','reason','public_code','store_name','account_group','depot_code','route_code','city','phone',
+    'last_sale','days_since','usual_gap','units_last_8w','units_prev_8w','sales_90d','last_any_visit','last_visit_note'], rows: list };
+}
+
+// ── CSV export of the current report ──
+window.rptExport = () => {
+  if (!_rpt.csv || !_rpt.csv.rows || !_rpt.csv.rows.length) { alert('Run a report with results first.'); return; }
+  const esc = (v) => {
+    if (v == null) return '';
+    const t = String(v);
+    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const lines = [_rpt.csv.cols.join(',')].concat(_rpt.csv.rows.map(r => _rpt.csv.cols.map(c => esc(r[c])).join(',')));
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `mini-melts-${_rpt.csv.name}-${_rptYmd(new Date())}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+};
+
 // ── Courtesy calls (collect payment) ─────────────────────────────────────
 // Driver close-outs from complete_courtesy_call. Shown on the Unpaid tab: a
 // review panel (newest first, unreviewed only) and a line under each invoice
@@ -6065,6 +6583,8 @@ window.showAddStore = () => {
   document.getElementById('store-taxcode').value = 'G';
   document.getElementById('store-terms').value = 'PAD';
   document.getElementById('store-rep').value = 'DM';
+  document.getElementById('store-account-group').value = '';
+  window.fillAccountGroupList && window.fillAccountGroupList();
   // Clear any prior auto-detect hint from a previous open
   const hintEl = document.getElementById('store-chain-hint');
   if (hintEl) hintEl.textContent = '';
@@ -6178,6 +6698,8 @@ window.editStore = (id) => {
   document.getElementById('store-taxcode').value = s.tax_code || 'G';
   document.getElementById('store-terms').value = s.terms || 'Net 30';
   document.getElementById('store-rep').value = s.rep || 'DM';
+  document.getElementById('store-account-group').value = s.account_group || '';
+  window.fillAccountGroupList && window.fillAccountGroupList();
   document.getElementById('store-firstname').value = s.first_name || '';
   document.getElementById('store-lastname').value = s.last_name || '';
   document.getElementById('store-phone').value = s.phone || '';
@@ -6258,7 +6780,7 @@ window.saveStore = async () => {
   const isNew = !id;
   const bigPriceRaw = document.getElementById('store-big-price').value.trim();
   const bigPriceVal = bigPriceRaw === '' ? null : parseFloat(bigPriceRaw);
-  const payload = { name: document.getElementById('store-name').value.trim(), qb_name: document.getElementById('store-qbname').value.trim(), province: document.getElementById('store-province').value, unit_price: parseFloat(document.getElementById('store-price').value), big_unit_price: bigPriceVal, delivery_fee: parseFloat(document.getElementById('store-fee').value), is_edi: document.getElementById('store-edi').value==='true', tax_code: document.getElementById('store-taxcode').value, terms: document.getElementById('store-terms').value, rep: document.getElementById('store-rep').value, first_name: document.getElementById('store-firstname').value.trim(), last_name: document.getElementById('store-lastname').value.trim(), phone: document.getElementById('store-phone').value.trim(), email: document.getElementById('store-email').value.trim(), addr1: document.getElementById('store-addr1').value.trim(), city: document.getElementById('store-city').value.trim(), postal: document.getElementById('store-postal').value.trim(), ship_addr1: document.getElementById('store-ship-addr1').value.trim(), ship_city: document.getElementById('store-ship-city').value.trim(), ship_postal: document.getElementById('store-ship-postal').value.trim(), active: true };
+  const payload = { name: document.getElementById('store-name').value.trim(), qb_name: document.getElementById('store-qbname').value.trim(), province: document.getElementById('store-province').value, unit_price: parseFloat(document.getElementById('store-price').value), big_unit_price: bigPriceVal, delivery_fee: parseFloat(document.getElementById('store-fee').value), is_edi: document.getElementById('store-edi').value==='true', tax_code: document.getElementById('store-taxcode').value, terms: document.getElementById('store-terms').value, rep: document.getElementById('store-rep').value, account_group: (document.getElementById('store-account-group').value.trim() || null), first_name: document.getElementById('store-firstname').value.trim(), last_name: document.getElementById('store-lastname').value.trim(), phone: document.getElementById('store-phone').value.trim(), email: document.getElementById('store-email').value.trim(), addr1: document.getElementById('store-addr1').value.trim(), city: document.getElementById('store-city').value.trim(), postal: document.getElementById('store-postal').value.trim(), ship_addr1: document.getElementById('store-ship-addr1').value.trim(), ship_city: document.getElementById('store-ship-city').value.trim(), ship_postal: document.getElementById('store-ship-postal').value.trim(), active: true };
   // Sorbet-only: a store selling only sorbet must also be sorbet-enrolled,
   // or the order form would hide ice cream AND block sorbet, leaving them
   // unable to order. Set both together so the state can never be broken.
@@ -6372,7 +6894,7 @@ document.getElementById('store-modal').addEventListener('click', e => { if (e.ta
 window.switchTab = (tab) => {
   // The schedule tab uses a flex column layout; setting display:block
   // breaks it. Every other tab is fine with block, so we special-case here.
-  ['overview','deliveries','unpaid','orders','missed','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','applications','refunds','access','pad'].forEach(t => {
+  ['overview','deliveries','unpaid','orders','missed','corrections','stores','map','routes','refills','schedule','lot','drivers','leads','applications','refunds','access','pad','reports'].forEach(t => {
     const el = document.getElementById(`tab-${t}`);
     if (!el) return;
     if (t !== tab) {
@@ -6400,6 +6922,7 @@ window.switchTab = (tab) => {
   if (tab==='refunds') window.loadRefundRequests();
   if (tab==='deliveries') window.loadUnreconciledPrints();
   if (tab==='pad') { window.loadPadWaves(); window.loadPadVerify(); window.loadPadConversion(); }
+  if (tab==='reports') window.initReportsTab();
 };
 
 // ===== UNRECONCILED PRINTS =====
