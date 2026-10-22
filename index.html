@@ -3634,10 +3634,11 @@ function applyRoleUI(roleInfo) {
   // on the now-hidden Overview. Only fires when Overview is the active tab, so
   // it never interferes with normal navigation or with admins.
   if (roleInfo.role === 'plant') {
-    // Plant users see ONLY Lot Lookup: hide every other tab button, show Lot.
+    // Plant users see ONLY Lot Lookup and Reports (flavour sales only — the
+    // other reports are refused server-side for plant users).
     document.querySelectorAll('.tabs .tab').forEach(el => {
-      const isLot = /switchTab\('lot'\)/.test(el.getAttribute('onclick') || '');
-      el.style.display = isLot ? '' : 'none';
+      const keep = /switchTab\('(lot|reports)'\)/.test(el.getAttribute('onclick') || '');
+      el.style.display = keep ? '' : 'none';
     });
     if (typeof switchTab === 'function') switchTab('lot');
   } else if (!isAdmin) {
@@ -4685,12 +4686,12 @@ window.initReportsTab = async () => {
   if (!_rpt.inited) {
     _rpt.inited = true;
     window.rptPreset('all');
-    try {
-      const deps = await sbFetch('depots?select=id,code,name&order=code.asc');
-      document.getElementById('rpt-depot').innerHTML = '<option value="">All depots</option>' +
-        (Array.isArray(deps) ? deps : []).map(d => `<option value="${d.id}">${escapeHtml(d.code)} — ${escapeHtml(d.name)}</option>`).join('');
-    } catch (e) { /* keep "All depots" */ }
-    const groups = (await _rptLoadGroups()).filter(g => g !== 'Test');
+    // Filter lists come from an RPC (plant users can't read stores/depots directly).
+    let opts = { depots: [], groups: [] };
+    try { opts = await _rptRpc('report_filter_options', {}) || opts; } catch (e) { /* keep defaults */ }
+    document.getElementById('rpt-depot').innerHTML = '<option value="">All depots</option>' +
+      (opts.depots || []).map(d => `<option value="${d.id}">${escapeHtml(d.code)} — ${escapeHtml(d.name)}</option>`).join('');
+    const groups = (opts.groups || []).filter(g => g !== 'Test');
     document.getElementById('rpt-group').innerHTML =
       '<option value="">All customers</option><option value="Independent">Independent (no group)</option><option value="Sobeys (all)">Sobeys — all banners</option>' +
       groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
@@ -4699,6 +4700,10 @@ window.initReportsTab = async () => {
 };
 
 window.rptSetKind = (kind) => {
+  // Plant users (plant manager) get flavour sales only.
+  const plantOnly = !!(window._role && window._role.role === 'plant');
+  if (plantOnly) kind = 'flavours';
+  document.querySelectorAll('.rpt-kind').forEach(b => { b.style.display = (plantOnly && b.dataset.kind !== 'flavours') ? 'none' : ''; });
   _rpt.kind = kind;
   document.querySelectorAll('.rpt-kind').forEach(b => {
     const on = b.dataset.kind === kind;
@@ -4724,7 +4729,7 @@ window.rptStoreSearch = () => {
   _rptStoreTimer = setTimeout(async () => {
     const term = encodeURIComponent('*' + q.replace(/[,()*]/g, ' ') + '*');
     let rows = [];
-    try { rows = await sbFetch(`stores?select=id,qb_name,public_code,ship_city,province&or=(qb_name.ilike.${term},public_code.ilike.${term})&order=qb_name.asc&limit=15`); } catch (e) {}
+    try { rows = await _rptRpc('report_store_search', { p_q: q }); } catch (e) {}
     rows = Array.isArray(rows) ? rows : [];
     box.innerHTML = rows.length
       ? rows.map(r => `<div style="padding:8px 12px;cursor:pointer;border-top:1px solid var(--border);font-size:13px" onmousedown="window.rptAddStore('${r.id}', ${JSON.stringify(r.qb_name || '').replace(/"/g, '&quot;')}, '${escapeHtml(r.public_code || '')}')">
