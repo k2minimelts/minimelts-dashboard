@@ -1677,6 +1677,8 @@
            Each source is normalized to a common row shape in renderUnpaid().
            Shipping rows have no dollar total (invoice amount lives in QB) and
            age from shipped_at; DSD rows age from delivered_at. -->
+      <!-- Courtesy-call results awaiting office review (Oct 2026) -->
+      <div id="unpaid-cc" style="display:none;margin-bottom:16px"></div>
       <div class="table-wrap">
         <div class="table-header"><span class="table-title">⚠️ Awaiting Payment</span><span class="table-count" id="unpaid-count">Loading...</span><button class="btn-sm" onclick="window.refreshUnpaidTab(this)" style="margin-left:auto" title="Refetch data from server">🔄 Refresh</button></div>
         <div id="unpaid-body"><div class="loading">Loading...</div></div>
@@ -2853,6 +2855,30 @@
           <input type="checkbox" id="order-deactivate-store" checked style="accent-color:#f5a623;cursor:pointer;width:16px;height:16px"/>
           <span style="font-size:13px;color:var(--text)">Deactivate the store once the pickup is completed</span>
         </label>
+      </div>
+
+      <!-- Courtesy call / collect payment (Oct 2026): a visit to collect an
+           overdue balance. No product, no invoice. The driver closes it out in
+           the app with an outcome + note, and a photo when payment is collected.
+           Mutually exclusive with freezer pickup and new install. -->
+      <div class="field" id="order-cc-field" style="background:rgba(63,185,80,0.07);border:1px solid rgba(63,185,80,0.3);border-radius:8px;padding:10px 14px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;margin:0;text-transform:none;letter-spacing:0">
+          <input type="checkbox" id="order-is-cc" onchange="window.onOrderCcToggle()" style="accent-color:#3fb950;cursor:pointer;width:18px;height:18px"/>
+          <span style="font-size:14px;color:var(--text);font-weight:600">
+            💰 This is a <span style="color:#3fb950">courtesy call</span> (collect payment)
+          </span>
+        </label>
+        <div style="margin-top:4px;font-size:11px;color:var(--muted);padding-left:28px">
+          No product, no invoice. The driver collects payment (with a photo) or notes what happened.
+        </div>
+        <div id="order-cc-panel" style="display:none;padding-left:28px;margin-top:10px">
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Unpaid invoices for this store</div>
+          <div id="order-cc-list" style="font-size:13px;color:var(--muted)">Select a store first.</div>
+          <label style="display:block;margin-top:10px">Other invoice # <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">(QuickBooks invoices not in the dashboard)</span></label>
+          <input type="text" id="order-cc-other" placeholder="e.g. 1112323" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:14px;outline:none"/>
+          <label style="display:block;margin-top:10px">Amount to collect <span style="color:var(--danger)">*</span></label>
+          <input type="number" id="order-cc-amount" min="0" step="0.01" placeholder="0.00" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:14px;outline:none"/>
+        </div>
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -4393,7 +4419,7 @@ function _normalizeDsdUnpaid(d) {
     // Plain-text haystack for the Search box (store name, MM-reference, driver).
     searchText: `${d.store_name || ''} ${d.receipt_number || ''} ${d.driver_name || ''}`.toLowerCase(),
     store: escapeHtml(d.store_name || '—'),
-    storeSub: d.driver_name ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${escapeHtml(d.driver_name)}</div>` : '',
+    storeSub: (d.driver_name ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${escapeHtml(d.driver_name)}</div>` : '') + _ccLineFor(d.id),
     typeBadge: payBadge(d.payment_type),
     typeRaw: d.payment_type,
     reference: `<span style="font-family:monospace;color:var(--muted)">${escapeHtml(d.receipt_number || '—')}</span>`,
@@ -4521,6 +4547,94 @@ function renderUnpaid() {
 
 let _shippingUnpaid = [];
 
+// ── Courtesy calls (collect payment) ─────────────────────────────────────
+// Driver close-outs from complete_courtesy_call. Shown on the Unpaid tab: a
+// review panel (newest first, unreviewed only) and a line under each invoice
+// the visit was about. Nothing is marked paid automatically — the office
+// checks the photo, then uses Mark as Paid and records it in QuickBooks.
+let _courtesyCalls = [];
+let _ccByDelivery = {};
+const _CC_COLOR = { 'Payment collected': '#3fb950', 'Customer will e-transfer': '#58a6ff' };
+function _ccSummary(c) {
+  return c.outcome === 'Payment collected'
+    ? `Collected $${parseFloat(c.amount_collected || 0).toFixed(2)} · ${escapeHtml(c.payment_method || '')}`
+    : escapeHtml(c.outcome);
+}
+function _ccLineFor(deliveryId) {
+  const c = _ccByDelivery[deliveryId];
+  if (!c) return '';
+  const when = new Date(c.completed_at).toLocaleDateString('en-CA', { month:'short', day:'numeric' });
+  return `<div style="font-size:11px;margin-top:3px;color:${_CC_COLOR[c.outcome] || '#f0a020'};font-weight:600;cursor:pointer" onclick="window.viewCourtesyCall('${c.id}')" title="${escapeHtml(c.notes || '')}">🚚 Driver visit ${when}: ${_ccSummary(c)}${c.reviewed_at ? ' ✓' : ''}</div>`;
+}
+async function loadCourtesyCalls() {
+  try {
+    const rows = await sbFetch(
+      'courtesy_calls?select=id,order_id,store_id,driver_name,outcome,payment_method,amount_collected,amount_due,invoices,delivery_ids,notes,completed_at,reviewed_at,reviewed_by,store:stores(qb_name,public_code)' +
+      '&order=completed_at.desc&limit=300');
+    _courtesyCalls = Array.isArray(rows) ? rows : [];
+  } catch (e) { _courtesyCalls = []; }
+  _ccByDelivery = {};
+  // Newest visit wins for each invoice (rows are newest first).
+  _courtesyCalls.forEach(c => (c.delivery_ids || []).forEach(id => { if (!_ccByDelivery[id]) _ccByDelivery[id] = c; }));
+  renderCourtesyPanel();
+  renderUnpaid();
+}
+window.loadCourtesyCalls = loadCourtesyCalls;
+function renderCourtesyPanel() {
+  const host = document.getElementById('unpaid-cc');
+  if (!host) return;
+  const todo = _courtesyCalls.filter(c => !c.reviewed_at);
+  if (!todo.length) { host.style.display = 'none'; host.innerHTML = ''; return; }
+  host.style.display = 'block';
+  host.innerHTML = `<div class="table-wrap">
+    <div class="table-header"><span class="table-title">💰 Courtesy call results</span><span class="table-count">${todo.length} to review</span></div>
+    <div class="pad-scroll"><table class="pad-table"><thead><tr><th>Visited</th><th>Store</th><th>Result</th><th>Invoice(s)</th><th>Owing</th><th>Driver note</th><th></th></tr></thead><tbody>
+    ${todo.map(c => `<tr>
+      <td style="font-size:12px;white-space:nowrap">${new Date(c.completed_at).toLocaleDateString('en-CA', { month:'short', day:'numeric' })}<div style="font-size:11px;color:var(--muted)">${escapeHtml(c.driver_name || '')}</div></td>
+      <td><div style="font-weight:600">${escapeHtml(c.store?.qb_name || '—')}</div><div style="font-size:11px;font-family:monospace;color:var(--gold)">${escapeHtml(c.store?.public_code || '')}</div></td>
+      <td style="color:${_CC_COLOR[c.outcome] || '#f0a020'};font-weight:700;font-size:13px">${_ccSummary(c)}</td>
+      <td style="font-size:12px;font-family:monospace">${escapeHtml(c.invoices || '—')}</td>
+      <td style="font-size:13px">${c.amount_due != null ? '$' + parseFloat(c.amount_due).toFixed(2) : '—'}</td>
+      <td style="font-size:12px;color:var(--muted)"><div style="max-width:260px;white-space:normal;overflow-wrap:anywhere">${escapeHtml(c.notes || '')}</div></td>
+      <td style="white-space:nowrap"><button class="btn-sm" onclick="window.viewCourtesyCall('${c.id}')">📷 Photo</button> <button class="btn-sm" style="border-color:rgba(63,185,80,0.5);color:#3fb950" onclick="window.reviewCourtesyCall('${c.id}')">✓ Reviewed</button></td>
+    </tr>`).join('')}
+    </tbody></table></div>
+    <div style="padding:8px 16px;font-size:11px;color:var(--muted)">Check the photo, then mark the invoice paid below and record the payment in QuickBooks. "Reviewed" just clears it from this list.</div>
+  </div>`;
+}
+window.viewCourtesyCall = async (id) => {
+  const c = _courtesyCalls.find(x => x.id === id);
+  let photo = null;
+  try {
+    const r = await sbFetch(`courtesy_calls?select=photo_base64&id=eq.${id}`);
+    photo = Array.isArray(r) && r[0] ? r[0].photo_base64 : null;
+  } catch (e) { /* show the details without the photo */ }
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+  ov.innerHTML = `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;max-width:560px;width:100%;max-height:90vh;overflow:auto;padding:18px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong style="font-size:16px">💰 ${escapeHtml(c?.store?.qb_name || 'Courtesy call')}</strong><button class="btn-sm" onclick="this.closest('[style*=fixed]').remove()">✕</button></div>
+    ${c ? `<div style="font-size:13px;line-height:1.6">
+      <div><span style="color:var(--muted)">Visited:</span> ${new Date(c.completed_at).toLocaleString('en-CA')} · ${escapeHtml(c.driver_name || '')}</div>
+      <div><span style="color:var(--muted)">Result:</span> <strong style="color:${_CC_COLOR[c.outcome] || '#f0a020'}">${_ccSummary(c)}</strong></div>
+      <div><span style="color:var(--muted)">Invoice(s):</span> ${escapeHtml(c.invoices || '—')} · owing ${c.amount_due != null ? '$' + parseFloat(c.amount_due).toFixed(2) : '—'}</div>
+      <div><span style="color:var(--muted)">Driver note:</span> ${escapeHtml(c.notes || '')}</div>
+      ${c.reviewed_at ? `<div style="color:#3fb950">✓ Reviewed ${new Date(c.reviewed_at).toLocaleDateString('en-CA')} by ${escapeHtml(c.reviewed_by || '')}</div>` : ''}
+    </div>` : ''}
+    <div style="margin-top:12px">${photo ? `<img src="data:image/jpeg;base64,${photo}" style="width:100%;border-radius:8px">` : '<div style="color:var(--muted);font-size:13px">No photo.</div>'}</div>
+  </div>`;
+  document.body.appendChild(ov);
+};
+window.reviewCourtesyCall = async (id) => {
+  const who = window._role?.email || window._session?.user?.email || null;
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/courtesy_calls?id=eq.${id}`, {
+    method: 'PATCH', headers: { ...headers(), 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ reviewed_at: new Date().toISOString(), reviewed_by: who }),
+  });
+  if (!r.ok) { alert('Could not mark reviewed: ' + r.status); return; }
+  await loadCourtesyCalls();
+};
+
 async function loadShippingUnpaid() {
   const data = await sbFetch(
     `orders_with_schedule?select=id,store_id,submitted_at,shipped_at,invoiced_at,po_number,notes,` +
@@ -4531,6 +4645,7 @@ async function loadShippingUnpaid() {
   // Defensive: ensure store really is on a shipping route.
   _shippingUnpaid = rows.filter(o => o.store && o.store.route && o.store.route.delivery_method === 'shipped');
   renderUnpaid();
+  loadCourtesyCalls();
 }
 window.loadShippingUnpaid = loadShippingUnpaid;
 window.renderUnpaid = renderUnpaid;
@@ -8361,7 +8476,7 @@ async function loadOrders() {
   // shape as orders + extra scheduled_* columns.
   const params = new URLSearchParams();
   params.set('select',
-    'id,source,stock_level,total_units,sorbet_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type,shipped_at,invoiced_at,paid_at,cancel_reason,cancelled_at,cancelled_by_email,' +
+    'id,source,stock_level,total_units,sorbet_units,notes,submitted_by_name,submitted_by_phone,submitted_by_email,submitted_at,po_number,status,trip_stop_id,created_at,is_new_install,is_freezer_pickup,is_courtesy_call,collect_amount,collect_invoices,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type,shipped_at,invoiced_at,paid_at,cancel_reason,cancelled_at,cancelled_by_email,' +
     'scheduled_day_date,scheduled_driver_id,scheduled_driver_name,scheduled_trip_id,scheduled_trip_status,' +
     'store:stores!store_id(id,public_code,qb_name,ship_city,province,depot_id,phone,email,route:routes(delivery_method))'
   );
@@ -8854,7 +8969,7 @@ function renderOrdersTable(orders, totalCount, alreadySorted) {
         <span style="font-family:monospace;font-weight:600;color:var(--gold);font-size:13px">#${o.id.replace(/-/g,'').slice(-8).toUpperCase()}</span>
       </td>
       <td>
-        <div style="font-weight:600">${escapeHtml(storeName)}${o.is_new_install ? ` <span style="background:rgba(232,123,181,0.18);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px;white-space:nowrap;display:inline-block">🆕 NEW INSTALL${(() => { const pt = o.product_type || (o.includes_sorbet ? 'both' : 'ice_cream'); return pt === 'both' ? ' · 🍦+🍧' : pt === 'sorbet' ? ' · 🍧' : ' · 🍦'; })()}</span>` : ''}${o.is_freezer_pickup ? ' <span style="background:rgba(245,166,35,0.18);color:#f5a623;border:1px solid rgba(245,166,35,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px;white-space:nowrap;display:inline-block">📦 FREEZER PICKUP</span>' : ''}${shippingBadge}</div>
+        <div style="font-weight:600">${escapeHtml(storeName)}${o.is_courtesy_call ? ` <span title="${escapeHtml(o.collect_invoices || '')}" style="background:rgba(63,185,80,0.15);color:#3fb950;border:1px solid rgba(63,185,80,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px;white-space:nowrap;display:inline-block">💰 COURTESY CALL${o.collect_amount != null ? ' · $' + parseFloat(o.collect_amount).toFixed(2) : ''}</span>` : ''}${o.is_new_install ? ` <span style="background:rgba(232,123,181,0.18);color:var(--mm-pink);border:1px solid rgba(232,123,181,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px;white-space:nowrap;display:inline-block">🆕 NEW INSTALL${(() => { const pt = o.product_type || (o.includes_sorbet ? 'both' : 'ice_cream'); return pt === 'both' ? ' · 🍦+🍧' : pt === 'sorbet' ? ' · 🍧' : ' · 🍦'; })()}</span>` : ''}${o.is_freezer_pickup ? ' <span style="background:rgba(245,166,35,0.18);color:#f5a623;border:1px solid rgba(245,166,35,0.5);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px;vertical-align:middle;margin-left:6px;white-space:nowrap;display:inline-block">📦 FREEZER PICKUP</span>' : ''}${shippingBadge}</div>
         <div style="font-size:12px;color:var(--muted)">${storeCode ? `<span style="font-family:monospace;color:var(--gold)">${storeCode}</span> · ` : ''}${escapeHtml(cityProv)}</div>
       </td>
       <td>${sourceBadge(o.source)}</td>
@@ -9204,6 +9319,13 @@ window.showNewOrderModal = (source) => {
   document.getElementById('order-deactivate-store').checked = true;
   document.getElementById('order-pickup-deactivate-row').style.display = 'none';
   document.getElementById('order-pickup-field').style.display = isStaples ? 'none' : 'block';
+  // Courtesy call: off by default; phone orders only.
+  document.getElementById('order-is-cc').checked = false;
+  document.getElementById('order-cc-panel').style.display = 'none';
+  document.getElementById('order-cc-list').innerHTML = 'Select a store first.';
+  document.getElementById('order-cc-other').value = '';
+  document.getElementById('order-cc-amount').value = '';
+  document.getElementById('order-cc-field').style.display = isStaples ? 'none' : 'block';
   // Reset product type to ice cream and reflect in the stock-level row visibility.
   const iceRadio = document.querySelector('input[name="order-product-type"][value="ice_cream"]');
   if (iceRadio) iceRadio.checked = true;
@@ -9249,7 +9371,8 @@ window.updateSorbetGate = () => {
     : (value === 'sorbet' || value === 'both');
   const store = window._selectedOrderStore;
   const pickupEl = document.getElementById('order-is-pickup');
-  const isPickup = pickupEl && pickupEl.checked;
+  const ccEl = document.getElementById('order-is-cc');
+  const isPickup = (pickupEl && pickupEl.checked) || (ccEl && ccEl.checked);
   if (wantsSorbet && store && !isPickup && window._orderSorbetGate === 'ask') {
     document.getElementById('order-sorbet-gate-store').textContent = store.qb_name || store.public_code || 'this store';
     gate.style.display = 'block';
@@ -9302,6 +9425,10 @@ window.onOrderPickupToggle = () => {
   if (on) {
     const ni = document.getElementById('order-is-new-install');
     if (ni) ni.checked = false;
+    const cc = document.getElementById('order-is-cc');
+    if (cc && cc.checked) { cc.checked = false; document.getElementById('order-cc-panel').style.display = 'none'; }
+  } else if (document.getElementById('order-is-cc')?.checked) {
+    // Courtesy call stays on: keep the product rows hidden.
   } else {
     const isStaples = document.getElementById('order-source').value === 'staples_po';
     document.getElementById('order-product-type-row').style.display = isStaples ? 'none' : 'block';
@@ -9314,6 +9441,62 @@ window.onOrderPickupToggle = () => {
     }
   }
   if (window.updateSorbetGate) window.updateSorbetGate();
+};
+
+// Courtesy call (collect payment). Hides the product rows like a freezer
+// pickup, clears pickup/new-install, and loads the store's unpaid invoices so
+// the office can tick what the driver should collect.
+window.onOrderCcToggle = () => {
+  const on = document.getElementById('order-is-cc').checked;
+  document.getElementById('order-cc-panel').style.display = on ? 'block' : 'none';
+  if (on) {
+    const pk = document.getElementById('order-is-pickup');
+    if (pk && pk.checked) { pk.checked = false; document.getElementById('order-pickup-deactivate-row').style.display = 'none'; }
+    const ni = document.getElementById('order-is-new-install');
+    if (ni) ni.checked = false;
+    ['order-product-type-row','order-stock-level-row','order-sorbet-stock-level-row','order-total-units-row']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+    window.loadOrderCcInvoices();
+  }
+  // Off: onOrderPickupToggle's restore branch puts the product rows back.
+  window.onOrderPickupToggle();
+};
+
+window._orderCcInvoices = [];
+window.loadOrderCcInvoices = async () => {
+  const listEl = document.getElementById('order-cc-list');
+  const storeId = document.getElementById('order-store-id').value;
+  window._orderCcInvoices = [];
+  if (!storeId) { listEl.innerHTML = 'Select a store first.'; return; }
+  listEl.innerHTML = 'Loading…';
+  try {
+    const rows = await sbFetch(
+      `deliveries?select=id,receipt_number,total,delivered_at,payment_type` +
+      `&store_id=eq.${storeId}&or=(paid.is.null,paid.eq.false)` +
+      `&payment_type=in.(E-Transfer,EFT,PAD,Unpaid,Mail%20Cheque)&order=delivered_at.asc`);
+    if (document.getElementById('order-store-id').value !== storeId) return; // store changed meanwhile
+    window._orderCcInvoices = Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    listEl.innerHTML = '<span style="color:var(--danger)">Could not load invoices — type them below.</span>';
+    return;
+  }
+  if (!window._orderCcInvoices.length) {
+    listEl.innerHTML = 'No unpaid dashboard invoices for this store. Type the QuickBooks invoice # below.';
+    return;
+  }
+  listEl.innerHTML = window._orderCcInvoices.map(d => `
+    <label style="display:flex;align-items:center;gap:8px;margin:0 0 4px;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text);cursor:pointer">
+      <input type="checkbox" class="order-cc-inv" value="${d.id}" checked onchange="window.recalcOrderCcAmount()" style="accent-color:#3fb950">
+      <span style="font-family:monospace;color:var(--gold)">${escapeHtml(d.receipt_number || '—')}</span>
+      <span style="color:var(--muted)">${d.delivered_at ? new Date(d.delivered_at).toLocaleDateString('en-CA', { month:'short', day:'numeric', year:'numeric' }) : ''} · ${escapeHtml(d.payment_type || '')}</span>
+      <span style="margin-left:auto;font-weight:700">$${parseFloat(d.total || 0).toFixed(2)}</span>
+    </label>`).join('');
+  window.recalcOrderCcAmount();
+};
+window.recalcOrderCcAmount = () => {
+  const picked = new Set([...document.querySelectorAll('.order-cc-inv:checked')].map(c => c.value));
+  const sum = window._orderCcInvoices.filter(d => picked.has(d.id)).reduce((n, d) => n + parseFloat(d.total || 0), 0);
+  document.getElementById('order-cc-amount').value = sum > 0 ? sum.toFixed(2) : '';
 };
 
 window.closeOrderModal = () => {
@@ -9411,6 +9594,7 @@ window.selectOrderStore = (id, storeJson) => {
   if (!document.getElementById('order-contact-phone').value && s.phone) document.getElementById('order-contact-phone').value = s.phone;
   if (!document.getElementById('order-contact-email').value && s.email) document.getElementById('order-contact-email').value = s.email;
   window.loadOrderSorbetGate(s);
+  if (document.getElementById('order-is-cc')?.checked) window.loadOrderCcInvoices();
 };
 
 // ── Recurring Weekly Customers ───────────────────────────────────────────
@@ -9791,6 +9975,7 @@ window.saveOrder = async () => {
   const notes = document.getElementById('order-notes').value.trim() || null;
   const isNewInstall = document.getElementById('order-is-new-install').checked;
   const isFreezerPickup = document.getElementById('order-is-pickup').checked;
+  const isCc = source !== 'staples_po' && !!document.getElementById('order-is-cc')?.checked;
   const deactivateStore = document.getElementById('order-deactivate-store').checked;
   // Staples PO is always ice cream today; the product-type chooser is hidden
   // for it. For other sources, read the selected radio.
@@ -9803,6 +9988,20 @@ window.saveOrder = async () => {
   const includesSorbet = source !== 'staples_po' && (productType === 'sorbet' || productType === 'both');
 
   if (!storeId) { errEl.textContent = 'Please select a store.'; errEl.style.display = 'block'; return; }
+
+  // Courtesy call: needs an amount to collect.
+  let ccAmount = null, ccInvoices = null, ccDeliveryIds = null;
+  if (isCc) {
+    ccAmount = parseFloat(document.getElementById('order-cc-amount').value);
+    if (!(ccAmount > 0)) { errEl.textContent = 'Enter the amount the driver should collect.'; errEl.style.display = 'block'; return; }
+    ccAmount = Math.round(ccAmount * 100) / 100;
+    const picked = new Set([...document.querySelectorAll('.order-cc-inv:checked')].map(c => c.value));
+    const pickedRows = (window._orderCcInvoices || []).filter(d => picked.has(d.id));
+    ccDeliveryIds = pickedRows.map(d => d.id);
+    const other = document.getElementById('order-cc-other').value.trim();
+    ccInvoices = [...pickedRows.map(d => d.receipt_number).filter(Boolean), ...(other ? [other] : [])].join(', ') || null;
+    if (!ccInvoices) { errEl.textContent = 'Tick an invoice or type the QuickBooks invoice # to collect on.'; errEl.style.display = 'block'; return; }
+  }
 
   // Email typo guard: the order confirmation goes to this address.
   const contactTypo = await window.checkEmailTypos(contactEmail);
@@ -9863,7 +10062,7 @@ window.saveOrder = async () => {
   // Sorbet consistency: if the order includes sorbet, we need a sorbet stock
   // level. The DB enforces this via orders_sorbet_consistency CHECK; failing
   // here gives a friendlier message than a raw SQL error.
-  if (includesSorbet && !sorbetStockLevel) {
+  if (includesSorbet && !sorbetStockLevel && !isCc) {
     errEl.textContent = 'Please select a sorbet stock level (or change Product to Ice Cream only).';
     errEl.style.display = 'block';
     return;
@@ -9900,6 +10099,17 @@ window.saveOrder = async () => {
     deactivate_store_on_pickup: deactivateStore,
     raw_form_payload: { entered_from: 'admin_dashboard', product_type: isFreezerPickup ? 'freezer_pickup' : productType }
   };
+  if (isCc) {
+    // A collection visit carries no product and nothing to install.
+    Object.assign(payload, {
+      stock_level: null, total_units: null, sorbet_units: null, sorbet_freezer_answer: null,
+      is_new_install: false, includes_sorbet: false, product_type: null, sorbet_stock_level: null,
+      is_freezer_pickup: false, deactivate_store_on_pickup: false,
+      is_courtesy_call: true, collect_amount: ccAmount, collect_invoices: ccInvoices,
+      collect_delivery_ids: ccDeliveryIds && ccDeliveryIds.length ? ccDeliveryIds : null,
+      raw_form_payload: { entered_from: 'admin_dashboard', product_type: 'courtesy_call' },
+    });
+  }
 
   const resp = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
     method: 'POST',
@@ -12278,7 +12488,7 @@ async function loadMapData() {
     fetchAll('vending_machines_map?select=id,nayax_machine_db_id,machine_name,venue_id,venue_name,venue_chain,address,city,province,lat,lng,qty_sold_since_visit,capacity_units,pct_sold,last_sale_at,last_visit_at,mqtt_online,temperature_c,needs_restock,no_sales_3d,no_cash_sales_7d,no_card_sales_7d,days_since_last_sale,days_since_last_visit,depot_id,depot_code'),
     fetchAll('depots_map?select=id,code,name,city,province,lat,lng'),
     fetchAll('routes?select=id,depot_id,code,name,color,delivery_method,active&active=eq.true&order=code.asc'),
-    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,sorbet_units,notes,po_number,is_new_install,is_freezer_pickup,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type&order=submitted_at.desc'),
+    fetchAll('orders?status=eq.pending&select=id,store_id,source,stock_level,total_units,sorbet_units,notes,po_number,is_new_install,is_freezer_pickup,is_courtesy_call,collect_amount,submitted_at,submitted_by_name,submitted_by_phone,submitted_by_email,includes_sorbet,sorbet_stock_level,sorbet_lines,sorbet_total_cases,product_type&order=submitted_at.desc'),
   ]);
   _mapStores = stores;
   _mapMachines = venues;
@@ -12839,6 +13049,7 @@ async function initMapboxGL() {
         detailLabel = `Stock: <strong>${stockLabel}</strong>`;
       }
       if (o.is_freezer_pickup) detailLabel = '📦 <strong>Freezer pickup</strong>';
+      if (o.is_courtesy_call) detailLabel = `💰 <strong>Courtesy call — collect${o.collect_amount != null ? ' $' + parseFloat(o.collect_amount).toFixed(2) : ' payment'}</strong>`;
       const pickupLabel = o.is_freezer_pickup
         ? '<span style="background:#f5a623;color:#1a1a1a;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:800;letter-spacing:0.3px;margin-left:6px">📦 PICKUP</span>'
         : '';
