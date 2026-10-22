@@ -78,6 +78,12 @@
   .table-title { font-weight: 700; font-size: 15px; }
   .table-count { color: var(--muted); font-size: 13px; }
   table { width: 100%; border-collapse: collapse; }
+  /* PAD Conversion: 14 columns — compact cells, sideways scroll as a last resort */
+  .pad-scroll { overflow-x: auto; }
+  .pad-table th { padding: 10px 8px; }
+  .pad-table td { padding: 10px 8px; }
+  .pad-table td:last-child { white-space: normal !important; min-width: 90px; }
+  .pad-table td:last-child .btn-sm { margin: 2px 0 2px 4px; }
   th { padding: 10px 16px; text-align: left; font-size: 11px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; border-bottom: 1px solid var(--border); background: var(--bg3); }
   td { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
   tr:last-child td { border-bottom: none; }
@@ -12185,14 +12191,14 @@ window.renderPadConversion = function () {
       <td style="font-size:12px">${_padDate(r.last_reminder_at)}</td>
       <td style="text-align:center">${flag(r.confirmation_sent)}</td>
       <td style="text-align:center">${flag(r.pushed_to_qb)}</td>
-      <td style="color:var(--muted);font-size:11px;max-width:220px;white-space:normal;overflow-wrap:anywhere;line-height:1.35">${r.excluded_reason ? escapeHtml(r.excluded_reason) : ''}</td>
+      <td style="color:var(--muted);font-size:11px"><div style="max-width:200px;white-space:normal;overflow-wrap:anywhere;line-height:1.35;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden" title="${escapeHtml(r.excluded_reason||'')}">${r.excluded_reason ? escapeHtml(r.excluded_reason) : ''}</div></td>
       <td style="text-align:right;white-space:nowrap">${_padSendLinkBtn(r)}${remindBtn}${excludeBtn}</td>
     </tr>`;
   }).join('');
 
   // Wrapped in a horizontal scroller: 14 columns + the action buttons don't
   // fit a laptop screen, and .table-wrap clips overflow (Oct 2026).
-  body.innerHTML = `<div style="overflow-x:auto"><table><thead><tr>
+  body.innerHTML = `<div class="pad-scroll"><table class="pad-table"><thead><tr>
     <th style="text-align:center"><input type="checkbox" id="pad-pick-all" onchange="window.padToggleAllPicks(this)" title="Select all eligible on this page"></th>
     <th>ST-Code</th><th>Store</th><th>Location</th><th>Depot</th><th>Terms</th>
     <th>Status</th><th>Sent</th><th>Signed</th><th>Reminded</th><th>Conf.</th><th>QB</th><th>Note</th><th></th>
