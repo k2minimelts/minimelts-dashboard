@@ -1606,6 +1606,13 @@
         <div class="filter-group" data-rpt-for="history flavours sales"><label>To</label><input type="date" id="rpt-to" onchange="document.getElementById('rpt-preset').value='custom'"/></div>
         <div class="filter-group"><label>Depot</label><select id="rpt-depot"><option value="">All depots</option></select></div>
         <div class="filter-group"><label>Customer group</label><select id="rpt-group"><option value="">All customers</option></select></div>
+        <div class="filter-group" data-rpt-for="flavours"><label>Channel</label>
+          <select id="rpt-channel" onchange="window.rptRun()">
+            <option value="both" selected>Retail + Vending</option>
+            <option value="retail">Retail (deliveries)</option>
+            <option value="vending">Vending (Nayax)</option>
+          </select>
+        </div>
         <div class="filter-group" data-rpt-for="flavours sales"><label>Group by</label>
           <select id="rpt-bucket"><option value="week">Week</option><option value="month" selected>Month</option></select>
         </div>
@@ -1620,6 +1627,7 @@
           <div style="display:flex;gap:8px">
             <button class="btn-export" onclick="window.rptRun()">Run report</button>
             <button class="btn-sm" onclick="window.rptExport()" title="Download what's shown as a spreadsheet (CSV)">⬇ CSV</button>
+            <button class="btn-sm" id="rpt-nayax-upload-btn" data-admin-only style="display:none" onclick="window.rptOpenNayaxUpload()" title="Upload a Nayax product sales report (one month)">⬆ Nayax report</button>
           </div>
         </div>
       </div>
@@ -1628,6 +1636,31 @@
       <div id="rpt-cards" class="stats-grid" style="margin-bottom:16px"></div>
       <div id="rpt-chart-wrap" class="table-wrap" style="display:none;padding:16px;margin-bottom:16px"><div style="position:relative;height:300px"><canvas id="rpt-chart"></canvas></div></div>
       <div id="rpt-body"></div>
+    </div>
+
+    <!-- Nayax product-sales upload (Reports tab, admins). One month at a time;
+         replaces that month. Parsed in the browser (CSV or Excel). -->
+    <div class="modal-overlay" id="nayax-upload-modal">
+      <div class="modal" style="max-width:720px">
+        <div class="modal-header"><div class="modal-title">⬆ Upload Nayax product sales report</div><button class="modal-close" onclick="document.getElementById('nayax-upload-modal').classList.remove('open')">✕</button></div>
+        <div class="modal-body">
+          <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:12px">
+            In Nayax: <strong>Product sales</strong> report, Data Source <strong>DEX</strong>, one month, then <strong>Export</strong> (Excel or CSV).
+            Export it <strong>grouped by machine</strong> to see vending by depot; grouped by <em>ALL</em> gives company totals only.
+            Uploading a month replaces anything uploaded for that month before.
+          </div>
+          <div style="display:grid;grid-template-columns:180px 1fr;gap:12px;align-items:end">
+            <div class="field" style="margin:0"><label>Month</label><input type="month" id="nayax-upload-month" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text)"/></div>
+            <div class="field" style="margin:0"><label>File (.xlsx, .xls or .csv)</label><input type="file" id="nayax-upload-file" accept=".xlsx,.xls,.csv" onchange="window.rptParseNayaxFile()" style="width:100%;color:var(--text)"/></div>
+          </div>
+          <div id="nayax-upload-preview" style="margin-top:14px;font-size:13px"></div>
+          <div id="nayax-upload-error" style="display:none;margin-top:10px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:6px;padding:8px 12px;color:#f85149;font-size:13px"></div>
+          <div style="display:flex;gap:10px;margin-top:16px">
+            <button class="btn-export" id="nayax-upload-go" disabled onclick="window.rptSubmitNayaxUpload()">Upload</button>
+            <button class="btn-sm" onclick="document.getElementById('nayax-upload-modal').classList.remove('open')">Cancel</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Overview Tab -->
@@ -4900,37 +4933,59 @@ async function _rptHistory(p, run) {
   };
 }
 
-// ── 2. Flavour sales ──
+// ── 2. Flavour sales (retail deliveries + Nayax vending) ──
+// Retail: report_flavour_sales (app deliveries). Vending: report_vending_flavour_sales
+// (uploaded Nayax DEX report for whole months, otherwise the hourly sales feed).
+// Vending ignores the customer-group and store filters (they don't apply to
+// machines); depot applies to both. Unassigned vending sales (Unknown / blank /
+// "Chocolate" — product-map problems in Nayax) are excluded and counted in a note.
+const RPT_CUP_FLAVOURS = ['Cotton Candy','Cookies & Cream','Cookie Dough','Banana Split','Mint Chocolate','Rainbow','Orange'];
 async function _rptFlavours(p, run) {
-  const rows = await _rptRpc('report_flavour_sales', {
-    p_from: p.from, p_to: p.to, p_depot: p.depot, p_group: p.group, p_store_ids: p.storeIds.length ? p.storeIds : null, p_bucket: p.bucket,
-  });
+  const channel = (document.getElementById('rpt-channel') || {}).value || 'both';
+  const wantRetail = channel !== 'vending', wantVend = channel !== 'retail';
+  const [retail, vend] = await Promise.all([
+    wantRetail ? _rptRpc('report_flavour_sales', { p_from: p.from, p_to: p.to, p_depot: p.depot, p_group: p.group, p_store_ids: p.storeIds.length ? p.storeIds : null, p_bucket: p.bucket }) : Promise.resolve([]),
+    wantVend ? _rptRpc('report_vending_flavour_sales', { p_from: p.from, p_to: p.to, p_depot: p.depot, p_bucket: p.bucket }).catch(() => []) : Promise.resolve([]),
+  ]);
   if (run !== _rpt.lastRun) return;
   const body = document.getElementById('rpt-body');
-  if (!rows.length) { body.innerHTML = '<div class="empty">No sales match these filters.</div>'; _rptChart(null); return; }
-  const periods = [...new Set(rows.map(r => r.period))].sort();
+  const vendAssigned = (vend || []).filter(r => r.product !== 'Unassigned');
+  const vendUnassigned = (vend || []).filter(r => r.product === 'Unassigned').reduce((n, r) => n + Number(r.units), 0);
+  if (!retail.length && !vendAssigned.length) { body.innerHTML = '<div class="empty">No sales match these filters.</div>'; _rptChart(null); return; }
+
+  const periods = [...new Set([...retail.map(r => r.period), ...vendAssigned.map(r => r.period)])].sort();
   const order = RPT_FLAVOURS.map(f => f[1]);
-  const products = [...new Set(rows.map(r => r.product))].sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
   const tot = new Map();
-  rows.forEach(r => {
-    const t = tot.get(r.product) || { product: r.product, is_sorbet: r.is_sorbet, units: 0, amount: 0, byPeriod: {} };
-    t.units += Number(r.units); t.amount += Number(r.amount); t.byPeriod[r.period] = Number(r.units);
-    tot.set(r.product, t);
-  });
-  const ic = products.filter(x => !tot.get(x).is_sorbet), sb = products.filter(x => tot.get(x).is_sorbet);
-  const icUnits = ic.reduce((n, x) => n + tot.get(x).units, 0), sbUnits = sb.reduce((n, x) => n + tot.get(x).units, 0);
-  const amount = [...tot.values()].reduce((n, t) => n + t.amount, 0);
-  const top = ic.slice().sort((a, b) => tot.get(b).units - tot.get(a).units)[0];
+  const get = (prod, isSorbet) => {
+    if (!tot.has(prod)) tot.set(prod, { product: prod, is_sorbet: !!isSorbet, rUnits: 0, rAmt: 0, vUnits: 0, vAmt: 0, byPeriod: {} });
+    return tot.get(prod);
+  };
+  retail.forEach(r => { const t = get(r.product, r.is_sorbet); t.rUnits += Number(r.units); t.rAmt += Number(r.amount); t.byPeriod[r.period] = (t.byPeriod[r.period] || 0) + Number(r.units); });
+  vendAssigned.forEach(r => { const t = get(r.product, false); t.vUnits += Number(r.units); t.vAmt += Number(r.amount); t.byPeriod[r.period] = (t.byPeriod[r.period] || 0) + Number(r.units); });
+  const products = [...tot.keys()].sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+  const cups = products.filter(x => !tot.get(x).is_sorbet), sb = products.filter(x => tot.get(x).is_sorbet);
+  const sum = (arr, k) => arr.reduce((n, x) => n + tot.get(x)[k], 0);
+  const rCups = sum(cups, 'rUnits'), vCups = sum(cups, 'vUnits'), allCups = rCups + vCups;
+  const sbUnits = sum(sb, 'rUnits');
+  const top = cups.slice().sort((a, b) => (tot.get(b).rUnits + tot.get(b).vUnits) - (tot.get(a).rUnits + tot.get(a).vUnits))[0];
+  const vendSources = [...new Set((vend || []).map(r => r.source))];
   document.getElementById('rpt-cards').innerHTML =
-    _rptCard('Ice cream cups', _rptNum(icUnits), `${ic.length} flavours`) +
-    _rptCard('Sorbet (BIG)', _rptNum(sbUnits), sb.length ? 'cases (Staples: single units)' : '—') +
-    _rptCard('Product sales', _rptMoney0(amount), 'units × price, before fees/credits') +
-    _rptCard('Top flavour', top ? escapeHtml(top) : '—', top ? `${(100 * tot.get(top).units / icUnits).toFixed(1)}% of cups` : '');
-  document.getElementById('rpt-note').textContent =
-    `${_rptDate(p.from)} – ${_rptDate(p.to)} · by ${p.bucket}. App deliveries only (from May 12, 2026).`;
+    (wantRetail ? _rptCard('Retail cups', _rptNum(rCups), _rptMoney0(sum(cups, 'rAmt')) + ' product sales') : '') +
+    (wantVend ? _rptCard('Vending cups', _rptNum(vCups), _rptMoney0(sum(cups, 'vAmt')) + ' collected (incl. tax)') : '') +
+    (wantRetail && wantVend ? _rptCard('All cups', _rptNum(allCups), allCups ? `${(100 * vCups / allCups).toFixed(0)}% vending` : '') : '') +
+    _rptCard('Top flavour', top ? escapeHtml(top) : '—', top && allCups ? `${(100 * (tot.get(top).rUnits + tot.get(top).vUnits) / allCups).toFixed(1)}% of cups` : '') +
+    (wantRetail && !wantVend && sbUnits ? _rptCard('Sorbet (BIG)', _rptNum(sbUnits), 'cases (Staples: single units)') : '');
+  const notes = [`${_rptDate(p.from)} – ${_rptDate(p.to)} · by ${p.bucket}.`];
+  if (wantRetail) notes.push('Retail = app deliveries (from May 12, 2026).');
+  if (wantVend) {
+    const srcLabel = { 'nayax report': 'uploaded Nayax report', 'live feed': 'hourly Nayax feed (from Sept 23, 2026)' };
+    notes.push('Vending = ' + (vendSources.length ? vendSources.map(x => srcLabel[x] || x).join(' + ') : 'Nayax') + '; customer-group and store filters don\'t apply to vending.');
+    if (vendUnassigned) notes.push(`${_rptNum(vendUnassigned)} vending sales not counted: no flavour in Nayax (Unknown / "Chocolate" product maps).`);
+  }
+  document.getElementById('rpt-note').textContent = notes.join(' ');
 
   _rptChart({ type: 'bar', data: { labels: periods.map(x => _rptPeriodLabel(x, p.bucket)),
-      datasets: ic.map(prod => ({ label: prod, data: periods.map(per => tot.get(prod).byPeriod[per] || 0), backgroundColor: RPT_FLAVOUR_COLORS[prod] || '#8b949e', stack: 'u' })) },
+      datasets: cups.map(prod => ({ label: prod, data: periods.map(per => tot.get(prod).byPeriod[per] || 0), backgroundColor: RPT_FLAVOUR_COLORS[prod] || '#8b949e', stack: 'u' })) },
     options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#8b949e', font: { size: 11 } } }, tooltip: { mode: 'index' } },
       scales: { ..._rptAxes(false), x: { ..._rptAxes(false).x, stacked: true }, y: { ..._rptAxes(false).y, stacked: true } } } });
 
@@ -4938,9 +4993,12 @@ async function _rptFlavours(p, run) {
   const trows = products.map(x => tot.get(x));
   const cols = [
     { label: 'Flavour', html: r => `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${RPT_FLAVOUR_COLORS[r.product] || '#8b949e'};margin-right:8px"></span><strong>${escapeHtml(r.product)}</strong>` },
-    { label: 'Units', num: true, html: r => _rptNum(r.units), style: 'font-weight:700' },
-    { label: 'Share', num: true, title: 'Share of ice cream cups (sorbet: share of sorbet)', html: r => ((100 * r.units / ((r.is_sorbet ? sbUnits : icUnits) || 1)).toFixed(1) + '%') },
-    { label: 'Sales', num: true, html: r => _rptMoney0(r.amount) },
+    ...(wantRetail ? [{ label: 'Retail', num: true, html: r => r.rUnits ? _rptNum(r.rUnits) : '·' }] : []),
+    ...(wantVend ? [{ label: 'Vending', num: true, html: r => r.vUnits ? _rptNum(r.vUnits) : '·' }] : []),
+    ...(wantRetail && wantVend ? [{ label: 'Total', num: true, html: r => _rptNum(r.rUnits + r.vUnits), style: 'font-weight:700' }] : []),
+    { label: 'Share', num: true, title: 'Share of cups (sorbet: share of sorbet)', html: r => ((100 * (r.rUnits + r.vUnits) / ((r.is_sorbet ? sbUnits : allCups) || 1)).toFixed(1) + '%') },
+    ...(wantRetail ? [{ label: 'Retail $', num: true, html: r => r.rAmt ? _rptMoney0(r.rAmt) : '·' }] : []),
+    ...(wantVend ? [{ label: 'Vending $', num: true, title: 'Collected, tax included', html: r => r.vAmt ? _rptMoney0(r.vAmt) : '·' }] : []),
     ...(prevP ? [{ label: 'Last vs prev', num: true, title: `${_rptPeriodLabel(lastP, p.bucket)} vs ${_rptPeriodLabel(prevP, p.bucket)}`, html: r => {
         const a = r.byPeriod[lastP] || 0, b = r.byPeriod[prevP] || 0;
         if (!b) return '—';
@@ -4950,9 +5008,142 @@ async function _rptFlavours(p, run) {
     ...periods.map(per => ({ label: _rptPeriodLabel(per, p.bucket), num: true, html: r => r.byPeriod[per] ? _rptNum(r.byPeriod[per]) : '·', style: 'font-size:12px;color:var(--muted)' })),
   ];
   body.innerHTML = _rptTable(cols, trows, { title: 'Units by flavour', limit: 50 }) +
-    (sb.length ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">BIG sorbet quantities are cases, except Staples deliveries which are single units.</div>' : '');
-  _rpt.csv = { name: 'flavour-sales', cols: ['period','product','is_sorbet','units','amount','stores'], rows };
+    (sb.length ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">BIG sorbet quantities are cases, except Staples deliveries which are single units. Sorbet is retail only.</div>' : '');
+  _rpt.csv = { name: 'flavour-sales', cols: ['period','channel','product','units','amount','source'],
+    rows: [...retail.map(r => ({ period: r.period, channel: 'retail', product: r.product, units: r.units, amount: r.amount, source: 'app deliveries' })),
+           ...(vend || []).map(r => ({ period: r.period, channel: 'vending', product: r.product, units: r.units, amount: r.amount, source: r.source }))] };
 }
+
+// ── Nayax product-sales upload ──
+let _nayaxParsed = null;
+window.rptOpenNayaxUpload = () => {
+  const d = new Date(); d.setMonth(d.getMonth() - 1);
+  document.getElementById('nayax-upload-month').value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  document.getElementById('nayax-upload-file').value = '';
+  document.getElementById('nayax-upload-preview').innerHTML = '';
+  document.getElementById('nayax-upload-error').style.display = 'none';
+  document.getElementById('nayax-upload-go').disabled = true;
+  _nayaxParsed = null;
+  document.getElementById('nayax-upload-modal').classList.add('open');
+};
+function _nayaxLoadXlsx() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    sc.onload = () => res(); sc.onerror = () => rej(new Error('Could not load the spreadsheet reader.'));
+    document.head.appendChild(sc);
+  });
+}
+const _nayaxFlavour = (name) => {
+  const k = String(name || '').toLowerCase().replace(/\s*\(.*$/, '').trim();
+  return ({ 'cotton candy':'Cotton Candy','cookies and cream':'Cookies & Cream','cookies & cream':'Cookies & Cream','cookie dough':'Cookie Dough',
+            'banana split':'Banana Split','mint chocolate':'Mint Chocolate','mint chocolate chip':'Mint Chocolate','rainbow':'Rainbow','rainbow ice':'Rainbow','orange':'Orange' })[k] || null;
+};
+// Find the header row (has "Product" and a units/sales column), then map columns.
+function _nayaxRowsFromGrid(grid) {
+  const norm = (v) => String(v == null ? '' : v).toLowerCase().replace(/\s+/g, ' ').trim();
+  let h = -1;
+  for (let i = 0; i < Math.min(grid.length, 40); i++) {
+    const row = (grid[i] || []).map(norm);
+    if (row.includes('product') && row.some(c => /units|sales/.test(c))) { h = i; break; }
+  }
+  if (h < 0) throw new Error('Could not find the header row (a "Product" column with units / sales).');
+  const head = grid[h].map(norm);
+  const col = (...names) => { for (const n of names) { const i = head.indexOf(n); if (i >= 0) return i; } return -1; };
+  const iProd = col('product', 'product name');
+  const iUnits = col('paid units', 'total units', 'units', 'quantity');
+  const iSales = col('total sales', 'sales', 'total');
+  const iMach = col('machine', 'machine name', 'machine number', 'machine reference', 'operator identifier', 'machine id');
+  if (iProd < 0 || iUnits < 0) throw new Error('The report needs "Product" and "Paid Units" columns.');
+  const num = (v) => { const n = Number(String(v == null ? '' : v).replace(/[^0-9.-]/g, '')); return isFinite(n) ? n : 0; };
+  // Report period from the title line, e.g. "9/1/2026 12:00:00 AM - 10/1/2026 12:00:00 AM".
+  // Both ends are kept (local time) so a partial month — e.g. a report pulled
+  // mid-day — only replaces the hourly feed for the hours it actually covers.
+  let month = null, periodFrom = null, periodTo = null;
+  const dtRe = /(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP]M)?)?/gi;
+  const toDate = (m) => {
+    let hh = Number(m[4] || 0); const ap = (m[7] || '').toUpperCase();
+    if (ap === 'PM' && hh < 12) hh += 12; if (ap === 'AM' && hh === 12) hh = 0;
+    return new Date(Number(m[3]), Number(m[1]) - 1, Number(m[2]), hh, Number(m[5] || 0), Number(m[6] || 0));
+  };
+  for (let i = 0; i < h; i++) {
+    const t = (grid[i] || []).join(' ');
+    const ms = [...t.matchAll(dtRe)];
+    if (ms.length) {
+      month = ms[0][3] + '-' + String(ms[0][1]).padStart(2, '0');
+      periodFrom = toDate(ms[0]);
+      if (ms[1]) {
+        periodTo = toDate(ms[1]);
+        if (periodTo.getHours() === 23 && periodTo.getMinutes() === 59 && periodTo.getSeconds() === 59) periodTo = new Date(periodTo.getTime() + 1000); // "11:59:59 PM" → midnight
+      }
+      break;
+    }
+  }
+  // Nayax "Group By" exports put each group on its own row: "group_by: <name>".
+  const out = [];
+  let lastMachine = '', groupLabel = '', grouped = false;
+  for (let i = h + 1; i < grid.length; i++) {
+    const r = grid[i] || [];
+    const first = String(r[0] == null ? '' : r[0]).trim();
+    const gm = first.match(/^group_by:\s*(.*)$/i);
+    if (gm) { groupLabel = gm[1].trim(); grouped = true; continue; }
+    const prod = String(r[iProd] == null ? '' : r[iProd]).trim();
+    if (iMach >= 0 && String(r[iMach] || '').trim()) lastMachine = String(r[iMach]).trim();
+    if (!prod || /^(product|total:?|grand total|sum)$/i.test(prod)) continue;
+    out.push({ machine_label: iMach >= 0 ? lastMachine : (grouped ? groupLabel : null), product: prod, units: num(r[iUnits]), sales: iSales >= 0 ? num(r[iSales]) : 0 });
+  }
+  return { rows: out, byMachine: iMach >= 0 || grouped, month, periodFrom, periodTo };
+}
+window.rptParseNayaxFile = async () => {
+  const errEl = document.getElementById('nayax-upload-error');
+  const prev = document.getElementById('nayax-upload-preview');
+  const go = document.getElementById('nayax-upload-go');
+  errEl.style.display = 'none'; go.disabled = true; _nayaxParsed = null; prev.innerHTML = 'Reading…';
+  const f = document.getElementById('nayax-upload-file').files[0];
+  if (!f) { prev.innerHTML = ''; return; }
+  try {
+    await _nayaxLoadXlsx();
+    const buf = await f.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const grid = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
+    const parsed = _nayaxRowsFromGrid(grid);
+    if (!parsed.rows.length) throw new Error('No product rows found in the file.');
+    _nayaxParsed = parsed;
+    if (parsed.month) document.getElementById('nayax-upload-month').value = parsed.month;
+    const byFlav = {}; let unassigned = 0, units = 0, sales = 0;
+    parsed.rows.forEach(r => { units += r.units; sales += r.sales; const fl = _nayaxFlavour(r.product); if (fl) byFlav[fl] = (byFlav[fl] || 0) + r.units; else unassigned += r.units; });
+    const machines = parsed.byMachine ? new Set(parsed.rows.map(r => r.machine_label).filter(Boolean)).size : 0;
+    prev.innerHTML = `<div style="margin-bottom:6px"><strong>${parsed.rows.length}</strong> rows · <strong>${_rptNum(units)}</strong> units · <strong>${_rptMoney0(sales)}</strong> · ${parsed.byMachine ? `${machines} groups` : '<span style="color:#f0a020">company totals only (not grouped)</span>'}${parsed.month ? ` · period ${parsed.month}` : ''}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${Object.entries(byFlav).sort((a,b)=>b[1]-a[1]).map(([k,v]) => `<span style="background:var(--bg3);border-radius:10px;padding:2px 8px">${escapeHtml(k)} ${_rptNum(v)}</span>`).join('')}
+      ${unassigned ? `<span style="background:rgba(240,160,32,0.15);color:#f0a020;border-radius:10px;padding:2px 8px">Not counted (Unknown / other) ${_rptNum(unassigned)}</span>` : ''}</div>
+      ${[100, 200, 500, 1000, 2000].includes(parsed.rows.length) ? `<div style="margin-top:8px;color:#f85149;font-weight:600">⚠ Exactly ${parsed.rows.length} product rows — this looks cut off by the Nayax "Results" limit. Set Results to the maximum in Nayax and export again before uploading.</div>` : ''}`;
+    go.disabled = false;
+  } catch (e) {
+    prev.innerHTML = '';
+    errEl.textContent = e.message || String(e); errEl.style.display = 'block';
+  }
+};
+window.rptSubmitNayaxUpload = async () => {
+  const errEl = document.getElementById('nayax-upload-error');
+  const m = document.getElementById('nayax-upload-month').value;
+  if (!m) { errEl.textContent = 'Choose the month this report covers.'; errEl.style.display = 'block'; return; }
+  if (!_nayaxParsed) return;
+  const go = document.getElementById('nayax-upload-go');
+  go.disabled = true; go.textContent = 'Uploading…';
+  try {
+    // Use the report's own period when it falls in the chosen month; otherwise the whole month.
+    const pf = _nayaxParsed.periodFrom, pt = _nayaxParsed.periodTo;
+    const inMonth = pf && pt && (pf.getFullYear() + '-' + String(pf.getMonth() + 1).padStart(2, '0')) === m;
+    const res = await _rptRpc('upload_nayax_product_sales_v2', { p_month: m + '-01', p_rows: _nayaxParsed.rows,
+      p_from: inMonth ? pf.toISOString() : null, p_to: inMonth ? pt.toISOString() : null });
+    document.getElementById('nayax-upload-modal').classList.remove('open');
+    alert(`Uploaded ${res.rows} rows for ${m}.` + (res.unmatched_machines ? `\n\n${res.unmatched_machines} machine name(s) didn't match a dashboard machine — their sales count in company totals but not in a depot.` : ''));
+    window.rptRun();
+  } catch (e) {
+    errEl.textContent = 'Upload failed: ' + (e.message || e); errEl.style.display = 'block';
+  } finally { go.textContent = 'Upload'; go.disabled = false; }
+};
 
 // ── 3. Sales by depot / driver / route / group ──
 async function _rptSales(p, run) {
