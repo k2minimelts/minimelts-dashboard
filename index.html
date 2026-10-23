@@ -2126,6 +2126,14 @@
               <span class="num" id="sched-count-lapsed">—</span>
               <span class="lbl">check-in · no orders 4+ mo</span>
             </div>
+            <!-- All stores (Oct 2026): every other active driven store in scope,
+                 i.e. not due yet. For far-away clusters (e.g. Cape Breton) where
+                 one trip should visit every store. Off by default. -->
+            <div class="sched-counter" data-filter="upcoming" title="Show every other store, even if it isn't due yet — lasso an area to visit them all">
+              <span class="sw" style="background:#cbd5e1"></span>
+              <span class="num" id="sched-count-upcoming">—</span>
+              <span class="lbl">📍 all stores · not due yet</span>
+            </div>
             <div class="sched-counter active" data-filter="vending">
               <span class="sw" style="background:#e87bb5"></span>
               <span class="num" id="sched-count-vending">—</span>
@@ -14689,7 +14697,7 @@ window.removeDepotManagerRow = async (depot_manager_id, email, depot_code) => {
 const schedState = {
   userDepots: [],          // [{id, code, name, lat, lng}] in user's scope
   activeDepots: new Set(), // depot codes currently filtered ON
-  filters: { orders: true, overdue: true, vending: true, scheduled: false, skipped: true, lapsed: false },
+  filters: { orders: true, overdue: true, vending: true, scheduled: false, skipped: true, lapsed: false, upcoming: false },
   weekStart: null,         // ISO Monday
   weekEnd: null,           // ISO Sunday (= weekStart + 6)
   storesIndex: new Map(),  // store_id → store object
@@ -14825,6 +14833,7 @@ function schedPinInfo(store) {
     };
   }
   if (store.type === 'lapsed') return { color: '#5b8def', size: 'size-md', stale: false };
+  if (store.type === 'upcoming') return { color: '#cbd5e1', size: '', stale: false };
   return schedCadenceStyle(store.days_overdue || 0);
 }
 
@@ -15115,6 +15124,16 @@ async function schedLoadOrdersAndOverdue() {
     `&limit=2000`
   );
 
+  // Not-due-yet stores ("all stores" layer): every other active driven store,
+  // days_until_due > 0. Lets a manager visit a whole far-away area in one trip.
+  const upcomingPromise = sbFetch(
+    `stores_with_predicted_visit?select=store_id,qb_name,ship_addr1,ship_city,province,lat,lng,depot_id,depot,route_id,last_visited_at,days_until_due,predicted_next_visit_at` +
+    `&depot_id=in.(${depotIdList})` +
+    `&days_until_due=gt.0` +
+    `&lat=not.is.null&lng=not.is.null` +
+    `&limit=5000`
+  );
+
   // Lapsed stores: no visit in 120+ days. The view returns days_until_due = null
   // for these (they are deliberately not "overdue"), so they need their own query.
   const lapsedPromise = sbFetch(
@@ -15158,9 +15177,10 @@ async function schedLoadOrdersAndOverdue() {
     `&limit=2000`
   );
 
-  let overdueRows = [], orderRows = [], vendingRows = [], routesLite = [], skippedRows = [], lapsedRows = [];
+  let overdueRows = [], orderRows = [], vendingRows = [], routesLite = [], skippedRows = [], lapsedRows = [], upcomingRows = [];
   try {
-    [overdueRows, orderRows, vendingRows, routesLite, skippedRows, lapsedRows] = await Promise.all([overduePromise, ordersPromise, vendingPromise, routesLitePromise, skippedPromise, lapsedPromise]);
+    [overdueRows, orderRows, vendingRows, routesLite, skippedRows, lapsedRows, upcomingRows] = await Promise.all([overduePromise, ordersPromise, vendingPromise, routesLitePromise, skippedPromise, lapsedPromise, upcomingPromise.catch(() => [])]);
+    if (!Array.isArray(upcomingRows)) upcomingRows = [];
     await loadMachineNotes(); await loadStoreNotes();
     if (!Array.isArray(overdueRows)) overdueRows = [];
     if (!Array.isArray(orderRows)) orderRows = [];
@@ -15230,6 +15250,32 @@ async function schedLoadOrdersAndOverdue() {
       assigned: false,
       last_visited_at: r.last_visited_at || null,
       days_since_visit: lastMs ? Math.floor((_todayMs - lastMs) / 86400000) : null,
+      route_delivery_method: r.route_id ? (_routeMethodById[r.route_id] || null) : null,
+    });
+  }
+
+  // Not-due-yet stores. Added before orders so a store with an order shows as
+  // the order pin instead (orders overwrite by store id below).
+  for (const r of upcomingRows) {
+    if (r.lat == null || r.lng == null) continue;
+    if (r.route_id && _routeMethodById[r.route_id] === 'shipped') continue;
+    if (idx.has(r.store_id)) continue;
+    idx.set(r.store_id, {
+      id: r.store_id,
+      qb_name: r.qb_name,
+      ship_addr1: r.ship_addr1,
+      ship_city: r.ship_city,
+      province: r.province,
+      lat: Number(r.lat),
+      lng: Number(r.lng),
+      depot_id: r.depot_id,
+      depot: r.depot,
+      type: 'upcoming',
+      days_overdue: 0,
+      days_until_due: r.days_until_due,
+      predicted_next_visit_at: r.predicted_next_visit_at || null,
+      last_visited_at: r.last_visited_at || null,
+      assigned: false,
       route_delivery_method: r.route_id ? (_routeMethodById[r.route_id] || null) : null,
     });
   }
@@ -15981,6 +16027,12 @@ function schedRenderMarkers() {
         else             { badgeBg = '#fee2e2'; badgeColor = '#991b1b'; } // red
         overdueBadge = `<div style="margin-top:6px"><span style="background:${badgeBg};color:${badgeColor};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏱ ${d} day${d === 1 ? '' : 's'} past due</span></div>`;
       }
+      if (store.type === 'upcoming') {
+        const fmt = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en-CA',{month:'short',day:'numeric'});
+        const nd = store.predicted_next_visit_at ? `next due ${fmt(store.predicted_next_visit_at)} (in ${store.days_until_due} day${store.days_until_due === 1 ? '' : 's'})` : 'not due yet';
+        const lv = store.last_visited_at ? ` · last visit ${fmt(store.last_visited_at)}` : '';
+        overdueBadge = `<div style="margin-top:6px"><span style="background:#f1f5f9;color:#334155;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">📍 ${nd}${lv}</span></div>`;
+      }
       if (store.type === 'lapsed') {
         const lv = store.last_visited_at
           ? `last visit ${new Date(store.last_visited_at + 'T12:00:00').toLocaleDateString('en-CA',{month:'short',day:'numeric',year:'numeric'})}${store.days_since_visit != null ? ` (${store.days_since_visit} days ago)` : ''}`
@@ -16245,6 +16297,7 @@ function schedIsFiltered(store) {
   if (store.type === 'overdue' && !schedState.filters.overdue) return true;
   if (store.type === 'vending' && !schedState.filters.vending) return true;
   if (store.type === 'lapsed' && !schedState.filters.lapsed) return true;
+  if (store.type === 'upcoming' && !schedState.filters.upcoming) return true;
   return false;
 }
 
@@ -16332,6 +16385,7 @@ function schedLassoEnd(e) {
       if (store.type === 'overdue' && !schedState.filters.overdue) continue;
       if (store.type === 'vending' && !schedState.filters.vending) continue;
       if (store.type === 'lapsed' && !schedState.filters.lapsed) continue;
+      if (store.type === 'upcoming' && !schedState.filters.upcoming) continue;
     }
     if (hitLng >= minLng && hitLng <= maxLng && hitLat >= minLat && hitLat <= maxLat) {
       if (!schedState.selected.has(store.id)) { schedState.selected.add(store.id); added++; }
@@ -16587,7 +16641,7 @@ function schedToggleDriverHighlight(driverId) {
 // COUNTERS
 // ════════════════════════════════════════════════════════════════════
 function schedRenderCounters() {
-  let orderCount = 0, overdueCount = 0, vendingCount = 0, scheduledCount = 0, skippedCount = 0, lapsedCount = 0;
+  let orderCount = 0, overdueCount = 0, vendingCount = 0, scheduledCount = 0, skippedCount = 0, lapsedCount = 0, upcomingCount = 0;
   for (const s of schedState.storesIndex.values()) {
     if (s.assigned) { scheduledCount++; continue; }
     if (s.skipped) { skippedCount++; continue; }  // purple "missed" — its own category, not double-counted
@@ -16595,6 +16649,7 @@ function schedRenderCounters() {
     else if (s.type === 'overdue') overdueCount++;
     else if (s.type === 'vending') vendingCount++;
     else if (s.type === 'lapsed') lapsedCount++;
+    else if (s.type === 'upcoming') upcomingCount++;
   }
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
   set('sched-count-orders', orderCount);
@@ -16603,6 +16658,7 @@ function schedRenderCounters() {
   set('sched-count-scheduled', scheduledCount);
   set('sched-count-skipped', skippedCount);
   set('sched-count-lapsed', lapsedCount);
+  set('sched-count-upcoming', upcomingCount);
   const pubBtn = document.getElementById('sched-publish-btn');
   if (pubBtn) pubBtn.textContent = `Publish 0 plans →`;
   if (typeof schedUpdatePublishButton === 'function') schedUpdatePublishButton();
@@ -18006,6 +18062,7 @@ function schedSearchTag(s) {
   if (s.type === 'order')   return { label: 'Order',     color: '#0e7490', bg: '#cffafe' };
   if (s.type === 'overdue') return { label: 'Restock due', color: '#9a3412', bg: '#ffedd5' };
   if (s.type === 'lapsed')  return { label: 'Check-in',  color: '#1e40af', bg: '#dbeafe' };
+  if (s.type === 'upcoming') return { label: 'Not due yet', color: '#334155', bg: '#f1f5f9' };
   return { label: 'Stop', color: '#374151', bg: '#e5e7eb' };
 }
 window.schedSearch = function (q) {
