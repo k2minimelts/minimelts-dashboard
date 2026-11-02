@@ -15588,6 +15588,20 @@ async function schedLoadOrdersAndOverdue() {
     }
   }
 
+  // PAD not signed (Nov 2026): flag stores invited to PAD that haven't signed,
+  // so a manager sees it on the pin / in the selection and confirms before
+  // assigning. Non-fatal: if the lookup fails the map still loads, unflagged.
+  try {
+    const storeIds = [...new Set(Array.from(idx.values())
+      .filter(s => s.type !== 'vending' && s.id && /^[0-9a-f-]{36}$/i.test(String(s.id)))
+      .map(s => String(s.id)))];
+    if (storeIds.length) {
+      const res = await sbFetch('rpc/pad_unsigned_store_ids', { method: 'POST', body: JSON.stringify({ p_store_ids: storeIds }) });
+      const unsigned = new Set((Array.isArray(res) ? res : []).map(r => String(typeof r === 'object' && r ? Object.values(r)[0] : r)));
+      for (const s of idx.values()) s.pad_unsigned = s.type !== 'vending' && unsigned.has(String(s.id));
+    }
+  } catch (e) { console.warn('pad_unsigned lookup failed', e); }
+
   schedState.storesIndex = idx;
   schedMarkAssignedStores();
 }
@@ -16148,9 +16162,12 @@ function schedRenderMarkers() {
     const skipCancelBtn = (store.skipped && store.order_id)
       ? `<button onclick="window.schedCancelSkippedStore('${schedEscapeHtml(store.id)}')" style="width:100%;background:#f85149;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;margin-bottom:6px">✕ Cancel order — not needed</button>`
       : '';
-    const skipBanner = store.skipped
-      ? `<div style="background:#a371f7;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.4px;margin-bottom:6px;text-align:center">⚠ SKIPPED${store.skipped_on ? ' · ' + new Date(store.skipped_on).toLocaleDateString('en-CA',{month:'short',day:'numeric'}) : ''} — RESCHEDULE</div>${store.skip_reason ? `<div style="font-size:11px;color:#6b21a8;background:#f3e8ff;border-radius:4px;padding:5px 8px;margin-bottom:6px">${schedEscapeHtml(store.skip_reason)}</div>` : ''}${skipCancelBtn}`
+    const padBanner = store.pad_unsigned
+      ? '<div style="background:#b45309;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.4px;margin-bottom:6px;text-align:center">💳 PAD NOT SIGNED — driver collects payment</div>'
       : '';
+    const skipBanner = padBanner + (store.skipped
+      ? `<div style="background:#a371f7;color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:0.4px;margin-bottom:6px;text-align:center">⚠ SKIPPED${store.skipped_on ? ' · ' + new Date(store.skipped_on).toLocaleDateString('en-CA',{month:'short',day:'numeric'}) : ''} — RESCHEDULE</div>${store.skip_reason ? `<div style="font-size:11px;color:#6b21a8;background:#f3e8ff;border-radius:4px;padding:5px 8px;margin-bottom:6px">${schedEscapeHtml(store.skip_reason)}</div>` : ''}${skipCancelBtn}`
+      : '');
     if (store.type === 'order') {
       const submittedDate = store.order_submitted_at
         ? new Date(store.order_submitted_at).toLocaleDateString('en-CA', { year:'numeric', month:'short', day:'numeric' })
@@ -16631,6 +16648,7 @@ function schedStopRowHtml(s, isSelected) {
     ? `<span class="${(s.days_overdue || 0) > 90 ? 'late' : ''}">${s.days_overdue}d overdue</span>`
     : '';
   const orderTag = s.type === 'order' ? `<span style="color:#4fc3d4">order pending</span>` : '';
+  const padTag = s.pad_unsigned ? `<span style="color:#f0a020;font-weight:700">💳 PAD not signed</span>` : '';
   let vendingMeta = '';
   if (s.type === 'vending') {
     const pct = s.pct_sold != null ? Number(s.pct_sold).toFixed(0) : null;
@@ -16653,6 +16671,7 @@ function schedStopRowHtml(s, isSelected) {
         <span>${schedEscapeHtml([s.ship_city, s.province].filter(Boolean).join(', '))}</span>
         ${lateness}
         ${orderTag}
+        ${padTag}
         ${vendingMeta}
       </div>
     </div>
@@ -17063,6 +17082,17 @@ async function schedAssignSelection(driverId, startDateIso, tripLength, managerN
     .map(id => schedState.storesIndex.get(id))
     .filter(Boolean);
   if (selectedStores.length === 0) return;
+
+  // PAD not signed: these stores were invited to PAD and haven't signed. The
+  // visit can still go ahead, but the manager confirms and the driver app
+  // tells the driver to collect payment at the door.
+  const padUnsigned = selectedStores.filter(s => s.pad_unsigned);
+  if (padUnsigned.length) {
+    const names = padUnsigned.slice(0, 12).map(s => '• ' + (s.qb_name || 'store')).join('\n')
+      + (padUnsigned.length > 12 ? `\n…and ${padUnsigned.length - 12} more` : '');
+    const ok = confirm(`${padUnsigned.length} of these store${padUnsigned.length === 1 ? ' hasn\'t' : 's haven\'t'} signed up for PAD:\n\n${names}\n\nThe driver will be told to collect payment on delivery. Schedule anyway?`);
+    if (!ok) return;
+  }
 
   // Merge in any auto-included sibling vending machines. The assign panel's
   // sibling section produces a Set of machine-storesIndex-keys; we look those
@@ -17759,6 +17789,7 @@ function schedRenderAssignPanel(container) {
   const orderCount = selStores.filter(s => s.type === 'order').length;
   const overdueCount = selStores.filter(s => s.type === 'overdue').length;
   const lateCount = selStores.filter(s => s.type === 'overdue' && (s.days_overdue || 0) > 90).length;
+  const padUnsignedCount = selStores.filter(s => s.pad_unsigned).length;
 
   // Sibling detection — scan storesIndex for vending machines at the same
   // venue as any selected machine. Default behavior is to auto-include.
@@ -17812,6 +17843,7 @@ function schedRenderAssignPanel(container) {
         <span><strong>${orderCount}</strong> orders</span>
         <span><strong>${overdueCount}</strong> overdue</span>
         ${lateCount ? `<span class="late"><strong>${lateCount}</strong> long-overdue</span>` : ''}
+        ${padUnsignedCount ? `<span style="color:#f0a020"><strong>${padUnsignedCount}</strong> PAD not signed</span>` : ''}
       </div>
     </div>
     ${siblingsHtml}
